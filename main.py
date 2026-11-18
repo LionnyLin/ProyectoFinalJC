@@ -19,14 +19,26 @@ def main() -> int:
         help="Ejecuta los 5 escenarios en modo CLI y exporta un reporte Markdown en la ruta indicada.",
         default=None,
     )
+    parser.add_argument(
+        "--report-docx",
+        help="Genera un reporte Word (.docx) a dos columnas con ecuaciones OMML en la ruta indicada.",
+        default=None,
+    )
+    parser.add_argument(
+        "--technical-docx",
+        help="Genera el Documento Técnico completo (.docx) a dos columnas con Anexos A-D.",
+        default=None,
+    )
     args = parser.parse_args()
 
-    if args.report:
+    if args.report or args.report_docx or args.technical_docx:
         from src.io.data_loader import load_dataset
         from src.simulation import (
             SimulationConfig,
             compare_all_scenarios,
+            generate_docx_report,
             generate_markdown_report,
+            generate_technical_document_docx,
         )
 
         data_path = args.data or os.path.join(
@@ -39,10 +51,22 @@ def main() -> int:
             intensity_mm_h=30.0,
         )
         summaries = compare_all_scenarios(dataset, base_cfg)
-        out = generate_markdown_report(
-            dataset, summaries[2].result, summaries, args.report
-        )
-        print(f"Reporte generado exitosamente en: {out}")
+
+        if args.report:
+            out = generate_markdown_report(
+                dataset, summaries[2].result, summaries, args.report
+            )
+            print(f"Reporte Markdown generado en: {out}")
+        if args.report_docx:
+            out = generate_docx_report(
+                dataset, summaries[2].result, summaries, args.report_docx
+            )
+            print(f"Reporte Word (.docx) generado en: {out}")
+        if args.technical_docx:
+            out = generate_technical_document_docx(
+                dataset, summaries, args.technical_docx
+            )
+            print(f"Documento Técnico (.docx) generado en: {out}")
         return 0
 
     from src.gui import BicentenarioSewerApp

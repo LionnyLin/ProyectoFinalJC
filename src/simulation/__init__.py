@@ -10,6 +10,7 @@ from .models import (
 from .engine import SewerSimulationEngine
 from .comparison import ScenarioSummary, compare_all_scenarios
 from .reporter import generate_markdown_report
+from .docx_exporter import generate_docx_report, generate_technical_document_docx
 
 __all__ = [
     "SimulationConfig",
@@ -21,4 +22,6 @@ __all__ = [
     "ScenarioSummary",
     "compare_all_scenarios",
     "generate_markdown_report",
+    "generate_docx_report",
+    "generate_technical_document_docx",
 ]
