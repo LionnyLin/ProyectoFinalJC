@@ -1,120 +1,110 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-11-17T20:18:30-05:00",
-  "title": "Design System: Ciudad Bicentenario — Simulador Hidráulico",
+  "generatedAt": "2026-11-17T21:11:30-05:00",
+  "title": "Design System: Ciudad Bicentenario — Lámina Cartográfica de Archivo Hidráulico",
   "extensions": {
     "colorMeta": {
-      "hydraulic-cobalt": {
+      "graphite-shell": {
+        "role": "neutral",
+        "displayName": "Graphite Shell",
+        "canonical": "#4a4a4a",
+        "tonalRamp": ["#383838", "#3d3d3d", "#4a4a4a", "#595959", "#666666"]
+      },
+      "mineral-silver": {
+        "role": "neutral",
+        "displayName": "Mineral Silver",
+        "canonical": "#cbcbcb",
+        "tonalRamp": ["#afafaf", "#bcbcbc", "#cbcbcb"]
+      },
+      "ivory-vellum": {
+        "role": "neutral",
+        "displayName": "Ivory Vellum",
+        "canonical": "#ffffe3",
+        "tonalRamp": ["#dadabd", "#e6e8da", "#f1f1d3", "#f2f2d5", "#f7f7da", "#ffffe3"]
+      },
+      "slate-steel": {
         "role": "primary",
-        "displayName": "Hydraulic Cobalt",
-        "canonical": "#0369a1",
-        "tonalRamp": ["#082f49", "#0c4a6e", "#075985", "#0369a1", "#0284c7", "#38bdf8", "#bae6fd", "#e0f2fe"]
-      },
-      "obsidian-shell": {
-        "role": "neutral",
-        "displayName": "Obsidian Shell",
-        "canonical": "#131820",
-        "tonalRamp": ["#0b0f14", "#131820", "#1b222d", "#242d3b", "#2f3b4e", "#475569", "#94a3b8", "#f4f6f9"]
-      },
-      "porcelain-drafting": {
-        "role": "neutral",
-        "displayName": "Porcelain Drafting Ground",
-        "canonical": "#f7f8fa",
-        "tonalRamp": ["#64748b", "#94a3b8", "#cbd5e1", "#d6dee8", "#dce2ec", "#ebeef3", "#f7f8fa", "#ffffff"]
-      },
-      "ptar-emerald": {
-        "role": "secondary",
-        "displayName": "PTAR Emerald",
-        "canonical": "#0f766e",
-        "tonalRamp": ["#042f2e", "#134e4a", "#115e59", "#0f766e", "#0d9488", "#14b8a6", "#5eead4", "#ccfbf1"]
+        "displayName": "Slate Steel",
+        "canonical": "#6d8196",
+        "tonalRamp": ["#495b6e", "#5a6c80", "#6d8196", "#7d91a6", "#e4e8df"]
       }
     },
     "typographyMeta": {
-      "headline": { "displayName": "Topbar Headline", "purpose": "Application title in obsidian topbar." },
-      "title": { "displayName": "Section Title", "purpose": "Left-rail section headings and Matplotlib subplot titles." },
-      "body": { "displayName": "Control & Inspector Body", "purpose": "Form labels, inspector lines, and status readouts." },
+      "headline": { "displayName": "Topbar Headline", "purpose": "Application title in #4A4A4A graphite topbar." },
+      "title": { "displayName": "Sheet Header", "purpose": "Dark/slate section headers inside #CBCBCB docks." },
+      "body": { "displayName": "Control & Inspector Body", "purpose": "Spanish form labels, inspector readouts, and status text." },
       "label": { "displayName": "Compact Label", "purpose": "KPI captions, notebook tabs, and compact action buttons." },
-      "mono": { "displayName": "Tabular Telemetry", "purpose": "Aligned flows, percentages, simulation clock, and pipe labels." }
+      "mono": { "displayName": "Tabular Telemetry", "purpose": "Aligned flows, percentages, simulation clock, traversal log, and pipe labels." }
     },
     "shadows": [
-      { "name": "none-flat", "value": "none", "purpose": "Surfaces remain flat; separation relies strictly on 1px borders and tonal contrast." }
+      { "name": "none-flat", "value": "none", "purpose": "Flat architectural planes separated by 1px #4A4A4A borders and tonal contrast." }
     ],
     "motion": [
       { "name": "playback-frame", "value": "40ms-420ms stepped tick (10x-1x)", "purpose": "Updates network snapshot, KPI cards, and Matplotlib vertical time cursor without full figure redraw." }
     ],
     "breakpoints": [
-      { "name": "compact", "value": "< 940px (mutually exclusive side drawers, compact topbar & 6-col comparison table)" },
-      { "name": "medium", "value": "940px - 1219px (grouped file menu, compact player labels, adaptive tabs)" },
+      { "name": "compact", "value": "< 940px (exclusive left/right docks, compact topbar, compact critical & comparison tables)" },
+      { "name": "medium", "value": "940px - 1219px (grouped file menu, compact clock & player labels, adaptive tabs)" },
       { "name": "wide", "value": ">= 1220px (full 3-pane workstation with 5 direct topbar actions)" }
     ]
   },
   "components": [
     {
-      "name": "Primary Action Button (Light)",
+      "name": "Primary Action Button",
       "kind": "button",
-      "refersTo": "button-primary-light",
-      "description": "Primary action inside editorial white surfaces (Reproducir, Comparar 5 Escenarios).",
-      "html": "<button class=\"ds-btn-primary-light\">Reproducir</button>",
-      "css": ".ds-btn-primary-light { background: #0369a1; color: #ffffff; border: 1px solid #0369a1; border-radius: 0; padding: 4px 10px; font-weight: 700; font-size: 11px; cursor: pointer; } .ds-btn-primary-light:hover { background: #075985; border-color: #075985; }"
+      "refersTo": "button-primary",
+      "description": "Primary action across docks and bars (Ejecutar simulación, Reproducir, Generar Reporte, Buscar, Comparar 5 Escenarios).",
+      "html": "<button class=\"ds-btn-primary\">Reproducir</button>",
+      "css": ".ds-btn-primary { background: #6d8196; color: #ffffe3; border: 1px solid #4a4a4a; border-radius: 0; padding: 4px 10px; font-weight: 700; font-size: 11px; cursor: pointer; } .ds-btn-primary:hover { background: #5a6c80; }"
     },
     {
-      "name": "Primary Action Button (Obsidian Shell)",
-      "kind": "button",
-      "refersTo": "button-primary-dark",
-      "description": "Primary action inside the dark obsidian topbar and left rail (Ejecutar simulacion, Generar Reporte).",
-      "html": "<button class=\"ds-btn-primary-dark\">Ejecutar simulación</button>",
-      "css": ".ds-btn-primary-dark { background: #38bdf8; color: #0b1220; border: 1px solid #38bdf8; border-radius: 0; padding: 5px 10px; font-weight: 700; font-size: 12px; cursor: pointer; } .ds-btn-primary-dark:hover { background: #7dd3fc; border-color: #7dd3fc; }"
-    },
-    {
-      "name": "Obsidian Input Field",
-      "kind": "input",
-      "refersTo": "button-secondary-dark",
-      "description": "Numeric parameter spinbox or search entry in the dark control rail.",
-      "html": "<input class=\"ds-input-dark\" type=\"text\" value=\"P31\" />",
-      "css": ".ds-input-dark { background: #1b222d; color: #f4f6f9; border: 1px solid #2f3b4e; border-radius: 0; padding: 4px 6px; font-family: monospace; font-size: 12px; } .ds-input-dark:focus { outline: none; border-color: #38bdf8; }"
+      "name": "Structured Vellum Sheet",
+      "kind": "card",
+      "refersTo": "sheet-card",
+      "description": "Ivory sheet framed in 1px graphite inside the #CBCBCB mineral silver dock.",
+      "html": "<section class=\"ds-sheet\"><header class=\"ds-sheet-hdr\">Escenario y parámetros</header><div class=\"ds-sheet-body\">...</div></section>",
+      "css": ".ds-sheet { background: #ffffe3; border: 1px solid #4a4a4a; } .ds-sheet-hdr { background: #4a4a4a; color: #ffffe3; border-bottom: 2px solid #6d8196; padding: 5px 10px; font-weight: 700; }"
     },
     {
       "name": "KPI Metric Strip",
       "kind": "card",
-      "refersTo": "button-secondary-light",
-      "description": "Tabular four-column telemetry strip above the network canvas.",
-      "html": "<div class=\"ds-kpi-cell\"><div class=\"ds-kpi-cap\">UTIL. MÁX.</div><div class=\"ds-kpi-val\">265.9%</div></div>",
-      "css": ".ds-kpi-cell { background: #f8fafc; padding: 5px 8px; border-bottom: 1px solid #d6dee8; font-family: sans-serif; } .ds-kpi-cap { color: #64748b; font-size: 9px; font-weight: 700; } .ds-kpi-val { color: #991b1b; font-size: 13px; font-weight: 700; font-family: monospace; }"
+      "refersTo": "sheet-card",
+      "description": "Tabular four-column telemetry strip with #6D8196 top bar and #4A4A4A clock badge.",
+      "html": "<div class=\"ds-kpi-cell\"><div class=\"ds-kpi-cap\">UTILIZACIÓN MÁX.</div><div class=\"ds-kpi-val\">265.9%</div></div>",
+      "css": ".ds-kpi-cell { background: #ffffe3; border-top: 2px solid #6d8196; padding: 4px 8px; } .ds-kpi-cap { color: #5a6570; font-size: 9px; font-weight: 700; } .ds-kpi-val { color: #991b1b; font-size: 13px; font-weight: 700; font-family: monospace; }"
     },
     {
       "name": "Rail Segmented Switcher",
       "kind": "nav",
-      "refersTo": "button-secondary-dark",
-      "description": "Switches left rail between Simulacion and Recorridos without vertical overflow.",
+      "refersTo": "button-primary",
+      "description": "Switches left dock between Simulación and Recorridos.",
       "html": "<div class=\"ds-rail-tabs\"><button class=\"ds-tab-active\">Simulación</button><button class=\"ds-tab-idle\">Recorridos</button></div>",
-      "css": ".ds-rail-tabs { display: flex; gap: 6px; background: #131820; padding: 8px 10px; border-bottom: 1px solid #2f3b4e; } .ds-tab-active { flex: 1; background: #38bdf8; color: #0b1220; border: 1px solid #38bdf8; padding: 4px 8px; font-weight: 700; font-size: 11px; } .ds-tab-idle { flex: 1; background: #242d3b; color: #f4f6f9; border: 1px solid #2f3b4e; padding: 4px 8px; font-size: 11px; }"
+      "css": ".ds-rail-tabs { display: flex; gap: 6px; background: #cbcbcb; padding: 10px; border-bottom: 1px solid #4a4a4a; } .ds-tab-active { flex: 1; background: #6d8196; color: #ffffe3; border: 1px solid #4a4a4a; padding: 5px 8px; font-weight: 700; font-size: 11px; } .ds-tab-idle { flex: 1; background: #f2f2d5; color: #4a4a4a; border: 1px solid #4a4a4a; padding: 5px 8px; font-size: 11px; }"
     }
   ],
   "narrative": {
-    "northStar": "Atlas Urbano de Infraestructura",
-    "overview": "El sistema visual organiza la mesa de trabajo hidráulica como un plano técnico de ingeniería civil de alta legibilidad diurna: una envolvente de comando en obsidiana mate (#131820) sostiene los parámetros y herramientas de recorrido de grafos, mientras el lienzo central de porcelana reticulada (#F7F8FA) y los paneles editoriales blancos (#FFFFFF) garantizan contraste nítido en portátiles y proyectores de aula.\n\nLa densidad y la jerarquía responden al modo operativo de ingeniería: divisores rectos de 1px, ausencia total de tarjetas decorativas anidadas y una cuarentena cromática estricta para que las cinco categorías de utilización hidráulica, el sumidero de la PTAR Punta Canoa y las rutas BFS/DFS activas destaquen de inmediato sin ruido visual.",
+    "northStar": "Lámina Cartográfica de Archivo Hidráulico",
+    "overview": "La interfaz organiza el simulador como una mesa cartográfica de ingeniería civil sobre papel vitela cálido (#FFFFE3), enmarcada por muelles estructurales en plata mineral (#CBCBCB), anclada arriba y abajo por una envolvente de comando en grafito (#4A4A4A) y articulada interactivamente en azul pizarra (#6D8196).",
     "keyCharacteristics": [
-      "Contraste diurno de plano cartográfico (#F7F8FA / #FFFFFF) anclado por una barra y riel de control en obsidiana (#131820).",
-      "Cuarentena cromática estricta: los tonos semánticos pertenecen exclusivamente a la escala oficial de 5 niveles de la Sección 7, a la PTAR (#0F766E) y al foco cobalto (#0369A1 / #38BDF8).",
-      "Numerales tabulares monoespaciados alineados en banda KPI, tablas de criticidad, inspector y comparativa de escenarios.",
-      "Iconografía vectorial uniforme generada con Pillow mediante supermuestreo 3x (src/gui/icons.py), sin glifos Unicode informales."
+      "Cuatro anclas cromáticas estrictas (#4A4A4A, #CBCBCB, #FFFFE3, #6D8196) con separación arquitectónica por filetes de 1px y reglas de acento de 2px–3px.",
+      "Cuarentena cromática estricta: los colores de semáforo permanecen reservados exclusivamente para la escala oficial de 5 niveles de la Sección 7 y las alertas de balance/sobrecarga.",
+      "Presentación 100 % en español en controles, escenarios, tablas, inspector, tooltips y gráficas.",
+      "Iconografía vectorial rasterizada con supermuestreo 3x en src/gui/icons.py (Pillow)."
     ],
     "rules": [
-      { "name": "The Color Quarantine Rule", "body": "Ningún elemento decorativo utiliza colores saturados; los tonos verdes, ámbar, naranja y rojo quedan restringidos estrictamente a los 5 tramos de utilización hidráulica, la PTAR Punta Canoa y los indicadores de conservación de masa.", "section": "colors" },
-      { "name": "The Tabular Numerals Rule", "body": "Todo caudal, porcentaje de utilización, tiempo de simulación y error de balance de masa se renderiza en la fuente monoespaciada (self.mono_font) para mantener columnas estables durante la reproducción cuadro a cuadro.", "section": "typography" },
-      { "name": "The Flat-By-Hairline Rule", "body": "Las regiones no apilan tarjetas ni sombras; cada separación estructural usa una línea recta de 1px o un cambio limpio de plano tonal.", "section": "elevation" }
+      { "name": "The Color Quarantine Rule", "body": "Ningún elemento decorativo introduce colores ajenos a #4A4A4A, #CBCBCB, #FFFFE3 y #6D8196.", "section": "colors" },
+      { "name": "The Tabular Numerals Rule", "body": "Todo caudal, porcentaje de utilización, tiempo de simulación y error de balance de masa se renderiza en fuente monoespaciada.", "section": "typography" }
     ],
     "dos": [
-      "Do mantener los 5 colores oficiales de utilización de la Sección 7 intactos sobre el lienzo y las leyendas.",
-      "Do adaptar columnas (displaycolumns), textos de pestañas y visibilidad de barras auxiliares según el ancho real del contenedor, sin recortar cifras ni encabezados.",
-      "Do actualizar únicamente las líneas cursoras de TemporalChartsPanel durante la reproducción temporal para evitar parpadeos de Matplotlib.",
-      "Do usar iconos vectoriales rasterizados desde src/gui/icons.py (Pillow) en todos los controles de acción y transporte."
+      "Do mantener toda la presentación visible en español y la escala oficial de 5 colores de la Sección 7 intacta.",
+      "Do adaptar columnas y encabezados de tree_critical y tree_comp al ancho real del panel derecho.",
+      "Do actualizar únicamente las líneas cursoras de TemporalChartsPanel durante la reproducción temporal.",
+      "Do usar iconos vectoriales rasterizados desde src/gui/icons.py."
     ],
     "donts": [
-      "Don't introducir tarjetas con bordes redondeados pesados, gradientes decorativos ni colores ajenos fuera de la paleta definida.",
-      "Don't colocar etiquetas de sección numeradas (01 / 02), kickers decorativos ni metadatos del tema en la barra de estado.",
-      "Don't permitir que las etiquetas del grafo se superpongan sobre nodos vecinos o crucen el eje de tuberías verticales.",
-      "Don't usar glifos Unicode o emojis como sistema de iconos en botones o menús."
+      "Don't introducir colores saturados fuera de la paleta definida y la escala de la Sección 7.",
+      "Don't usar glifos Unicode informales como sistema de iconos ni sombras paralelas.",
+      "Don't acoplar los textos traducidos al español de la GUI con los valores internos en inglés exigidos por SimulationConfig."
     ]
   }
 }
