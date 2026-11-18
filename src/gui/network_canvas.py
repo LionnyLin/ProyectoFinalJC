@@ -2,7 +2,7 @@
 
 import math
 import tkinter as tk
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, Optional, Set, Tuple
 
 from src.data_structures import DirectedGraph, ManholeNode, PipeEdge
 from src.simulation.models import TimeStepSnapshot
@@ -10,22 +10,24 @@ from . import theme
 
 
 class NetworkCanvas(tk.Canvas):
-    """Canvas interactivo con zoom, paneo, tooltips y renderizado por escala de colores."""
+    """Canvas interactivo con retícula técnica, zoom, paneo, tooltips y escala de colores."""
 
     def __init__(
         self,
         master: tk.Misc,
+        ui_font: str = "Segoe UI",
         on_select_pipe: Optional[Callable[[str], None]] = None,
         on_select_node: Optional[Callable[[str], None]] = None,
         **kwargs,
     ) -> None:
         super().__init__(
             master,
-            bg=theme.BG_CANVAS,
+            bg=theme.PLUM_DEEP,
             highlightthickness=1,
-            highlightbackground=theme.BORDER_COLOR,
+            highlightbackground=theme.PLUM_BORDER,
             **kwargs,
         )
+        self.ui_font = ui_font
         self.graph: Optional[DirectedGraph] = None
         self.snapshot: Optional[TimeStepSnapshot] = None
         self.on_select_pipe = on_select_pipe
@@ -38,14 +40,12 @@ class NetworkCanvas(tk.Canvas):
         self.show_pipe_labels: bool = True
         self.show_util_labels: bool = True
 
-        # Transformación de vista (zoom y paneo)
         self._zoom: float = 1.0
         self._pan_x: float = 0.0
         self._pan_y: float = 0.0
         self._drag_start: Optional[Tuple[int, int]] = None
         self._dragged: bool = False
 
-        # Mapeos inversos de IDs de canvas a IDs del grafo
         self._item_to_pipe: Dict[int, str] = {}
         self._item_to_node: Dict[int, str] = {}
         self._tooltip_window: Optional[tk.Toplevel] = None
@@ -102,8 +102,8 @@ class NetworkCanvas(tk.Canvas):
     def _world_to_screen(self, nx: float, ny: float) -> Tuple[float, float]:
         w = max(200, self.winfo_width())
         h = max(200, self.winfo_height())
-        pad_x = 56.0
-        pad_y = 46.0
+        pad_x = 58.0
+        pad_y = 48.0
         base_x = pad_x + nx * (w - 2 * pad_x)
         base_y = pad_y + ny * (h - 2 * pad_y)
         cx, cy = w / 2.0, h / 2.0
@@ -152,10 +152,7 @@ class NetworkCanvas(tk.Canvas):
         if was_dragged:
             return
 
-        # Detección de clic en nodo o tubería
-        clicked = self.find_overlapping(
-            event.x - 5, event.y - 5, event.x + 5, event.y + 5
-        )
+        clicked = self.find_overlapping(event.x - 5, event.y - 5, event.x + 5, event.y + 5)
         for item in reversed(clicked):
             if item in self._item_to_node:
                 nid = self._item_to_node[item]
@@ -174,9 +171,7 @@ class NetworkCanvas(tk.Canvas):
     def _on_mouse_move(self, event: tk.Event) -> None:
         if self.graph is None or self._drag_start is not None:
             return
-        items = self.find_overlapping(
-            event.x - 4, event.y - 4, event.x + 4, event.y + 4
-        )
+        items = self.find_overlapping(event.x - 4, event.y - 4, event.x + 4, event.y + 4)
         hover_key = None
         tooltip_text = None
         for item in reversed(items):
@@ -206,10 +201,10 @@ class NetworkCanvas(tk.Canvas):
         role = {"source": "Alcantarilla Fuente", "sink": "Sumidero / PTAR Punta Canoa"}.get(
             node.node_type, "Pozo de Inspección"
         )
-        lines = [f"Nodo {node.node_id} — {role}"]
+        lines = [f"Nodo {node.node_id} · {role}"]
         if self.snapshot and node.node_id in self.snapshot.node_states:
             st = self.snapshot.node_states[node.node_id]
-            lines.append(f"Entrada: {st.inflow_m3s:.4f} m³/s | Salida: {st.outflow_m3s:.4f} m³/s")
+            lines.append(f"Entrada: {st.inflow_m3s:.4f} m³/s  |  Salida: {st.outflow_m3s:.4f} m³/s")
             if st.stored_volume_m3 > 1e-4:
                 lines.append(f"Almacenamiento por sobrecarga: {st.stored_volume_m3:.2f} m³")
         return "\n".join(lines)
@@ -217,12 +212,12 @@ class NetworkCanvas(tk.Canvas):
     def _build_pipe_tooltip(self, pipe: PipeEdge) -> str:
         lines = [
             f"Tubería {pipe.pipe_id}: {pipe.from_node} → {pipe.to_node}",
-            f"Ø {pipe.diameter_in:.0f}\" ({pipe.diameter_m:.4f} m) | L = {pipe.length_m:.1f} m | Qmax = {pipe.q_max_m3s:.4f} m³/s",
+            f"Ø {pipe.diameter_in:.0f}\" ({pipe.diameter_m:.4f} m)  ·  L = {pipe.length_m:.1f} m  ·  Qmax = {pipe.q_max_m3s:.4f} m³/s",
         ]
         if self.snapshot and pipe.pipe_id in self.snapshot.pipe_states:
             ps = self.snapshot.pipe_states[pipe.pipe_id]
             lines.append(
-                f"Caudal: {ps.flow_m3s:.4f} m³/s | Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
+                f"Caudal: {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
             )
         return "\n".join(lines)
 
@@ -235,13 +230,13 @@ class NetworkCanvas(tk.Canvas):
             tw,
             text=text,
             justify="left",
-            background="#0f172a",
-            foreground="#f8fafc",
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=5,
-            font=("Segoe UI", 9),
+            background=theme.PLUM_BASE,
+            foreground=theme.TEXT_PRIMARY,
+            highlightthickness=1,
+            highlightbackground=theme.XANTHOUS,
+            padx=10,
+            pady=6,
+            font=(self.ui_font, 9),
         )
         lbl.pack()
         self._tooltip_window = tw
@@ -251,20 +246,32 @@ class NetworkCanvas(tk.Canvas):
             self._tooltip_window.destroy()
             self._tooltip_window = None
 
+    def _draw_subtle_grid(self) -> None:
+        w = max(200, self.winfo_width())
+        h = max(200, self.winfo_height())
+        step = 36
+        grid_color = "#321031"
+        for gx in range(0, w, step):
+            self.create_line(gx, 0, gx, h, fill=grid_color, width=1)
+        for gy in range(0, h, step):
+            self.create_line(0, gy, w, gy, fill=grid_color, width=1)
+
     def redraw(self) -> None:
         self.delete("all")
         self._item_to_pipe.clear()
         self._item_to_node.clear()
+        self._draw_subtle_grid()
 
         if self.graph is None:
             return
 
         node_radius = max(9.0, min(18.0, 12.0 * math.sqrt(self._zoom)))
-        positions: Dict[str, Tuple[float, float]] = {}
-        for node in self.graph.nodes():
-            positions[node.node_id] = self._world_to_screen(node.x, node.y)
+        positions: Dict[str, Tuple[float, float]] = {
+            node.node_id: self._world_to_screen(node.x, node.y)
+            for node in self.graph.nodes()
+        }
 
-        # 1. Dibujar tuberías (aristas dirigidas)
+        # 1. Tuberías dirigidas
         for pipe in self.graph.pipes():
             p1 = positions.get(pipe.from_node)
             p2 = positions.get(pipe.to_node)
@@ -279,37 +286,41 @@ class NetworkCanvas(tk.Canvas):
                 continue
             ux, uy = dx / dist, dy / dist
 
-            sx1 = x1 + ux * (node_radius + 1)
-            sy1 = y1 + uy * (node_radius + 1)
-            sx2 = x2 - ux * (node_radius + 3)
-            sy2 = y2 - uy * (node_radius + 3)
+            sx1 = x1 + ux * (node_radius + 1.5)
+            sy1 = y1 + uy * (node_radius + 1.5)
+            sx2 = x2 - ux * (node_radius + 3.5)
+            sy2 = y2 - uy * (node_radius + 3.5)
 
             color = theme.PIPE_IDLE_COLOR
             util_pct = 0.0
             is_overloaded = False
             if self.snapshot and pipe.pipe_id in self.snapshot.pipe_states:
                 ps = self.snapshot.pipe_states[pipe.pipe_id]
-                color = ps.category.color_hex
+                color = "#991b1b" if ps.category.is_overloaded else ps.category.color_hex
                 util_pct = ps.utilization_pct
                 is_overloaded = ps.category.is_overloaded
 
-            base_width = 2.0 + (pipe.diameter_in - 8.0) * 0.25
+            base_width = 2.1 + (pipe.diameter_in - 8.0) * 0.25
             width = base_width * min(1.5, max(0.85, math.sqrt(self._zoom)))
             if is_overloaded:
                 width += 1.8
+                # Halo sutil rojo claro para distinguir sobrecarga sobre fondo Plum oscuro
+                glow_id = self.create_line(
+                    sx1, sy1, sx2, sy2,
+                    fill="#fca5a5",
+                    width=width + 3.0,
+                    capstyle=tk.ROUND,
+                )
+                self._item_to_pipe[glow_id] = pipe.pipe_id
 
             is_selected = pipe.pipe_id == self.selected_pipe_id
             is_highlighted = pipe.pipe_id in self.highlight_pipe_ids
-
-            # Halo de selección o recorrido BFS/DFS
             if is_selected or is_highlighted:
-                halo_color = (
-                    theme.PIPE_SELECTED_HALO if is_selected else theme.PIPE_HIGHLIGHT_PATH
-                )
+                halo_color = theme.PIPE_SELECTED_HALO if is_selected else theme.XANTHOUS
                 halo_id = self.create_line(
                     sx1, sy1, sx2, sy2,
                     fill=halo_color,
-                    width=width + 5.0,
+                    width=width + 5.5,
                     capstyle=tk.ROUND,
                 )
                 self._item_to_pipe[halo_id] = pipe.pipe_id
@@ -327,13 +338,11 @@ class NetworkCanvas(tk.Canvas):
             )
             self._item_to_pipe[line_id] = pipe.pipe_id
 
-            # Etiqueta de tubería / % de utilización
             if self.show_pipe_labels or self.show_util_labels:
                 mx, my = (sx1 + sx2) / 2.0, (sy1 + sy2) / 2.0
-                # Desplazar ligeramente perpendicular para no tapar la línea
                 nx_perp, ny_perp = -uy, ux
-                lx = mx + nx_perp * 9.0
-                ly = my + ny_perp * 9.0
+                lx = mx + nx_perp * 9.5
+                ly = my + ny_perp * 9.5
                 parts = []
                 if self.show_pipe_labels:
                     parts.append(pipe.pipe_id)
@@ -344,17 +353,17 @@ class NetworkCanvas(tk.Canvas):
                         lx,
                         ly,
                         text=" ".join(parts),
-                        fill="#e2e8f0" if is_overloaded or is_selected else "#94a3b8",
-                        font=("Segoe UI", 7 if self._zoom < 1.2 else 8, "bold" if is_overloaded else "normal"),
+                        fill=theme.XANTHOUS if (is_overloaded or is_selected) else theme.TEXT_SECONDARY,
+                        font=(self.ui_font, 7 if self._zoom < 1.2 else 8, "bold" if is_overloaded else "normal"),
                     )
                     self._item_to_pipe[lbl_id] = pipe.pipe_id
 
-        # 2. Dibujar vértices (alcantarillas, pozos, sumidero PTAR)
+        # 2. Vértices (alcantarillas, pozos, sumidero PTAR)
         for node in self.graph.nodes():
             x, y = positions[node.node_id]
             r = node_radius
             if node.node_type == "sink":
-                r += 3.5
+                r += 4.0
                 fill = theme.NODE_SINK_FILL
                 outline = theme.NODE_SINK_BORDER
             elif node.node_type == "source":
@@ -364,15 +373,14 @@ class NetworkCanvas(tk.Canvas):
                 fill = theme.NODE_MANHOLE_FILL
                 outline = theme.NODE_MANHOLE_BORDER
 
-            # Indicador de sobrecarga almacenada en el pozo
             stored_vol = 0.0
             if self.snapshot and node.node_id in self.snapshot.node_states:
                 stored_vol = self.snapshot.node_states[node.node_id].stored_volume_m3
 
             if stored_vol > 1e-3:
                 ring_id = self.create_oval(
-                    x - r - 4, y - r - 4, x + r + 4, y + r + 4,
-                    outline=theme.NODE_SURCHARGE_RING,
+                    x - r - 4.5, y - r - 4.5, x + r + 4.5, y + r + 4.5,
+                    outline=theme.XANTHOUS,
                     width=2.2,
                     dash=(3, 2),
                 )
@@ -382,10 +390,10 @@ class NetworkCanvas(tk.Canvas):
                 sel_col = (
                     theme.PIPE_SELECTED_HALO
                     if node.node_id == self.selected_node_id
-                    else theme.PIPE_HIGHLIGHT_PATH
+                    else theme.XANTHOUS
                 )
                 ring2 = self.create_oval(
-                    x - r - 3, y - r - 3, x + r + 3, y + r + 3,
+                    x - r - 3.5, y - r - 3.5, x + r + 3.5, y + r + 3.5,
                     outline=sel_col,
                     width=2.5,
                 )
@@ -403,26 +411,26 @@ class NetworkCanvas(tk.Canvas):
                 x,
                 y,
                 text=node.node_id,
-                fill="#ffffff",
-                font=("Segoe UI", 8 if self._zoom < 1.2 else 9, "bold"),
+                fill=theme.TEXT_PRIMARY,
+                font=(self.ui_font, 8 if self._zoom < 1.2 else 9, "bold"),
             )
             self._item_to_node[txt_id] = node.node_id
 
             if node.node_type == "sink":
                 ptar_id = self.create_text(
                     x,
-                    y + r + 11,
+                    y + r + 12,
                     text="PTAR Punta Canoa",
                     fill=theme.NODE_SINK_BORDER,
-                    font=("Segoe UI", 8, "bold"),
+                    font=(self.ui_font, 8, "bold"),
                 )
                 self._item_to_node[ptar_id] = node.node_id
             elif node.node_type == "source":
                 src_tag = self.create_text(
                     x,
-                    y + r + 9,
+                    y + r + 10,
                     text="(S)",
-                    fill=theme.NODE_SOURCE_BORDER,
-                    font=("Segoe UI", 7, "bold"),
+                    fill=theme.XANTHOUS,
+                    font=(self.ui_font, 7, "bold"),
                 )
                 self._item_to_node[src_tag] = node.node_id

@@ -1,9 +1,9 @@
-"""Aplicación principal de escritorio (Tkinter) para la red de Ciudad Bicentenario."""
+"""Aplicación principal rediseñada (Plum #3B153A + Xanthous #F0C987 + arquitectura Impeccable)."""
 
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from src.algorithms import (
     bfs,
@@ -26,6 +26,7 @@ from src.simulation import (
     SimulationResult,
     TimeStepSnapshot,
     compare_all_scenarios,
+    generate_docx_report,
     generate_markdown_report,
 )
 from . import theme
@@ -34,14 +35,16 @@ from .network_canvas import NetworkCanvas
 
 
 class BicentenarioSewerApp(tk.Tk):
-    """Interfaz gráfica principal para simulación y análisis de la red de alcantarillado."""
+    """Interfaz gráfica moderna para simulación y análisis de la red de alcantarillado."""
 
     def __init__(self, initial_data_path: Optional[str] = None) -> None:
         super().__init__()
-        self.title("Simulador de Alcantarillado — Ciudad Bicentenario (Cartagena)")
-        self.geometry("1460x880")
-        self.minsize(1200, 720)
-        self.configure(bg=theme.BG_DARK)
+        self.title("Ciudad Bicentenario · Simulador Hidráulico de Alcantarillado")
+        self.geometry("1480x900")
+        self.minsize(1220, 740)
+        self.configure(bg=theme.PLUM_DEEP)
+
+        self.ui_font, self.mono_font, self.inter_loaded = theme.resolve_fonts(self)
 
         self.dataset: Optional[NetworkDataset] = None
         self.engine: Optional[SewerSimulationEngine] = None
@@ -55,7 +58,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._selected_node_id: Optional[str] = None
         self._updating_slider: bool = False
 
-        # Variables de control de UI
+        # Variables de control
         self.var_scenario = tk.StringVar()
         self.var_duration = tk.DoubleVar(value=90.0)
         self.var_storm_dur = tk.DoubleVar(value=60.0)
@@ -77,7 +80,6 @@ class BicentenarioSewerApp(tk.Tk):
         self._configure_styles()
         self._build_layout()
 
-        # Cargar dataset inicial automáticamente si existe
         default_path = initial_data_path or self._find_default_dataset()
         if default_path:
             self._load_path(default_path, silent_error=False)
@@ -97,159 +99,250 @@ class BicentenarioSewerApp(tk.Tk):
     def _configure_styles(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure(".", background=theme.BG_PANEL, foreground=theme.TEXT_PRIMARY, font=("Segoe UI", 9))
-        style.configure("TFrame", background=theme.BG_PANEL)
-        style.configure("Dark.TFrame", background=theme.BG_DARK)
-        style.configure("Card.TFrame", background=theme.BG_CARD)
-        style.configure("TLabel", background=theme.BG_PANEL, foreground=theme.TEXT_PRIMARY)
-        style.configure("Muted.TLabel", background=theme.BG_PANEL, foreground=theme.TEXT_MUTED, font=("Segoe UI", 8))
-        style.configure("Card.TLabel", background=theme.BG_CARD, foreground=theme.TEXT_PRIMARY)
-        style.configure("TNotebook", background=theme.BG_PANEL, borderwidth=0)
-        style.configure("TNotebook.Tab", background=theme.BG_CARD, foreground=theme.TEXT_SECONDARY, padding=(10, 5))
+        style.configure(
+            ".",
+            background=theme.PLUM_BASE,
+            foreground=theme.TEXT_PRIMARY,
+            font=(self.ui_font, 9),
+        )
+        style.configure("TFrame", background=theme.PLUM_BASE)
+        style.configure("TLabel", background=theme.PLUM_BASE, foreground=theme.TEXT_PRIMARY)
+        style.configure(
+            "TNotebook",
+            background=theme.PLUM_BASE,
+            borderwidth=0,
+            tabmargins=(4, 4, 4, 0),
+        )
+        style.configure(
+            "TNotebook.Tab",
+            background=theme.PLUM_BASE,
+            foreground=theme.TEXT_SECONDARY,
+            padding=(12, 7),
+            borderwidth=0,
+            font=(self.ui_font, 9, "bold"),
+        )
         style.map(
             "TNotebook.Tab",
-            background=[("selected", theme.ACCENT_BLUE)],
-            foreground=[("selected", "#0f172a")],
+            background=[("selected", theme.XANTHOUS), ("active", theme.PLUM_ELEVATED)],
+            foreground=[("selected", theme.XANTHOUS_INK), ("active", theme.TEXT_PRIMARY)],
         )
         style.configure(
             "Treeview",
-            background=theme.BG_CANVAS,
+            background=theme.PLUM_DEEP,
             foreground=theme.TEXT_PRIMARY,
-            fieldbackground=theme.BG_CANVAS,
-            rowheight=23,
+            fieldbackground=theme.PLUM_DEEP,
+            rowheight=25,
             borderwidth=0,
+            font=(self.ui_font, 9),
         )
         style.configure(
             "Treeview.Heading",
-            background=theme.BG_CARD,
-            foreground=theme.TEXT_PRIMARY,
-            font=("Segoe UI", 8, "bold"),
+            background=theme.PLUM_ELEVATED,
+            foreground=theme.XANTHOUS,
+            borderwidth=0,
+            font=(self.ui_font, 8, "bold"),
         )
-        style.map("Treeview", background=[("selected", "#1d4ed8")])
-        style.configure("TCombobox", fieldbackground=theme.BG_CANVAS, background=theme.BG_CARD, foreground=theme.TEXT_PRIMARY)
+        style.map(
+            "Treeview",
+            background=[("selected", theme.PLUM_ELEVATED)],
+            foreground=[("selected", theme.XANTHOUS)],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=theme.PLUM_DEEP,
+            background=theme.PLUM_ELEVATED,
+            foreground=theme.TEXT_PRIMARY,
+            bordercolor=theme.PLUM_BORDER,
+            arrowcolor=theme.XANTHOUS,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", theme.PLUM_DEEP)],
+            selectbackground=[("readonly", theme.PLUM_ELEVATED)],
+            selectforeground=[("readonly", theme.XANTHOUS)],
+        )
+        style.configure(
+            "Vertical.TScrollbar",
+            background=theme.PLUM_ELEVATED,
+            troughcolor=theme.PLUM_BASE,
+            bordercolor=theme.PLUM_BASE,
+            arrowcolor=theme.TEXT_SECONDARY,
+        )
+
+    def _make_btn(
+        self,
+        parent: tk.Misc,
+        text: str,
+        cmd,
+        primary: bool = False,
+        padx: int = 10,
+        pady: int = 5,
+        font_size: int = 9,
+    ) -> tk.Button:
+        """Crea un botón plano con jerarquía clara (Xanthous para acción primaria, Plum elevado para secundarias)."""
+        bg = theme.XANTHOUS if primary else theme.PLUM_ELEVATED
+        fg = theme.XANTHOUS_INK if primary else theme.TEXT_PRIMARY
+        hover_bg = theme.XANTHOUS_HOVER if primary else theme.PLUM_BORDER
+        btn = tk.Button(
+            parent,
+            text=text,
+            command=cmd,
+            bg=bg,
+            fg=fg,
+            activebackground=hover_bg,
+            activeforeground=fg,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=theme.XANTHOUS if primary else theme.PLUM_BORDER,
+            padx=padx,
+            pady=pady,
+            font=(self.ui_font, font_size, "bold"),
+            cursor="hand2",
+        )
+        btn.bind("<Enter>", lambda _e: btn.configure(bg=hover_bg))
+        btn.bind("<Leave>", lambda _e: btn.configure(bg=bg))
+        return btn
 
     def _build_layout(self) -> None:
-        # Barra superior
-        topbar = tk.Frame(self, bg=theme.BG_PANEL, height=48, bd=0)
+        # Barra superior minimalista con línea de acento Xanthous
+        tk.Frame(self, bg=theme.XANTHOUS, height=2).pack(side=tk.TOP, fill=tk.X)
+        topbar = tk.Frame(self, bg=theme.PLUM_BASE, height=52)
         topbar.pack(side=tk.TOP, fill=tk.X)
-        tk.Frame(self, bg=theme.BORDER_COLOR, height=1).pack(side=tk.TOP, fill=tk.X)
+        tk.Frame(self, bg=theme.PLUM_BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
 
+        title_block = tk.Frame(topbar, bg=theme.PLUM_BASE)
+        title_block.pack(side=tk.LEFT, padx=16, pady=8)
         tk.Label(
-            topbar,
-            text="Red de Alcantarillado — Ciudad Bicentenario (Cartagena)",
-            bg=theme.BG_PANEL,
+            title_block,
+            text="CIUDAD BICENTENARIO",
+            bg=theme.PLUM_BASE,
+            fg=theme.XANTHOUS,
+            font=(self.ui_font, 8, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            title_block,
+            text="Simulador Hidráulico · Red de Alcantarillado hacia PTAR Punta Canoa",
+            bg=theme.PLUM_BASE,
             fg=theme.TEXT_PRIMARY,
-            font=("Segoe UI", 12, "bold"),
-        ).pack(side=tk.LEFT, padx=14, pady=8)
+            font=(self.ui_font, 11, "bold"),
+        ).pack(anchor="w")
 
-        btn_specs = [
-            ("Cargar Excel", self._action_load_excel, "#0284c7"),
-            ("Cargar CSV", self._action_load_csv, "#0369a1"),
-            ("Exportar CSV", self._action_export_csv, "#334155"),
-            ("Generar Reporte", self._action_generate_report, "#059669"),
-            ("Supuestos", self._action_show_assumptions, "#475569"),
-        ]
-        for text, cmd, bg in reversed(btn_specs):
-            tk.Button(
-                topbar,
-                text=text,
-                command=cmd,
-                bg=bg,
-                fg="#ffffff",
-                activebackground="#38bdf8",
-                relief="flat",
-                padx=10,
-                pady=4,
-                font=("Segoe UI", 9, "bold"),
-                cursor="hand2",
-            ).pack(side=tk.RIGHT, padx=4, pady=8)
+        actions = tk.Frame(topbar, bg=theme.PLUM_BASE)
+        actions.pack(side=tk.RIGHT, padx=14, pady=10)
+        self._make_btn(actions, "Supuestos", self._action_show_assumptions, padx=10, pady=4, font_size=8).pack(side=tk.RIGHT, padx=4)
+        self._make_btn(actions, "Generar Reporte", self._action_generate_report, primary=True, padx=12, pady=4, font_size=8).pack(side=tk.RIGHT, padx=4)
+        self._make_btn(actions, "Exportar CSV", self._action_export_csv, padx=10, pady=4, font_size=8).pack(side=tk.RIGHT, padx=4)
+        self._make_btn(actions, "Cargar CSV", self._action_load_csv, padx=10, pady=4, font_size=8).pack(side=tk.RIGHT, padx=4)
+        self._make_btn(actions, "Cargar Excel", self._action_load_excel, padx=10, pady=4, font_size=8).pack(side=tk.RIGHT, padx=4)
 
-        # Contenedor principal de 3 columnas
+        # Paneles principales con divisores 1px (sin cards anidadas)
         main_pane = tk.PanedWindow(
             self,
             orient=tk.HORIZONTAL,
-            bg=theme.BORDER_COLOR,
-            sashwidth=4,
+            bg=theme.PLUM_BORDER,
+            sashwidth=2,
             bd=0,
         )
         main_pane.pack(fill=tk.BOTH, expand=True)
 
-        # Panel izquierdo con scroll
-        left_container = tk.Frame(main_pane, bg=theme.BG_PANEL, width=320)
-        left_canvas = tk.Canvas(left_container, bg=theme.BG_PANEL, highlightthickness=0, width=310)
+        # Rail izquierdo limpio sobre Plum base
+        left_container = tk.Frame(main_pane, bg=theme.PLUM_BASE, width=326)
+        left_canvas = tk.Canvas(left_container, bg=theme.PLUM_BASE, highlightthickness=0, width=314)
         left_scroll = ttk.Scrollbar(left_container, orient=tk.VERTICAL, command=left_canvas.yview)
-        self.left_frame = tk.Frame(left_canvas, bg=theme.BG_PANEL)
+        self.left_frame = tk.Frame(left_canvas, bg=theme.PLUM_BASE)
         self.left_frame.bind(
             "<Configure>",
             lambda _e: left_canvas.configure(scrollregion=left_canvas.bbox("all")),
         )
-        left_canvas.create_window((0, 0), window=self.left_frame, anchor="nw", width=308)
+        left_canvas.create_window((0, 0), window=self.left_frame, anchor="nw", width=312)
         left_canvas.configure(yscrollcommand=left_scroll.set)
         left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         left_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        main_pane.add(left_container, minsize=290)
+        main_pane.add(left_container, minsize=296)
 
         self._build_left_controls(self.left_frame)
 
-        # Panel central (Canvas del grafo + controles temporales)
-        center_frame = tk.Frame(main_pane, bg=theme.BG_DARK)
-        main_pane.add(center_frame, minsize=520)
+        # Área central: KPI strip + Canvas + Reproductor temporal
+        center_frame = tk.Frame(main_pane, bg=theme.PLUM_DEEP)
+        main_pane.add(center_frame, minsize=540)
         self._build_center_panel(center_frame)
 
-        # Panel derecho (Notebook con Inspector, Críticas, Gráficas, Comparación)
-        right_frame = tk.Frame(main_pane, bg=theme.BG_PANEL, width=430)
-        main_pane.add(right_frame, minsize=380)
+        # Panel derecho: Notebook editorial
+        right_frame = tk.Frame(main_pane, bg=theme.PLUM_BASE, width=440)
+        main_pane.add(right_frame, minsize=390)
         self._build_right_panel(right_frame)
 
         # Barra de estado inferior
-        self.status_var = tk.StringVar(value="Listo.")
-        statusbar = tk.Frame(self, bg=theme.BG_PANEL, height=24)
+        tk.Frame(self, bg=theme.PLUM_BORDER, height=1).pack(side=tk.BOTTOM, fill=tk.X)
+        statusbar = tk.Frame(self, bg=theme.PLUM_BASE, height=26)
         statusbar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.status_var = tk.StringVar(value="Listo.")
         tk.Label(
             statusbar,
             textvariable=self.status_var,
-            bg=theme.BG_PANEL,
+            bg=theme.PLUM_BASE,
             fg=theme.TEXT_SECONDARY,
-            font=("Segoe UI", 9),
+            font=(self.ui_font, 8),
             anchor="w",
-        ).pack(side=tk.LEFT, padx=10, pady=2)
+        ).pack(side=tk.LEFT, padx=12, pady=3)
 
-    def _make_section(self, parent: tk.Misc, title: str) -> tk.Frame:
-        card = tk.Frame(parent, bg=theme.BG_CARD, highlightbackground=theme.BORDER_COLOR, highlightthickness=1)
-        card.pack(fill=tk.X, padx=8, pady=5)
+        font_tag = "Tipografía: Inter 500" if self.inter_loaded else f"Tipografía: {self.ui_font} (fallback de Inter)"
         tk.Label(
-            card,
-            text=title,
-            bg=theme.BG_CARD,
-            fg=theme.ACCENT_BLUE,
-            font=("Segoe UI", 9, "bold"),
+            statusbar,
+            text=f"{font_tag}  ·  Plum #3B153A / Xanthous #F0C987",
+            bg=theme.PLUM_BASE,
+            fg=theme.TEXT_MUTED,
+            font=(self.ui_font, 8),
+        ).pack(side=tk.RIGHT, padx=12, pady=3)
+
+    def _make_rail_section(self, parent: tk.Misc, eyebrow: str, add_divider: bool = True) -> tk.Frame:
+        """Sección limpia en el rail lateral separada por línea fina y aire tipográfico (cero cards-in-cards)."""
+        if add_divider:
+            tk.Frame(parent, bg=theme.PLUM_BORDER, height=1).pack(fill=tk.X, padx=14, pady=(8, 2))
+        sec = tk.Frame(parent, bg=theme.PLUM_BASE)
+        sec.pack(fill=tk.X, padx=14, pady=8)
+        tk.Label(
+            sec,
+            text=eyebrow.upper(),
+            bg=theme.PLUM_BASE,
+            fg=theme.XANTHOUS,
+            font=(self.ui_font, 8, "bold"),
             anchor="w",
-        ).pack(fill=tk.X, padx=8, pady=(6, 4))
-        body = tk.Frame(card, bg=theme.BG_CARD)
-        body.pack(fill=tk.X, padx=8, pady=(0, 8))
-        return body
+        ).pack(fill=tk.X, pady=(0, 6))
+        return sec
 
     def _build_left_controls(self, parent: tk.Frame) -> None:
-        # 1. Escenario y Parámetros
-        sec_sim = self._make_section(parent, "1. Escenario y Parámetros Hidráulicos")
+        # 1. Escenario y parámetros hidráulicos
+        sec_sim = self._make_rail_section(parent, "01 · Escenario y Parámetros", add_divider=False)
 
-        tk.Label(sec_sim, text="Escenario de precipitación:", bg=theme.BG_CARD, fg=theme.TEXT_SECONDARY, font=("Segoe UI", 8)).pack(anchor="w")
+        tk.Label(
+            sec_sim,
+            text="Escenario de precipitación",
+            bg=theme.PLUM_BASE,
+            fg=theme.TEXT_SECONDARY,
+            font=(self.ui_font, 8),
+        ).pack(anchor="w", pady=(0, 2))
         self.combo_scenario = ttk.Combobox(sec_sim, textvariable=self.var_scenario, state="readonly")
-        self.combo_scenario.pack(fill=tk.X, pady=(2, 6))
+        self.combo_scenario.pack(fill=tk.X, pady=(0, 8))
 
-        grid = tk.Frame(sec_sim, bg=theme.BG_CARD)
+        grid = tk.Frame(sec_sim, bg=theme.PLUM_BASE)
         grid.pack(fill=tk.X)
         fields = [
-            ("Duración sim. (min):", self.var_duration, 10, 360, 10),
-            ("Duración lluvia (min):", self.var_storm_dur, 0, 360, 5),
-            ("Paso Δt (min):", self.var_dt, 0.5, 10.0, 0.5),
-            ("Ingreso pluvial (%):", self.var_ingress_pct, 0.5, 100.0, 0.5),
-            ("Caudal sanitario (m³/s):", self.var_dry_flow, 0.0, 0.05, 0.001),
+            ("Duración simulación (min)", self.var_duration, 10, 360, 10),
+            ("Duración lluvia (min)", self.var_storm_dur, 0, 360, 5),
+            ("Paso temporal Δt (min)", self.var_dt, 0.5, 10.0, 0.5),
+            ("Ingreso pluvial (%)", self.var_ingress_pct, 0.5, 100.0, 0.5),
+            ("Caudal sanitario (m³/s)", self.var_dry_flow, 0.0, 0.05, 0.001),
         ]
         for row_i, (label, var, frm, to, inc) in enumerate(fields):
-            tk.Label(grid, text=label, bg=theme.BG_CARD, fg=theme.TEXT_SECONDARY, font=("Segoe UI", 8)).grid(
-                row=row_i, column=0, sticky="w", pady=2
-            )
+            tk.Label(
+                grid,
+                text=label,
+                bg=theme.PLUM_BASE,
+                fg=theme.TEXT_SECONDARY,
+                font=(self.ui_font, 8),
+            ).grid(row=row_i, column=0, sticky="w", pady=3)
             tk.Spinbox(
                 grid,
                 textvariable=var,
@@ -257,41 +350,39 @@ class BicentenarioSewerApp(tk.Tk):
                 to=to,
                 increment=inc,
                 width=9,
-                bg=theme.BG_CANVAS,
+                bg=theme.PLUM_DEEP,
                 fg=theme.TEXT_PRIMARY,
-                buttonbackground=theme.BG_PANEL,
+                buttonbackground=theme.PLUM_ELEVATED,
+                insertbackground=theme.XANTHOUS,
+                highlightthickness=1,
+                highlightbackground=theme.PLUM_BORDER,
                 relief="flat",
-                font=("Segoe UI", 9),
-            ).grid(row=row_i, column=1, sticky="e", pady=2)
+                font=(self.mono_font, 9),
+            ).grid(row=row_i, column=1, sticky="e", pady=3)
         grid.columnconfigure(0, weight=1)
 
-        # Presets rápidos del método racional vs calibrado
-        preset_row = tk.Frame(sec_sim, bg=theme.BG_CARD)
-        preset_row.pack(fill=tk.X, pady=(4, 4))
-        tk.Button(
+        preset_row = tk.Frame(sec_sim, bg=theme.PLUM_BASE)
+        preset_row.pack(fill=tk.X, pady=(6, 6))
+        self._make_btn(
             preset_row,
-            text="Calibrado (2.5%)",
-            command=lambda: self._apply_preset(2.5, 0.003),
-            bg="#334155",
-            fg="#ffffff",
-            relief="flat",
-            font=("Segoe UI", 8),
-            cursor="hand2",
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
-        tk.Button(
+            "Calibrado (2.5%)",
+            lambda: self._apply_preset(2.5, 0.003),
+            padx=6,
+            pady=4,
+            font_size=8,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+        self._make_btn(
             preset_row,
-            text="Racional 100%",
-            command=lambda: self._apply_preset(100.0, 0.0),
-            bg="#334155",
-            fg="#ffffff",
-            relief="flat",
-            font=("Segoe UI", 8),
-            cursor="hand2",
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+            "Racional 100%",
+            lambda: self._apply_preset(100.0, 0.0),
+            padx=6,
+            pady=4,
+            font_size=8,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
 
-        row_rules = tk.Frame(sec_sim, bg=theme.BG_CARD)
-        row_rules.pack(fill=tk.X, pady=2)
-        tk.Label(row_rules, text="Bifurcación:", bg=theme.BG_CARD, fg=theme.TEXT_SECONDARY, font=("Segoe UI", 8)).pack(side=tk.LEFT)
+        row_rules = tk.Frame(sec_sim, bg=theme.PLUM_BASE)
+        row_rules.pack(fill=tk.X, pady=3)
+        tk.Label(row_rules, text="Bifurcación", bg=theme.PLUM_BASE, fg=theme.TEXT_SECONDARY, font=(self.ui_font, 8)).pack(side=tk.LEFT)
         ttk.Combobox(
             row_rules,
             textvariable=self.var_split_rule,
@@ -300,9 +391,9 @@ class BicentenarioSewerApp(tk.Tk):
             width=12,
         ).pack(side=tk.RIGHT)
 
-        row_hyeto = tk.Frame(sec_sim, bg=theme.BG_CARD)
-        row_hyeto.pack(fill=tk.X, pady=2)
-        tk.Label(row_hyeto, text="Hietograma:", bg=theme.BG_CARD, fg=theme.TEXT_SECONDARY, font=("Segoe UI", 8)).pack(side=tk.LEFT)
+        row_hyeto = tk.Frame(sec_sim, bg=theme.PLUM_BASE)
+        row_hyeto.pack(fill=tk.X, pady=3)
+        tk.Label(row_hyeto, text="Hietograma", bg=theme.PLUM_BASE, fg=theme.TEXT_SECONDARY, font=(self.ui_font, 8)).pack(side=tk.LEFT)
         ttk.Combobox(
             row_hyeto,
             textvariable=self.var_hyetograph,
@@ -311,186 +402,173 @@ class BicentenarioSewerApp(tk.Tk):
             width=12,
         ).pack(side=tk.RIGHT)
 
-        tk.Button(
+        self._make_btn(
             sec_sim,
-            text="▶  Ejecutar Simulación",
-            command=self.run_simulation,
-            bg="#0284c7",
-            fg="#ffffff",
-            activebackground="#38bdf8",
-            relief="flat",
-            pady=6,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
-        ).pack(fill=tk.X, pady=(6, 0))
+            "▶  Ejecutar Simulación",
+            self.run_simulation,
+            primary=True,
+            pady=8,
+            font_size=9,
+        ).pack(fill=tk.X, pady=(10, 0))
 
         # 2. Leyenda de colores (Sección 7)
-        sec_leg = self._make_section(parent, "2. Escala de Utilización (Sección 7)")
+        sec_leg = self._make_rail_section(parent, "02 · Escala de Utilización")
         self._legend_count_labels.clear()
         for rng, color_hex, desc in theme.COLOR_SCALE_LEGEND:
-            row = tk.Frame(sec_leg, bg=theme.BG_CARD)
-            row.pack(fill=tk.X, pady=1.5)
-            swatch = tk.Canvas(row, width=14, height=14, bg=color_hex, highlightthickness=1, highlightbackground="#0f172a")
-            swatch.pack(side=tk.LEFT, padx=(0, 6))
-            tk.Label(row, text=f"{rng}  {desc}", bg=theme.BG_CARD, fg=theme.TEXT_SECONDARY, font=("Segoe UI", 8)).pack(side=tk.LEFT)
-            cnt_lbl = tk.Label(row, text="0", bg=theme.BG_CARD, fg=theme.TEXT_PRIMARY, font=("Segoe UI", 8, "bold"))
+            row = tk.Frame(sec_leg, bg=theme.PLUM_BASE)
+            row.pack(fill=tk.X, pady=2)
+            swatch = tk.Canvas(
+                row,
+                width=12,
+                height=12,
+                bg=color_hex,
+                highlightthickness=1,
+                highlightbackground=theme.PLUM_DEEP,
+            )
+            swatch.pack(side=tk.LEFT, padx=(0, 8))
+            tk.Label(
+                row,
+                text=f"{rng} · {desc}",
+                bg=theme.PLUM_BASE,
+                fg=theme.TEXT_SECONDARY,
+                font=(self.ui_font, 8),
+            ).pack(side=tk.LEFT)
+            cnt_lbl = tk.Label(
+                row,
+                text="0",
+                bg=theme.PLUM_BASE,
+                fg=theme.XANTHOUS,
+                font=(self.mono_font, 8, "bold"),
+            )
             cnt_lbl.pack(side=tk.RIGHT)
             self._legend_count_labels.append(cnt_lbl)
 
-        # 3. Consulta rápida y Recorridos BFS / DFS
-        sec_alg = self._make_section(parent, "3. Consultas y Recorridos (BFS / DFS)")
+        # 3. Consultas y recorridos BFS / DFS
+        sec_alg = self._make_rail_section(parent, "03 · Consultas y Recorridos (BFS / DFS)")
 
-        search_row = tk.Frame(sec_alg, bg=theme.BG_CARD)
-        search_row.pack(fill=tk.X, pady=(0, 5))
+        search_row = tk.Frame(sec_alg, bg=theme.PLUM_BASE)
+        search_row.pack(fill=tk.X, pady=(0, 6))
         ent = tk.Entry(
             search_row,
             textvariable=self.var_search,
-            bg=theme.BG_CANVAS,
+            bg=theme.PLUM_DEEP,
             fg=theme.TEXT_PRIMARY,
-            insertbackground=theme.TEXT_PRIMARY,
+            insertbackground=theme.XANTHOUS,
+            highlightthickness=1,
+            highlightbackground=theme.PLUM_BORDER,
             relief="flat",
+            font=(self.ui_font, 9),
         )
-        ent.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+        ent.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
         ent.bind("<Return>", lambda _e: self._action_search())
-        tk.Button(
-            search_row,
-            text="Buscar",
-            command=self._action_search,
-            bg="#0284c7",
-            fg="#ffffff",
-            relief="flat",
-            padx=8,
-            font=("Segoe UI", 8, "bold"),
-            cursor="hand2",
-        ).pack(side=tk.RIGHT, padx=(4, 0))
+        self._make_btn(search_row, "Buscar", self._action_search, primary=True, padx=10, pady=4, font_size=8).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
 
-        trav_grid = tk.Frame(sec_alg, bg=theme.BG_CARD)
+        trav_grid = tk.Frame(sec_alg, bg=theme.PLUM_BASE)
         trav_grid.pack(fill=tk.X, pady=2)
-        tk.Label(trav_grid, text="Origen:", bg=theme.BG_CARD, fg=theme.TEXT_SECONDARY, font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w")
+        tk.Label(trav_grid, text="Nodo origen", bg=theme.PLUM_BASE, fg=theme.TEXT_SECONDARY, font=(self.ui_font, 8)).grid(row=0, column=0, sticky="w", pady=2)
         self.combo_bfs_start = ttk.Combobox(trav_grid, textvariable=self.var_bfs_start, width=10)
         self.combo_bfs_start.grid(row=0, column=1, sticky="e", pady=2)
-        tk.Label(trav_grid, text="Destino:", bg=theme.BG_CARD, fg=theme.TEXT_SECONDARY, font=("Segoe UI", 8)).grid(row=1, column=0, sticky="w")
+        tk.Label(trav_grid, text="Nodo destino", bg=theme.PLUM_BASE, fg=theme.TEXT_SECONDARY, font=(self.ui_font, 8)).grid(row=1, column=0, sticky="w", pady=2)
         self.combo_bfs_target = ttk.Combobox(trav_grid, textvariable=self.var_bfs_target, width=10)
         self.combo_bfs_target.grid(row=1, column=1, sticky="e", pady=2)
         trav_grid.columnconfigure(0, weight=1)
 
-        btn_trav = tk.Frame(sec_alg, bg=theme.BG_CARD)
-        btn_trav.pack(fill=tk.X, pady=4)
+        btn_trav = tk.Frame(sec_alg, bg=theme.PLUM_BASE)
+        btn_trav.pack(fill=tk.X, pady=6)
         for text, cmd in [
             ("BFS", lambda: self._run_traversal("BFS")),
             ("DFS", lambda: self._run_traversal("DFS")),
             ("Aguas Abajo", lambda: self._run_trace("down")),
             ("Limpiar", self._clear_highlights),
         ]:
-            tk.Button(
-                btn_trav,
-                text=text,
-                command=cmd,
-                bg="#334155",
-                fg="#ffffff",
-                relief="flat",
-                font=("Segoe UI", 8, "bold"),
-                cursor="hand2",
-            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1.5)
+            self._make_btn(btn_trav, text, cmd, padx=6, pady=4, font_size=8).pack(
+                side=tk.LEFT, fill=tk.X, expand=True, padx=2
+            )
 
         self.txt_traversal = tk.Text(
             sec_alg,
             height=5,
-            bg=theme.BG_CANVAS,
+            bg=theme.PLUM_DEEP,
             fg=theme.TEXT_SECONDARY,
+            highlightthickness=1,
+            highlightbackground=theme.PLUM_BORDER,
             relief="flat",
-            font=("Consolas", 8),
+            font=(self.mono_font, 8),
             wrap=tk.WORD,
+            padx=6,
+            pady=5,
         )
-        self.txt_traversal.pack(fill=tk.X, pady=(2, 0))
+        self.txt_traversal.pack(fill=tk.X, pady=(2, 4))
         self.txt_traversal.configure(state=tk.DISABLED)
 
     def _build_center_panel(self, parent: tk.Frame) -> None:
-        # Barra superior del canvas
-        canvas_bar = tk.Frame(parent, bg=theme.BG_PANEL, height=34)
-        canvas_bar.pack(side=tk.TOP, fill=tk.X)
+        # Franja superior de métricas KPI (sin bordes pesados, solo separación fina)
+        kpi_strip = tk.Frame(parent, bg=theme.PLUM_BASE)
+        kpi_strip.pack(side=tk.TOP, fill=tk.X)
+        tk.Frame(parent, bg=theme.PLUM_BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
 
         self.lbl_clock = tk.Label(
-            canvas_bar,
-            text="t = 0.0 min  |  Escenario: -",
-            bg=theme.BG_PANEL,
-            fg=theme.ACCENT_GOLD,
-            font=("Segoe UI", 10, "bold"),
+            kpi_strip,
+            text="t = 0.0 min  ·  Escenario: -",
+            bg=theme.PLUM_BASE,
+            fg=theme.XANTHOUS,
+            font=(self.ui_font, 10, "bold"),
         )
-        self.lbl_clock.pack(side=tk.LEFT, padx=10, pady=5)
+        self.lbl_clock.pack(side=tk.LEFT, padx=14, pady=8)
 
-        tk.Button(
-            canvas_bar,
-            text="Ajustar Vista",
-            command=lambda: self.network_canvas.reset_view(),
-            bg="#334155",
-            fg="#ffffff",
-            relief="flat",
-            padx=8,
-            font=("Segoe UI", 8),
-            cursor="hand2",
-        ).pack(side=tk.RIGHT, padx=6, pady=4)
-
-        tk.Checkbutton(
-            canvas_bar,
-            text="% Util.",
-            variable=self.var_show_util_labels,
-            command=self._toggle_labels,
-            bg=theme.BG_PANEL,
+        self.lbl_kpi_summary = tk.Label(
+            kpi_strip,
+            text="Máx Util: -   |   Críticas: -   |   PTAR 31: -",
+            bg=theme.PLUM_BASE,
             fg=theme.TEXT_SECONDARY,
-            selectcolor=theme.BG_CANVAS,
-            activebackground=theme.BG_PANEL,
-            font=("Segoe UI", 8),
-        ).pack(side=tk.RIGHT, padx=4)
+            font=(self.mono_font, 9),
+        )
+        self.lbl_kpi_summary.pack(side=tk.LEFT, padx=10, pady=8)
 
-        tk.Checkbutton(
-            canvas_bar,
-            text="IDs Tuberías",
-            variable=self.var_show_pipe_labels,
-            command=self._toggle_labels,
-            bg=theme.BG_PANEL,
-            fg=theme.TEXT_SECONDARY,
-            selectcolor=theme.BG_CANVAS,
-            activebackground=theme.BG_PANEL,
-            font=("Segoe UI", 8),
-        ).pack(side=tk.RIGHT, padx=4)
+        view_opts = tk.Frame(kpi_strip, bg=theme.PLUM_BASE)
+        view_opts.pack(side=tk.RIGHT, padx=10, pady=6)
+        self._make_btn(view_opts, "Ajustar Vista", lambda: self.network_canvas.reset_view(), padx=8, pady=3, font_size=8).pack(side=tk.RIGHT, padx=4)
 
-        # Canvas interactivo del grafo
+        for label, var in [("% Util.", self.var_show_util_labels), ("IDs", self.var_show_pipe_labels)]:
+            tk.Checkbutton(
+                view_opts,
+                text=label,
+                variable=var,
+                command=self._toggle_labels,
+                bg=theme.PLUM_BASE,
+                fg=theme.TEXT_SECONDARY,
+                selectcolor=theme.PLUM_DEEP,
+                activebackground=theme.PLUM_BASE,
+                activeforeground=theme.XANTHOUS,
+                font=(self.ui_font, 8),
+            ).pack(side=tk.RIGHT, padx=4)
+
+        # Lienzo interactivo del grafo
         self.network_canvas = NetworkCanvas(
             parent,
+            ui_font=self.ui_font,
             on_select_pipe=self._on_pipe_selected,
             on_select_node=self._on_node_selected,
         )
-        self.network_canvas.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        self.network_canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        # Barra de control temporal (RF09)
-        player = tk.Frame(parent, bg=theme.BG_PANEL)
-        player.pack(side=tk.BOTTOM, fill=tk.X, padx=4, pady=(0, 4))
+        # Barra de reproducción temporal (RF09)
+        tk.Frame(parent, bg=theme.PLUM_BORDER, height=1).pack(side=tk.BOTTOM, fill=tk.X)
+        player = tk.Frame(parent, bg=theme.PLUM_BASE)
+        player.pack(side=tk.BOTTOM, fill=tk.X)
 
-        controls_row = tk.Frame(player, bg=theme.BG_PANEL)
-        controls_row.pack(fill=tk.X, padx=8, pady=(6, 2))
+        controls_row = tk.Frame(player, bg=theme.PLUM_BASE)
+        controls_row.pack(fill=tk.X, padx=12, pady=(8, 4))
 
-        for label, cmd, bg in [
-            ("⏮ Inicio", self._player_reset, "#334155"),
-            ("◀ -1", lambda: self._player_step(-1), "#334155"),
-            ("▶ Iniciar / Reanudar", self._player_play, "#059669"),
-            ("⏸ Pausar", self._player_pause, "#d97706"),
-            ("+1 ▶", lambda: self._player_step(1), "#334155"),
-        ]:
-            tk.Button(
-                controls_row,
-                text=label,
-                command=cmd,
-                bg=bg,
-                fg="#ffffff",
-                relief="flat",
-                padx=8,
-                pady=3,
-                font=("Segoe UI", 8, "bold"),
-                cursor="hand2",
-            ).pack(side=tk.LEFT, padx=2)
+        self._make_btn(controls_row, "⏮ Inicio", self._player_reset, padx=8, pady=4, font_size=8).pack(side=tk.LEFT, padx=2)
+        self._make_btn(controls_row, "◀ -1", lambda: self._player_step(-1), padx=8, pady=4, font_size=8).pack(side=tk.LEFT, padx=2)
+        self._make_btn(controls_row, "▶ Reproducir", self._player_play, primary=True, padx=12, pady=4, font_size=8).pack(side=tk.LEFT, padx=4)
+        self._make_btn(controls_row, "⏸ Pausar", self._player_pause, padx=8, pady=4, font_size=8).pack(side=tk.LEFT, padx=2)
+        self._make_btn(controls_row, "+1 ▶", lambda: self._player_step(1), padx=8, pady=4, font_size=8).pack(side=tk.LEFT, padx=2)
 
-        tk.Label(controls_row, text="Vel:", bg=theme.BG_PANEL, fg=theme.TEXT_MUTED, font=("Segoe UI", 8)).pack(side=tk.LEFT, padx=(10, 2))
+        tk.Label(controls_row, text="Velocidad", bg=theme.PLUM_BASE, fg=theme.TEXT_MUTED, font=(self.ui_font, 8)).pack(side=tk.LEFT, padx=(12, 4))
         ttk.Combobox(
             controls_row,
             textvariable=self.var_speed,
@@ -501,10 +579,10 @@ class BicentenarioSewerApp(tk.Tk):
 
         self.lbl_mass_audit = tk.Label(
             controls_row,
-            text="Balance de masa: -",
-            bg=theme.BG_PANEL,
-            fg="#34d399",
-            font=("Segoe UI", 8, "bold"),
+            text="Conservación de masa: -",
+            bg=theme.PLUM_BASE,
+            fg="#34D399",
+            font=(self.mono_font, 8, "bold"),
         )
         self.lbl_mass_audit.pack(side=tk.RIGHT, padx=4)
 
@@ -515,43 +593,44 @@ class BicentenarioSewerApp(tk.Tk):
             orient=tk.HORIZONTAL,
             showvalue=False,
             command=self._on_slider_move,
-            bg=theme.BG_PANEL,
-            fg=theme.TEXT_PRIMARY,
-            troughcolor=theme.BG_CANVAS,
+            bg=theme.PLUM_BASE,
+            fg=theme.XANTHOUS,
+            troughcolor=theme.PLUM_DEEP,
             highlightthickness=0,
-            activebackground=theme.ACCENT_BLUE,
+            sliderrelief="flat",
+            activebackground=theme.XANTHOUS,
         )
-        self.timeline_slider.pack(fill=tk.X, padx=8, pady=(0, 6))
+        self.timeline_slider.pack(fill=tk.X, padx=12, pady=(0, 8))
 
     def _build_right_panel(self, parent: tk.Frame) -> None:
         self.notebook = ttk.Notebook(parent)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
         # Tab 1: Inspector y Resumen
         tab_info = ttk.Frame(self.notebook)
-        self.notebook.add(tab_info, text="Inspector y Resumen")
+        self.notebook.add(tab_info, text="Inspector")
         self.txt_inspector = tk.Text(
             tab_info,
-            bg=theme.BG_CANVAS,
+            bg=theme.PLUM_DEEP,
             fg=theme.TEXT_PRIMARY,
             relief="flat",
-            font=("Consolas", 9),
+            font=(self.mono_font, 9),
             wrap=tk.WORD,
-            padx=10,
-            pady=8,
+            padx=12,
+            pady=10,
         )
         self.txt_inspector.pack(fill=tk.BOTH, expand=True)
         self.txt_inspector.configure(state=tk.DISABLED)
 
-        # Tab 2: Tuberías Críticas (RF10)
+        # Tab 2: Tuberías Críticas
         tab_crit = ttk.Frame(self.notebook)
         self.notebook.add(tab_crit, text="Tuberías Críticas")
 
-        filter_bar = tk.Frame(tab_crit, bg=theme.BG_PANEL)
-        filter_bar.pack(fill=tk.X, padx=6, pady=5)
+        filter_bar = tk.Frame(tab_crit, bg=theme.PLUM_BASE)
+        filter_bar.pack(fill=tk.X, padx=8, pady=6)
         for text, val in [
             ("Todas (59)", "all"),
-            ("Críticas (>=75%)", "critical"),
+            ("Críticas (≥75%)", "critical"),
             ("Sobrecargadas (>100%)", "overloaded"),
         ]:
             tk.Radiobutton(
@@ -560,25 +639,25 @@ class BicentenarioSewerApp(tk.Tk):
                 variable=self.var_crit_filter,
                 value=val,
                 command=self._refresh_critical_table,
-                bg=theme.BG_PANEL,
+                bg=theme.PLUM_BASE,
                 fg=theme.TEXT_SECONDARY,
-                selectcolor=theme.BG_CANVAS,
-                activebackground=theme.BG_PANEL,
-                font=("Segoe UI", 8),
+                selectcolor=theme.PLUM_DEEP,
+                activebackground=theme.PLUM_BASE,
+                activeforeground=theme.XANTHOUS,
+                font=(self.ui_font, 8),
             ).pack(side=tk.LEFT, padx=4)
 
         cols = ("rank", "pipe", "tramo", "q_curr", "q_max", "util", "estado")
         self.tree_critical = ttk.Treeview(tab_crit, columns=cols, show="headings", selectmode="browse")
-        headers = [
-            ("rank", "#", 32),
+        for cid, htext, w in [
+            ("rank", "#", 34),
             ("pipe", "Tub.", 48),
             ("tramo", "Tramo", 70),
-            ("q_curr", "Q (m³/s)", 74),
-            ("q_max", "Qmax", 74),
-            ("util", "% Util", 64),
-            ("estado", "Estado", 130),
-        ]
-        for cid, htext, w in headers:
+            ("q_curr", "Q (m³/s)", 76),
+            ("q_max", "Qmax", 76),
+            ("util", "% Util", 66),
+            ("estado", "Estado", 132),
+        ]:
             self.tree_critical.heading(cid, text=htext)
             self.tree_critical.column(cid, width=w, anchor="center" if cid in ("rank", "pipe", "tramo") else "e")
 
@@ -588,50 +667,47 @@ class BicentenarioSewerApp(tk.Tk):
         crit_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree_critical.bind("<<TreeviewSelect>>", self._on_critical_row_select)
 
-        # Tab 3: Gráficas Temporales
+        # Tab 3: Evolución Temporal
         tab_charts = ttk.Frame(self.notebook)
-        self.notebook.add(tab_charts, text="Evolución Temporal")
+        self.notebook.add(tab_charts, text="Evolución")
         self.temporal_charts = TemporalChartsPanel(tab_charts)
         self.temporal_charts.pack(fill=tk.BOTH, expand=True)
 
-        # Tab 4: Comparación de Escenarios (RF11)
+        # Tab 4: Comparación de Escenarios
         tab_comp = ttk.Frame(self.notebook)
-        self.notebook.add(tab_comp, text="Comparación Escenarios")
+        self.notebook.add(tab_comp, text="Comparación")
 
-        comp_top = tk.Frame(tab_comp, bg=theme.BG_PANEL)
-        comp_top.pack(fill=tk.X, padx=6, pady=6)
-        tk.Button(
+        comp_top = tk.Frame(tab_comp, bg=theme.PLUM_BASE)
+        comp_top.pack(fill=tk.X, padx=8, pady=8)
+        self._make_btn(
             comp_top,
-            text="Comparar Todos los Escenarios",
-            command=self._action_compare_scenarios,
-            bg="#0284c7",
-            fg="#ffffff",
-            relief="flat",
-            padx=10,
-            pady=4,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
+            "Comparar los 5 Escenarios",
+            self._action_compare_scenarios,
+            primary=True,
+            padx=12,
+            pady=5,
+            font_size=8,
         ).pack(side=tk.LEFT)
 
         comp_cols = ("esc", "int", "max_u", "crit_p", "n_crit", "n_over", "ptar")
         self.tree_comp = ttk.Treeview(tab_comp, columns=comp_cols, show="headings", height=6)
         for cid, htext, w in [
-            ("esc", "Escenario", 115),
+            ("esc", "Escenario", 118),
             ("int", "mm/h", 48),
             ("max_u", "Máx %", 64),
             ("crit_p", "Crítica", 54),
-            ("n_crit", ">=75%", 50),
+            ("n_crit", "≥75%", 50),
             ("n_over", ">100%", 52),
             ("ptar", "Pico PTAR", 76),
         ]:
             self.tree_comp.heading(cid, text=htext)
             self.tree_comp.column(cid, width=w, anchor="center")
-        self.tree_comp.pack(fill=tk.X, padx=4, pady=(0, 4))
+        self.tree_comp.pack(fill=tk.X, padx=6, pady=(0, 6))
 
         self.comparison_charts = ComparisonChartsPanel(tab_comp)
         self.comparison_charts.pack(fill=tk.BOTH, expand=True)
 
-    # --- Acciones de archivo y configuración ---
+    # --- Lógica de archivos y simulación ---
 
     def _apply_preset(self, ingress_pct: float, dry_flow: float) -> None:
         self.var_ingress_pct.set(ingress_pct)
@@ -668,7 +744,7 @@ class BicentenarioSewerApp(tk.Tk):
         scen_labels = [s.display_name for s in dataset.scenarios]
         self.combo_scenario["values"] = scen_labels
         if len(scen_labels) >= 3:
-            self.var_scenario.set(scen_labels[2])  # Escenario 3 (Moderada) por defecto
+            self.var_scenario.set(scen_labels[2])
         elif scen_labels:
             self.var_scenario.set(scen_labels[0])
 
@@ -682,9 +758,9 @@ class BicentenarioSewerApp(tk.Tk):
         if snks:
             self.var_bfs_target.set(snks[0])
 
-        n_nodes, n_pipes, n_src, n_snk, total_len = dataset.graph.summary()
+        n_nodes, n_pipes, _n_src, _n_snk, total_len = dataset.graph.summary()
         self.status_var.set(
-            f"Red cargada: {n_nodes} nodos, {n_pipes} tuberías ({total_len:,.1f} m) desde {os.path.basename(path)}"
+            f"Red cargada: {n_nodes} nodos · {n_pipes} tuberías · {total_len:,.1f} m ({os.path.basename(path)})"
         )
         self._refresh_inspector()
 
@@ -720,36 +796,47 @@ class BicentenarioSewerApp(tk.Tk):
             return
         out_file = filedialog.asksaveasfilename(
             title="Guardar reporte de simulación",
-            defaultextension=".md",
-            initialfile=f"reporte_escenario_{self.result.config.scenario_id}.md",
-            filetypes=[("Markdown", "*.md"), ("Texto", "*.txt")],
+            defaultextension=".docx",
+            initialfile=f"reporte_escenario_{self.result.config.scenario_id}.docx",
+            filetypes=[
+                ("Documento Word (2 columnas)", "*.docx"),
+                ("Markdown + CSV", "*.md"),
+            ],
         )
         if not out_file:
             return
         comps = self.comparisons or compare_all_scenarios(self.dataset, self.result.config)
         self.comparisons = comps
+        if out_file.lower().endswith(".docx"):
+            try:
+                written = generate_docx_report(self.dataset, self.result, comps, out_file)
+                messagebox.showinfo(
+                    "Reporte Word generado",
+                    f"Documento .docx a dos columnas (OMML 8.5 pt) generado en:\n{written}",
+                )
+                return
+            except Exception as exc:
+                fallback = os.path.splitext(out_file)[0] + ".md"
+                written = generate_markdown_report(self.dataset, self.result, comps, fallback)
+                messagebox.showwarning(
+                    "Respaldo Markdown generado",
+                    f"No se pudo generar .docx ({exc}).\nSe exportó respaldo Markdown/CSV en:\n{written}",
+                )
+                return
+
         written = generate_markdown_report(self.dataset, self.result, comps, out_file)
-        messagebox.showinfo(
-            "Reporte generado",
-            f"Reporte y tabla CSV generados en:\n{written}",
-        )
+        messagebox.showinfo("Reporte generado", f"Reporte y tabla CSV generados en:\n{written}")
 
     def _action_show_assumptions(self) -> None:
         msg = (
             "Supuestos del Modelo Computacional (Ciudad Bicentenario):\n\n"
             "1. Grafo Dirigido Propio: 46 vértices (8 fuentes, 37 pozos, 1 sumidero PTAR 31) y 59 aristas.\n"
             "2. Método Racional: Q = 0.00278 · C · I(t) · A · f_ingreso + Q_sanitario.\n"
-            "   El factor de ingreso pluvial permite evaluar tanto el caso calibrado a red sanitaria "
-            "(2.5% por infiltración/conexiones erradas) como el caso teórico directo (100%).\n"
-            "3. Tiempo de Tránsito: t_i = L_i / V_i, con V_i = Q_max,i / A_i (velocidad a tubo lleno de Manning).\n"
-            "   Los paquetes de caudal se programan en una Cola de Prioridad (Min-Heap).\n"
+            "3. Tiempo de Tránsito: t_i = L_i / V_i, con V_i = Q_max,i / A_i (Manning).\n"
             "4. Distribución en Bifurcaciones: Proporcional a Q_max (o uniforme seleccionable).\n"
-            "5. Sobrecarga (>100%): El caudal que supera Q_max se retiene temporalmente en el pozo aguas arriba "
-            "sin pérdida de masa (conservación exacta de volumen)."
+            "5. Sobrecarga (>100%): Almacenamiento temporal en el pozo aguas arriba sin pérdida de masa."
         )
         messagebox.showinfo("Supuestos del Modelo", msg)
-
-    # --- Simulación y reproducción ---
 
     def _selected_scenario_obj(self):
         assert self.dataset is not None
@@ -790,14 +877,11 @@ class BicentenarioSewerApp(tk.Tk):
         self.timeline_slider.configure(to=max(0, n_snaps - 1))
         self._updating_slider = False
 
-        # Mostrar el instante pico de carga o iniciar desde t=0 según conveniencia:
-        # iniciamos en el paso medio/final si se prefiere? Mejor mostrar el paso final o t=0?
-        # Empecemos en t = min(storm_dur, duration) para impacto visual inmediato y permitir ▶ desde 0!
         target_idx = min(n_snaps - 1, max(1, int(cfg.storm_duration_min / cfg.dt_min)))
         self._set_step(target_idx)
         self.status_var.set(
-            f"Simulación Escenario {cfg.scenario_id} ({cfg.intensity_mm_h:.0f} mm/h) lista en "
-            f"{self.result.execution_time_ms:.1f} ms | {n_snaps} instantes en LinkedList."
+            f"Escenario {cfg.scenario_id} ({cfg.intensity_mm_h:.0f} mm/h) simulado en "
+            f"{self.result.execution_time_ms:.1f} ms · {n_snaps} instantes en LinkedList"
         )
 
     def _set_step(self, step_idx: int) -> None:
@@ -814,21 +898,24 @@ class BicentenarioSewerApp(tk.Tk):
         self.network_canvas.set_snapshot(snap)
         cfg = self.result.config
         self.lbl_clock.configure(
+            text=f"t = {snap.time_min:.1f} / {cfg.duration_min:.0f} min  ·  {cfg.scenario_name} ({snap.rain_intensity_mm_h:.0f} mm/h)"
+        )
+        max_u = max((ps.utilization_pct for ps in snap.pipe_states.values()), default=0.0)
+        self.lbl_kpi_summary.configure(
             text=(
-                f"t = {snap.time_min:.1f} / {cfg.duration_min:.0f} min  |  "
-                f"Escenario {cfg.scenario_id}: {cfg.scenario_name} ({snap.rain_intensity_mm_h:.1f} mm/h)  |  "
+                f"Máx Util: {max_u:.1f}%  |  "
+                f"Críticas: {len(snap.critical_pipe_ids)}  |  "
+                f"Sobrecarg.: {len(snap.overloaded_pipe_ids)}  |  "
                 f"PTAR 31: {snap.total_sink_discharge_m3s:.4f} m³/s"
             )
         )
         self.lbl_mass_audit.configure(
-            text=f"Conservación masa OK | Error: {snap.mass_balance_error_m3:.2e} m³"
+            text=f"Balance masa OK · Err {snap.mass_balance_error_m3:.2e} m³"
         )
         self._update_legend_counts(snap)
         self._refresh_critical_table()
         self._refresh_inspector()
-        self.temporal_charts.update_plots(
-            self.result, self._selected_pipe_id, snap.time_min
-        )
+        self.temporal_charts.update_plots(self.result, self._selected_pipe_id, snap.time_min)
 
     def _update_legend_counts(self, snap: TimeStepSnapshot) -> None:
         counts = [0, 0, 0, 0, 0]
@@ -877,8 +964,6 @@ class BicentenarioSewerApp(tk.Tk):
         delay = speed_map.get(self.var_speed.get(), 200)
         self._after_id = self.after(delay, self._schedule_next_frame)
 
-    # --- Consultas, selección, recorridos y comparación ---
-
     def _on_pipe_selected(self, pipe_id: str) -> None:
         self._selected_pipe_id = pipe_id
         self._selected_node_id = None
@@ -904,7 +989,6 @@ class BicentenarioSewerApp(tk.Tk):
             messagebox.showinfo("Sin resultados", f"No se encontró nodo o tubería para '{q}'.")
             return
 
-        # Priorizar coincidencia exacta en HashTable
         exact_pipe = self.dataset.graph.get_pipe(q.upper()) or self.dataset.graph.get_pipe(q)
         exact_node = self.dataset.graph.get_node(q.upper()) or self.dataset.graph.get_node(q)
         if exact_pipe is not None:
@@ -948,15 +1032,15 @@ class BicentenarioSewerApp(tk.Tk):
 
         lines = [
             f"[{res.algorithm}] {start} → {target or 'todo'}",
-            f"Visitados ({len(res.visited_order)}): {' -> '.join(res.visited_order[:18])}"
-            + (" ..." if len(res.visited_order) > 18 else ""),
+            f"Visitados ({len(res.visited_order)}): {' -> '.join(res.visited_order[:16])}"
+            + (" ..." if len(res.visited_order) > 16 else ""),
         ]
         if target:
             if res.target_reached:
                 lines.append(f"Camino ({len(res.path_pipes)} tramos): {' -> '.join(res.path_nodes)}")
                 lines.append(f"Tuberías: {', '.join(p.pipe_id for p in res.path_pipes)}")
                 total_t = sum(p.transit_time_min for p in res.path_pipes)
-                lines.append(f"Tiempo tránsito acumulado: {total_t:.1f} min")
+                lines.append(f"Tránsito acumulado: {total_t:.1f} min")
             else:
                 lines.append(f"No hay camino dirigido desde {start} hasta {target}.")
 
@@ -977,8 +1061,8 @@ class BicentenarioSewerApp(tk.Tk):
             return
         self.network_canvas.set_highlights({p.pipe_id for p in pipes}, set(nodes))
         self._set_traversal_text(
-            f"[Trazado aguas abajo desde {nid}]\n"
-            f"Nodos alcanzados ({len(nodes)}): {', '.join(nodes)}\n"
+            f"[Aguas abajo desde {nid}]\n"
+            f"Nodos ({len(nodes)}): {', '.join(nodes)}\n"
             f"Tuberías ({len(pipes)}): {', '.join(p.pipe_id for p in pipes)}"
         )
 
@@ -1041,10 +1125,11 @@ class BicentenarioSewerApp(tk.Tk):
                 p = g.get_pipe(self._selected_pipe_id)
                 assert p is not None
                 lines.extend([
-                    f"=== TUBERÍA {p.pipe_id} ({p.from_node} → {p.to_node}) ===",
+                    f"TUBERÍA {p.pipe_id} ({p.from_node} → {p.to_node})",
+                    "─" * 42,
                     f"Diámetro        : {p.diameter_in:.0f}\" ({p.diameter_m:.4f} m)",
                     f"Longitud        : {p.length_m:.2f} m",
-                    f"Pendiente (S)   : {p.slope:.4f} m/m  |  Manning n: {p.manning_n:.3f}",
+                    f"Pendiente (S)   : {p.slope:.4f} m/m  |  n: {p.manning_n:.3f}",
                     f"Capacidad Qmax  : {p.q_max_m3s:.5f} m³/s",
                     f"Velocidad ref.  : {p.reference_velocity_ms:.3f} m/s",
                     f"Tiempo tránsito : {p.transit_time_min:.2f} min ({p.transit_time_s:.1f} s)",
@@ -1055,9 +1140,9 @@ class BicentenarioSewerApp(tk.Tk):
                     ps = snap.pipe_states[p.pipe_id]
                     lines.extend([
                         "",
-                        f"--- Estado en t = {snap.time_min:.1f} min ---",
+                        f"Estado en t = {snap.time_min:.1f} min",
                         f"Caudal Q(t)     : {ps.flow_m3s:.5f} m³/s",
-                        f"Caudal conducc. : {ps.conveyed_flow_m3s:.5f} m³/s",
+                        f"Conducción real : {ps.conveyed_flow_m3s:.5f} m³/s",
                         f"Vol. tránsito   : {ps.volume_in_transit_m3:.2f} m³",
                         f"Utilización O(t): {ps.utilization_pct:.2f} %",
                         f"Clasificación   : {ps.category.label}",
@@ -1073,24 +1158,24 @@ class BicentenarioSewerApp(tk.Tk):
                 out_p = [e.pipe_id for e in g.outgoing_pipes(n.node_id)]
                 in_p = [e.pipe_id for e in g.incoming_pipes(n.node_id)]
                 lines.extend([
-                    f"=== NODO {n.node_id} ({n.node_type.upper()}) ===",
+                    f"NODO {n.node_id} ({n.node_type.upper()})",
+                    "─" * 42,
                     f"Tuberías entrantes : {', '.join(in_p) or 'Ninguna (Fuente)'}",
-                    f"Tuberías salientes : {', '.join(out_p) or 'Ninguna (Sumidero PTAR)'}",
+                    f"Tuberías salientes : {', '.join(out_p) or 'Ninguna (PTAR 31)'}",
                 ])
                 if snap and n.node_id in snap.node_states:
                     ns = snap.node_states[n.node_id]
                     lines.extend([
                         "",
-                        f"--- Estado en t = {snap.time_min:.1f} min ---",
+                        f"Estado en t = {snap.time_min:.1f} min",
                         f"Caudal entrada  : {ns.inflow_m3s:.5f} m³/s",
                         f"Caudal salida   : {ns.outflow_m3s:.5f} m³/s",
                         f"Vol. almacenado : {ns.stored_volume_m3:.3f} m³",
                     ])
             else:
-                lines.append("Haga clic sobre una tubería o pozo del grafo para ver su detalle.")
+                lines.append("Seleccione una tubería o pozo del grafo para inspeccionarlo.")
 
-            # Resumen del escenario abajo
-            lines.extend(["", "=== RESUMEN DEL ESCENARIO ==="])
+            lines.extend(["", "RESUMEN DEL ESCENARIO", "─" * 42])
             if self.result and snap:
                 cfg = self.result.config
                 lines.extend([
@@ -1099,9 +1184,9 @@ class BicentenarioSewerApp(tk.Tk):
                     f"Factor ingreso  : {cfg.ingress_factor*100:.1f}%  |  Q_san={cfg.dry_weather_flow_per_source_m3s:.4f} m³/s",
                     f"Entrada acum.   : {snap.cumulative_inflow_m3:,.2f} m³",
                     f"Descarga PTAR 31: {snap.cumulative_sink_discharge_m3:,.2f} m³ (pico {self.result.peak_sink_discharge_m3s:.4f} m³/s)",
-                    f"En pozos/tráns. : {snap.total_manhole_storage_m3:,.2f} / {snap.total_pipe_transit_m3:,.2f} m³",
+                    f"Pozos / Tránsito: {snap.total_manhole_storage_m3:,.2f} / {snap.total_pipe_transit_m3:,.2f} m³",
                     f"Error balance   : {self.result.max_mass_balance_error_m3:.3e} m³",
-                    f"Críticas (>=75%): {len(self.result.ever_critical_pipes)} tuberías",
+                    f"Críticas (≥75%) : {len(self.result.ever_critical_pipes)} tuberías",
                     f"Sobrec. (>100%) : {len(self.result.ever_overloaded_pipes)} tuberías",
                 ])
 
