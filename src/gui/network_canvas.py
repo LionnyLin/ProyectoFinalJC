@@ -616,33 +616,53 @@ class NetworkCanvas(tk.Canvas):
         created_rings = False
         for nid, x, y, r in self._node_ring_refs:
             ns = snap.node_states.get(nid)
-            stored_vol = ns.stored_volume_m3 if ns is not None else 0.0
-            if stored_vol <= 1e-3:
-                continue
-            n_rings = 1 if stored_vol < 5.0 else (2 if stored_vol < 60.0 else 3)
-            max_extra = min(22.0, 3.2 + 4.4 * math.log10(1.0 + stored_vol)) * sf * sqrt_z
-            for k in range(n_rings, 0, -1):
-                ring_r = r + (max_extra * k / n_rings)
-                is_inner_intense = (k == 1 and stored_vol >= 25.0)
-                ring_col = theme.NODE_SURCHARGE_RING_DEEP if is_inner_intense else theme.NODE_SURCHARGE_RING
-                ring_kw = {
-                    "outline": ring_col,
-                    "width": 1.5 if is_inner_intense else 1.25,
-                    "tags": ("flood_ring",),
-                }
-                if k == n_rings and n_rings >= 2:
-                    ring_kw["dash"] = (3, 3)
-                ring_id = self.create_oval(
-                    x - ring_r, y - ring_r, x + ring_r, y + ring_r,
-                    **ring_kw,
-                )
-                self._item_to_node[ring_id] = nid
+            surcharge_vol = (
+                (ns.stored_volume_m3 + ns.surface_flooding_m3) if ns is not None else 0.0
+            )
+            if self._draw_flood_rings(nid, x, y, r, surcharge_vol, sf, sqrt_z):
                 created_rings = True
         if created_rings:
             try:
                 self.tag_lower("flood_ring", "node_layer")
             except tk.TclError:
                 pass
+
+    def _draw_flood_rings(
+        self,
+        nid: str,
+        x: float,
+        y: float,
+        r: float,
+        surcharge_vol: float,
+        sf: float,
+        sqrt_z: float,
+    ) -> bool:
+        if surcharge_vol <= 1e-3:
+            return False
+        n_rings = 1 if surcharge_vol < 5.0 else (2 if surcharge_vol < 60.0 else 3)
+        max_extra = min(22.0, 3.2 + 4.4 * math.log10(1.0 + surcharge_vol)) * sf * sqrt_z
+        for k in range(n_rings, 0, -1):
+            ring_r = r + (max_extra * k / n_rings)
+            is_inner_intense = k == 1 and surcharge_vol >= 25.0
+            ring_col = (
+                theme.NODE_SURCHARGE_RING_DEEP if is_inner_intense else theme.NODE_SURCHARGE_RING
+            )
+            ring_kw = {
+                "outline": ring_col,
+                "width": 1.5 if is_inner_intense else 1.25,
+                "tags": ("flood_ring",),
+            }
+            if k == n_rings and n_rings >= 2:
+                ring_kw["dash"] = (3, 3)
+            ring_id = self.create_oval(
+                x - ring_r,
+                y - ring_r,
+                x + ring_r,
+                y + ring_r,
+                **ring_kw,
+            )
+            self._item_to_node[ring_id] = nid
+        return True
 
         # 4. Actualizar pulsos solo si cambió el conjunto activo o cantidad de pulsos
         if self._is_playing:
@@ -980,7 +1000,9 @@ class NetworkCanvas(tk.Canvas):
             st = self.snapshot.node_states[node.node_id]
             lines.append(f"Entrada: {st.inflow_m3s:.4f} m³/s  |  Salida: {st.outflow_m3s:.4f} m³/s")
             if st.stored_volume_m3 > 1e-4:
-                lines.append(f"Almacenamiento por sobrecarga: {st.stored_volume_m3:.2f} m³")
+                lines.append(f"En pozo: {st.stored_volume_m3:.2f} m³")
+            if st.surface_flooding_m3 > 1e-4:
+                lines.append(f"Rebose superficial (vía): {st.surface_flooding_m3:.2f} m³")
         return "\n".join(lines)
 
     def _build_pipe_tooltip(self, pipe: PipeEdge) -> str:
@@ -1014,8 +1036,12 @@ class NetworkCanvas(tk.Canvas):
         if self.snapshot and pipe.pipe_id in self.snapshot.pipe_states:
             ps = self.snapshot.pipe_states[pipe.pipe_id]
             lines.append(
-                f"Caudal (t={self.snapshot.time_min:.0f}m): {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
+                f"Caudal físico (t={self.snapshot.time_min:.0f}m): {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
             )
+            if ps.demand_ratio_pct > 100.5:
+                lines.append(
+                    f"Índice de demanda: {ps.demand_ratio_pct / 100.0:.2f}× Qmax ({ps.demand_ratio_pct:.0f}%)  ·  Déficit: {ps.excess_flow_m3s:.4f} m³/s"
+                )
         if self.snapshot and pipe.pipe_id in self._peak_util_map:
             pk = self._peak_util_map[pipe.pipe_id]
             lines.append(f"Pico hasta t = {self.snapshot.time_min:.0f} min: {pk:.1f}%")
@@ -1494,29 +1520,15 @@ class NetworkCanvas(tk.Canvas):
             if not is_dimmed_basin and anim is None:
                 self._node_ring_refs.append((node.node_id, x, y, r))
 
-            stored_vol = 0.0
+            surcharge_vol = 0.0
             if self.snapshot and node.node_id in self.snapshot.node_states:
-                stored_vol = self.snapshot.node_states[node.node_id].stored_volume_m3
+                ns = self.snapshot.node_states[node.node_id]
+                surcharge_vol = ns.stored_volume_m3 + ns.surface_flooding_m3
 
-            if stored_vol > 1e-3 and not is_dimmed_basin and anim is None:
-                n_rings = 1 if stored_vol < 5.0 else (2 if stored_vol < 60.0 else 3)
-                max_extra = min(22.0, 3.2 + 4.4 * math.log10(1.0 + stored_vol)) * scale_factor * math.sqrt(self._zoom)
-                for k in range(n_rings, 0, -1):
-                    ring_r = r + (max_extra * k / n_rings)
-                    is_inner_intense = (k == 1 and stored_vol >= 25.0)
-                    ring_col = theme.NODE_SURCHARGE_RING_DEEP if is_inner_intense else theme.NODE_SURCHARGE_RING
-                    ring_kw = {
-                        "outline": ring_col,
-                        "width": 1.5 if is_inner_intense else 1.25,
-                        "tags": ("flood_ring",),
-                    }
-                    if k == n_rings and n_rings >= 2:
-                        ring_kw["dash"] = (3, 3)
-                    ring_id = self.create_oval(
-                        x - ring_r, y - ring_r, x + ring_r, y + ring_r,
-                        **ring_kw,
-                    )
-                    self._item_to_node[ring_id] = node.node_id
+            if not is_dimmed_basin and anim is None:
+                self._draw_flood_rings(
+                    node.node_id, x, y, r, surcharge_vol, scale_factor, math.sqrt(self._zoom)
+                )
 
             if is_anim_wave or is_anim_cursor:
                 radar_r = r + (5.5 if is_anim_cursor else 4.2)

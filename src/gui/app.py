@@ -151,8 +151,10 @@ class BicentenarioSewerApp(tk.Tk):
         self.var_dry_flow = tk.DoubleVar(value=0.003)
         self.var_split_rule = tk.StringVar(value="proportional")
         self.var_hyetograph = tk.StringVar(value="uniform")
+        self.var_source_dist = tk.StringVar(value="capacity")
         self.var_split_rule_es = tk.StringVar(value=theme.SPLIT_RULE_TO_ES["proportional"])
         self.var_hyetograph_es = tk.StringVar(value=theme.HYETOGRAPH_TO_ES["uniform"])
+        self.var_source_dist_es = tk.StringVar(value=theme.SOURCE_DIST_TO_ES["capacity"])
         self.var_speed = tk.StringVar(value="2x")
         self.var_search = tk.StringVar()
         self.var_bfs_start = tk.StringVar(value="6")
@@ -175,6 +177,12 @@ class BicentenarioSewerApp(tk.Tk):
                 theme.ES_TO_HYETOGRAPH.get(self.var_hyetograph_es.get(), "uniform")
             ),
         )
+        self.var_source_dist_es.trace_add(
+            "write",
+            lambda *_a: self.var_source_dist.set(
+                theme.ES_TO_SOURCE_DIST.get(self.var_source_dist_es.get(), "capacity")
+            ),
+        )
 
         for v in (
             self.var_duration,
@@ -184,6 +192,7 @@ class BicentenarioSewerApp(tk.Tk):
             self.var_dry_flow,
             self.var_split_rule,
             self.var_hyetograph,
+            self.var_source_dist,
         ):
             v.trace_add("write", lambda *_a: self._mark_comparisons_dirty())
 
@@ -1117,6 +1126,26 @@ class BicentenarioSewerApp(tk.Tk):
         )
         self.combo_hyetograph.pack(side=tk.RIGHT)
         self.combo_hyetograph.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
+
+        row_src_dist = tk.Frame(sec_sim, bg=theme.PAPER_BG)
+        row_src_dist.pack(fill=tk.X, pady=3)
+        tk.Label(
+            row_src_dist,
+            text="Reparto fuentes",
+            bg=theme.PAPER_BG,
+            fg=theme.INK_PRIMARY,
+            font=(self.ui_font, 8),
+        ).pack(side=tk.LEFT)
+        self.combo_source_dist = ttk.Combobox(
+            row_src_dist,
+            textvariable=self.var_source_dist_es,
+            values=list(theme.SOURCE_DIST_TO_ES.values()),
+            state="readonly",
+            width=14,
+            style="Light.TCombobox",
+        )
+        self.combo_source_dist.pack(side=tk.RIGHT)
+        self.combo_source_dist.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
 
         self.btn_run_sim = self._make_btn(
             sec_sim,
@@ -2456,10 +2485,10 @@ class BicentenarioSewerApp(tk.Tk):
         msg = (
             "Supuestos del Modelo Computacional (Ciudad Bicentenario):\n\n"
             "1. Grafo Dirigido Propio: 46 vértices (8 fuentes, 37 pozos, 1 sumidero PTAR 31) y 59 aristas.\n"
-            "2. Método Racional: Q = 0.00278 · C · I(t) · A · f_ingreso + Q_sanitario.\n"
+            "2. Método Racional: Q = 0.00278 · C · I(t) · A · f_ingreso + Q_sanitario (ponderado por capacidad instalada de fuente o uniforme 1/8).\n"
             "3. Tiempo de Tránsito: t_i = L_i / V_i, con V_i = Q_max,i / A_i (Manning).\n"
-            "4. Distribución en Bifurcaciones: Proporcional a Q_max (o uniforme seleccionable).\n"
-            "5. Sobrecarga (>100%): Almacenamiento temporal en el pozo aguas arriba sin pérdida de masa."
+            "4. Utilización Física vs. Demanda: La conducción física se acota a ≤115% bajo sobrepresión, separando el índice de demanda (× Q_max) y el déficit.\n"
+            "5. Pozos Finitos y Rebose: Cada pozo retiene hasta 4.0 m³ antes de derivar el excedente a rebose superficial en vía con conservación exacta de masa."
         )
         messagebox.showinfo("Supuestos del Modelo", msg)
 
@@ -2513,6 +2542,7 @@ class BicentenarioSewerApp(tk.Tk):
             dry_weather_flow_per_source_m3s=max(0.0, dry_flow),
             split_rule=self.var_split_rule.get(),
             hyetograph=self.var_hyetograph.get(),
+            source_distribution=self.var_source_dist.get(),
             interventions=dict(self._interventions),
         )
 
@@ -3357,6 +3387,8 @@ class BicentenarioSewerApp(tk.Tk):
             snap = self.result.snapshots[self.current_step]
             flows = {pid: ps.flow_m3s for pid, ps in snap.pipe_states.items()}
             utils = {pid: ps.utilization_pct for pid, ps in snap.pipe_states.items()}
+            demands = {pid: ps.demand_ratio_pct for pid, ps in snap.pipe_states.items()}
+            excesses = {pid: ps.excess_flow_m3s for pid, ps in snap.pipe_states.items()}
             qmax_overrides = {
                 pid: ps.effective_q_max_m3s
                 for pid, ps in snap.pipe_states.items()
@@ -3371,6 +3403,8 @@ class BicentenarioSewerApp(tk.Tk):
                 utils,
                 min_utilization_pct=min_u,
                 pipe_qmax_overrides=qmax_overrides,
+                pipe_demand_ratios_pct=demands,
+                pipe_excess_flows_m3s=excesses,
             )
             self.lbl_crit_count.configure(text=f"{len(ranked)} reg.")
 
@@ -3385,49 +3419,44 @@ class BicentenarioSewerApp(tk.Tk):
             desired_ids = [rec.pipe_id for rec in ranked]
             existing_ids = list(self.tree_critical.get_children())
 
+            def _row_values(rec):
+                estado_txt = (
+                    short_estado.get(rec.category.label, rec.category.label)
+                    if compact
+                    else rec.category.label
+                )
+                util_txt = (
+                    f"{rec.utilization_pct:.1f}% ({rec.demand_ratio_pct / 100.0:.1f}×)"
+                    if rec.demand_ratio_pct > 100.5
+                    else f"{rec.utilization_pct:.1f}%"
+                )
+                return (
+                    rec.rank,
+                    rec.pipe_id,
+                    f"{rec.from_node}→{rec.to_node}",
+                    f"{rec.flow_m3s:.4f}",
+                    f"{rec.q_max_m3s:.4f}",
+                    util_txt,
+                    estado_txt,
+                )
+
             if existing_ids == desired_ids:
                 for idx, rec in enumerate(ranked):
-                    estado_txt = (
-                        short_estado.get(rec.category.label, rec.category.label)
-                        if compact
-                        else rec.category.label
-                    )
                     self.tree_critical.item(
                         rec.pipe_id,
                         tags=("odd",) if idx % 2 == 1 else (),
-                        values=(
-                            rec.rank,
-                            rec.pipe_id,
-                            f"{rec.from_node}→{rec.to_node}",
-                            f"{rec.flow_m3s:.4f}",
-                            f"{rec.q_max_m3s:.4f}",
-                            f"{rec.utilization_pct:.1f}%",
-                            estado_txt,
-                        ),
+                        values=_row_values(rec),
                     )
             else:
                 for item in existing_ids:
                     self.tree_critical.delete(item)
                 for idx, rec in enumerate(ranked):
-                    estado_txt = (
-                        short_estado.get(rec.category.label, rec.category.label)
-                        if compact
-                        else rec.category.label
-                    )
                     self.tree_critical.insert(
                         "",
                         tk.END,
                         iid=rec.pipe_id,
                         tags=("odd",) if idx % 2 == 1 else (),
-                        values=(
-                            rec.rank,
-                            rec.pipe_id,
-                            f"{rec.from_node}→{rec.to_node}",
-                            f"{rec.flow_m3s:.4f}",
-                            f"{rec.q_max_m3s:.4f}",
-                            f"{rec.utilization_pct:.1f}%",
-                            estado_txt,
-                        ),
+                        values=_row_values(rec),
                     )
 
             if not ranked:
@@ -3562,18 +3591,20 @@ class BicentenarioSewerApp(tk.Tk):
                     ps = snap.pipe_states[p.pipe_id]
                     add_line("")
                     add_line(f"Estado en t = {snap.time_min:.1f} min", "section")
-                    add_line(f"Caudal Q(t)     : {ps.flow_m3s:.5f} m³/s")
-                    add_line(f"Conducción real : {ps.conveyed_flow_m3s:.5f} m³/s")
+                    add_line(f"Caudal físico   : {ps.flow_m3s:.5f} m³/s (cond. {ps.conveyed_flow_m3s:.5f})")
+                    add_line(f"Demanda entrante: {ps.demand_flow_m3s:.5f} m³/s ({ps.demand_ratio_pct / 100.0:.2f}× Qmax)")
                     add_line(f"Vol. tránsito   : {ps.volume_in_transit_m3:.2f} m³")
                     add_line(
-                        f"Utilización (%) : {ps.utilization_pct:.2f} %",
+                        f"Utilización fís.: {ps.utilization_pct:.2f} %",
                         "alert" if ps.utilization_pct > 100.0 else None,
                     )
                     add_line(f"Clasificación   : {ps.category.label}")
-                    add_line(f"Exceso sobrec.  : {ps.excess_flow_m3s:.5f} m³/s")
+                    add_line(f"Déficit / exceso: {ps.excess_flow_m3s:.5f} m³/s")
                 if self.result:
+                    pk_u = self.result.peak_pipe_utilization.get(p.pipe_id, 0.0)
+                    pk_d = self.result.peak_pipe_demand_ratio.get(p.pipe_id, pk_u)
                     add_line(
-                        f"Utilización pico: {self.result.peak_pipe_utilization.get(p.pipe_id, 0.0):.2f} %"
+                        f"Pico físico / dem.: {pk_u:.2f} % / {pk_d / 100.0:.2f}× ({pk_d:.0f}%)"
                     )
                     ov_m = self.result.pipe_overloaded_minutes.get(p.pipe_id, 0.0)
                     _, _, ov_desc = classify_overload_persistence(ov_m, self.result.config.duration_min)
@@ -3599,13 +3630,18 @@ class BicentenarioSewerApp(tk.Tk):
                 add_line(f"Tuberías salientes : {', '.join(out_p) or 'Ninguna (PTAR 31)'}")
                 if snap and n.node_id in snap.node_states:
                     ns = snap.node_states[n.node_id]
+                    cap_p = self.result.config.max_manhole_storage_m3 if self.result else 4.0
                     add_line("")
                     add_line(f"Estado en t = {snap.time_min:.1f} min", "section")
                     add_line(f"Caudal entrada  : {ns.inflow_m3s:.5f} m³/s")
                     add_line(f"Caudal salida   : {ns.outflow_m3s:.5f} m³/s")
                     add_line(
-                        f"Vol. almacenado : {ns.stored_volume_m3:.3f} m³",
+                        f"Vol. en pozo    : {ns.stored_volume_m3:.3f} m³ (máx {cap_p:.1f} m³)",
                         "alert" if ns.stored_volume_m3 > 1e-3 else None,
+                    )
+                    add_line(
+                        f"Rebose en vía   : {ns.surface_flooding_m3:.2f} m³",
+                        "alert" if ns.surface_flooding_m3 > 1e-3 else None,
                     )
             else:
                 add_line("Seleccione una tubería o pozo del grafo para inspeccionarlo.", "muted")
@@ -3616,12 +3652,17 @@ class BicentenarioSewerApp(tk.Tk):
             if self.result and snap:
                 cfg = self.result.config
                 scen_es = theme.translate_scenario_name(cfg.scenario_name)
+                src_es = theme.SOURCE_DIST_TO_ES.get(cfg.source_distribution, cfg.source_distribution)
                 add_line(f"Escenario       : {cfg.scenario_id} — {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)")
                 add_line(f"Cuenca          : C={self.dataset.basin.runoff_coefficient_c}, A={self.dataset.basin.area_ha} ha")
-                add_line(f"Factor ingreso  : {cfg.ingress_factor*100:.1f}%  |  Q_san={cfg.dry_weather_flow_per_source_m3s:.4f} m³/s")
+                add_line(f"Ingreso / Fuent.: {cfg.ingress_factor*100:.1f}% · {src_es} | Q_san={cfg.dry_weather_flow_per_source_m3s:.4f}")
                 add_line(f"Entrada acum.   : {snap.cumulative_inflow_m3:,.2f} m³")
                 add_line(f"Descarga PTAR 31: {snap.cumulative_sink_discharge_m3:,.2f} m³ (pico {self.result.peak_sink_discharge_m3s:.4f} m³/s)")
                 add_line(f"Pozos / Tránsito: {snap.total_manhole_storage_m3:,.2f} / {snap.total_pipe_transit_m3:,.2f} m³")
+                add_line(
+                    f"Rebose superf.  : {snap.total_surface_flooding_m3:,.2f} m³",
+                    "alert" if snap.total_surface_flooding_m3 > 1e-3 else None,
+                )
                 add_line(f"Error balance   : {self.result.max_mass_balance_error_m3:.3e} m³")
                 add_line(f"Críticas (≥75%) : {len(self.result.ever_critical_pipes)} tuberías")
                 add_line(f"Sobrec. (>100%) : {len(self.result.ever_overloaded_pipes)} tuberías")
@@ -3994,16 +4035,26 @@ class BicentenarioSewerApp(tk.Tk):
                 return 0.0
             return max((snap.pipe_states[p].utilization_pct for p in pipe_ids if p in snap.pipe_states), default=0.0)
 
-        def _pipe_qu(snap: Optional[TimeStepSnapshot], pid: str) -> Tuple[float, float]:
+        def _pipe_qud(snap: Optional[TimeStepSnapshot], pid: str) -> Tuple[float, float, float]:
             if snap is None or pid not in snap.pipe_states:
-                return (0.0, 0.0)
+                return (0.0, 0.0, 0.0)
             ps = snap.pipe_states[pid]
-            return (ps.flow_m3s, ps.utilization_pct)
+            return (ps.flow_m3s, ps.utilization_pct, ps.demand_ratio_pct / 100.0)
+
+        def _max_dem(snap: Optional[TimeStepSnapshot], pipe_ids: List[str]) -> float:
+            if snap is None:
+                return 0.0
+            return max((snap.pipe_states[p].demand_ratio_pct / 100.0 for p in pipe_ids if p in snap.pipe_states), default=0.0)
 
         def _sum_storage(snap: Optional[TimeStepSnapshot], node_ids: Tuple[str, ...]) -> float:
             if snap is None:
                 return 0.0
             return sum((snap.node_states[n].stored_volume_m3 for n in node_ids if n in snap.node_states), 0.0)
+
+        def _sum_flood(snap: Optional[TimeStepSnapshot], node_ids: Tuple[str, ...]) -> float:
+            if snap is None:
+                return 0.0
+            return sum((snap.node_states[n].surface_flooding_m3 for n in node_ids if n in snap.node_states), 0.0)
 
         cfg = self.result.config if self.result else None
         sc_id = cfg.scenario_id if cfg else self._selected_scenario_obj().scenario_id
@@ -4026,19 +4077,23 @@ class BicentenarioSewerApp(tk.Tk):
         idx1, s1 = _snap_for_min(5.0)
         q_in1 = s1.total_source_inflow_m3s if s1 else 0.0
         stor1 = s1.total_manhole_storage_m3 if s1 else 0.0
+        flood1 = s1.total_surface_flooding_m3 if s1 else 0.0
 
         idx2, s2 = _snap_for_min(25.0)
         u2_max = _max_util(s2, p_head8)
+        d2_max = _max_dem(s2, p_head8)
         v2_stor = _sum_storage(s2, ("17", "19", "20"))
+        v2_flood = _sum_flood(s2, ("17", "19", "20"))
 
         idx4, s4 = _snap_for_min(65.0)
         q_ptar4 = s4.total_sink_discharge_m3s if s4 else 0.0
         u_ptar4 = _max_util(s4, p_ptar)
         stor4 = s4.total_manhole_storage_m3 if s4 else 0.0
+        flood4 = s4.total_surface_flooding_m3 if s4 else 0.0
 
         if sc_id == 1:
             idx3, s3 = _snap_for_min(40.0)
-            q25, u25 = _pipe_qu(s3, "P25")
+            q25, u25, _d25 = _pipe_qud(s3, "P25")
             return [
                 {
                     "title": "Flujo base sanitario en las 8 fuentes (0 mm/h)",
@@ -4060,9 +4115,9 @@ class BicentenarioSewerApp(tk.Tk):
                     "pipes": set(p_head8),
                     "desc": (
                         "Las tuberías iniciales P31, P39 y P43 (8\") operan en banda verde (baja utilización), "
-                        "muy por debajo de Qmax y con almacenamiento nulo en los pozos."
+                        "muy por debajo de Qmax y sin almacenamiento ni rebose en pozos."
                     ),
-                    "metrics": f"Util. máx: {u2_max:.2f}%  ·  Represado (17,19,20): {v2_stor:.2f} m³",
+                    "metrics": f"Util. máx: {u2_max:.2f}%  ·  Pozo/Rebose: {v2_stor:.2f}/{v2_flood:.2f} m³",
                 },
                 {
                     "title": "Convergencia sin congestión en tramo P25",
@@ -4092,7 +4147,7 @@ class BicentenarioSewerApp(tk.Tk):
 
         if sc_id == 2:
             idx3, s3 = _snap_for_min(50.0)
-            q25, u25 = _pipe_qu(s3, "P25")
+            q25, u25, d25 = _pipe_qud(s3, "P25")
             return [
                 {
                     "title": "Escorrentía ligera (10 mm/h) en las 8 fuentes",
@@ -4101,34 +4156,34 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": set(src_ids),
                     "pipes": set(src_pipes),
                     "desc": (
-                        "La lluvia ligera activa el Método Racional (C=0.75, A=388 ha) más el caudal "
-                        "sanitario en las 8 cabeceras, elevando el caudal sin generar desbordes iniciales."
+                        "La lluvia ligera activa el Método Racional (C=0.75, A=388 ha) ponderado por "
+                        "capacidad instalada o 1/8 más el caudal sanitario base."
                     ),
-                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Almacenado red: {stor1:.2f} m³",
+                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Pozo/Rebose: {stor1:.1f}/{flood1:.1f} m³",
                 },
                 {
-                    "title": "Cabeceras de 8\" en banda crítica (<100%)",
+                    "title": "Cabeceras de 8\" sin congestión severa",
                     "target_min": 25.0,
                     "step_idx": idx2,
                     "nodes": n_head8,
                     "pipes": set(p_head8),
                     "desc": (
-                        "P31, P39 y P43 (8\") alcanzan utilización cercana a su capacidad máxima (≥75%) "
-                        "sin superar el 100%, por lo que no hay represamiento en los pozos 17, 19 y 20."
+                        "Con reparto por capacidad, P31, P39 y P43 (8\") operan cerca del 48%–96% sin "
+                        "desbordar sus pozos (17, 19 y 20)."
                     ),
-                    "metrics": f"Util. máx: {u2_max:.2f}%  ·  Represado (17,19,20): {v2_stor:.2f} m³",
+                    "metrics": f"Util. máx: {u2_max:.2f}% ({d2_max:.2f}×)  ·  Rebose: {v2_flood:.2f} m³",
                 },
                 {
-                    "title": "Máxima exigencia sin sobrecarga en P25",
+                    "title": "Convergencia máxima en colector P25 (23 → J)",
                     "target_min": 50.0,
                     "step_idx": idx3,
                     "nodes": n_25,
                     "pipes": set(p_25),
                     "desc": (
-                        "La suma de caudales lleva al colector P25 (23 → J, 12\") al pico de mayor demanda "
-                        "de toda la red en lluvia ligera, rozando el 100% sin exceder Qmax."
+                        "La suma de aportes aguas arriba lleva a P25 (12\") al punto de mayor exigencia "
+                        "de toda la red en lluvia ligera, marcando el primer cuello local."
                     ),
-                    "metrics": f"P25: Q = {q25:.5f} m³/s  ·  Utilización = {u25:.2f}%",
+                    "metrics": f"P25: Q = {q25:.4f} m³/s  ·  Util. física = {u25:.1f}% (Dem. {d25:.2f}×)",
                 },
                 {
                     "title": "Recesión limpia hacia PTAR Punta Canoa",
@@ -4137,10 +4192,10 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": n_ptar,
                     "pipes": set(p_ptar),
                     "desc": (
-                        "Al terminar la lluvia sin volumen retenido aguas arriba, los troncales P29 y P30 "
-                        "(20\") conducen limpiamente la onda descendente hasta el Nodo 31."
+                        "Al cesar la lluvia, los colectores troncales P29 y P30 (20\") evacuan la onda "
+                        "descendente hacia el Nodo 31 sin saturar la troncal principal."
                     ),
-                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  P29/P30: {u_ptar4:.2f}%  ·  Err = {err4:.1e} m³",
+                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  P29/P30: {u_ptar4:.1f}%  ·  Rebose red: {flood4:.1f} m³",
                 },
             ]
 
@@ -4148,38 +4203,39 @@ class BicentenarioSewerApp(tk.Tk):
             p2_pipes = _existing_pipes("P31", "P39", "P43", "P1", "P2")
             n2_nodes = _endpoints(p2_pipes)
             u_p12 = _max_util(s2, _existing_pipes("P1", "P2"))
+            d_p12 = _max_dem(s2, _existing_pipes("P1", "P2"))
             p3_pipes = _existing_pipes("P23", "P25", "P28")
             n3_nodes = _endpoints(p3_pipes)
             idx3, s3 = _snap_for_min(40.0)
-            _, u25 = _pipe_qu(s3, "P25")
-            _, u23 = _pipe_qu(s3, "P23")
-            _, u28 = _pipe_qu(s3, "P28")
+            _, u25, d25 = _pipe_qud(s3, "P25")
+            _, u23, _ = _pipe_qud(s3, "P23")
+            _, u28, _ = _pipe_qud(s3, "P28")
             p4_pipes = _existing_pipes("P29", "P30", "P3")
             n4_nodes = n_ptar | _endpoints(p4_pipes)
             return [
                 {
-                    "title": "Sobrecarga inmediata en las 8 fuentes (60 mm/h)",
+                    "title": "Sobrecarga temprana en las 8 fuentes (60 mm/h)",
                     "target_min": 5.0,
                     "step_idx": idx1,
                     "nodes": set(src_ids),
                     "pipes": set(src_pipes),
                     "desc": (
-                        "Con 60 mm/h, la escorrentía pluvial duplica el caudal de lluvia moderada y "
-                        "satura desde los primeros minutos los colectores de cabecera."
+                        "Con 60 mm/h, las cabeceras alcanzan su tope físico presurizado (≤115%) y "
+                        "llenan los pozos de 4 m³, iniciando rebose superficial en vía."
                     ),
-                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Almacenado red: {stor1:.1f} m³",
+                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Pozos: {stor1:.1f} m³  ·  Rebose: {flood1:.1f} m³",
                 },
                 {
-                    "title": "Colapso en 8\" y saturación de 10\" (P1, P2)",
+                    "title": "Tope físico en 8\" y 10\" (P1, P2) con rebose",
                     "target_min": 25.0,
                     "step_idx": idx2,
                     "nodes": n2_nodes,
                     "pipes": set(p2_pipes),
                     "desc": (
-                        "Las cabeceras de 8\" superan 5× su capacidad y los colectores de 10\" (P1, P2) "
-                        "también desbordan, acumulando fuerte almacenamiento en los pozos aguas arriba."
+                        "Las cabeceras conducen a tubo lleno presurizado (~114%) mientras su demanda "
+                        "supera 2.5× Qmax, derivando el excedente a inundación superficial."
                     ),
-                    "metrics": f"8\": {u2_max:.1f}%  ·  P1/P2: {u_p12:.1f}%  ·  Represado: {v2_stor:.1f} m³",
+                    "metrics": f"8\": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P1/P2: {u_p12:.1f}% ({d_p12:.2f}×)  ·  Rebose: {v2_flood:.0f} m³",
                 },
                 {
                     "title": "Cuello en cascada: P23, P25 y P28 (16\")",
@@ -4191,32 +4247,32 @@ class BicentenarioSewerApp(tk.Tk):
                         "La congestión avanza sobre los colectores de 16\" (P23 y P28) mientras el tramo "
                         "P25 (12\") concentra la mayor restricción hidráulica del eje central."
                     ),
-                    "metrics": f"P25: {u25:.1f}%  ·  P23: {u23:.1f}%  ·  P28: {u28:.1f}%",
+                    "metrics": f"P25: {u25:.1f}% ({d25:.2f}×)  ·  P23: {u23:.1f}%  ·  P28: {u28:.1f}%",
                 },
                 {
-                    "title": "Tope de entrega en PTAR 31 y retención prolongada",
+                    "title": "Límite de entrega en PTAR 31 y balance de rebose",
                     "target_min": 65.0,
                     "step_idx": idx4,
                     "nodes": n4_nodes,
                     "pipes": set(p4_pipes),
                     "desc": (
-                        "Tras cesar la tormenta, los pozos mantienen miles de m³ retenidos mientras P3 y "
-                        "los troncales P29/P30 sostienen la descarga tope hacia el Nodo 31."
+                        "P3 y P29/P30 sostienen la descarga máxima posible hacia la PTAR 31 mientras la "
+                        "masa no absorbida por la red queda contabilizada exactamente como rebose en vía."
                     ),
-                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Almacenado: {stor4:.1f} m³  ·  Err = {err4:.1e} m³",
+                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Rebose: {flood4:.0f} m³  ·  Err = {err4:.1e} m³",
                 },
             ]
 
         if sc_id == 5:
             p2_pipes = _existing_pipes("P31", "P39", "P43", "P12", "P13")
             n2_nodes = _endpoints(p2_pipes)
-            _, u_p13 = _pipe_qu(s2, "P13")
+            _, u_p13, d_p13 = _pipe_qud(s2, "P13")
             p3_pipes = _existing_pipes("P23", "P25", "P28", "P3")
             n3_nodes = _endpoints(p3_pipes)
             idx3, s3 = _snap_for_min(40.0)
-            _, u25 = _pipe_qu(s3, "P25")
-            _, u_p3 = _pipe_qu(s3, "P3")
-            stor3 = s3.total_manhole_storage_m3 if s3 else 0.0
+            _, u25, d25 = _pipe_qud(s3, "P25")
+            _, u_p3, _ = _pipe_qud(s3, "P3")
+            flood3 = s3.total_surface_flooding_m3 if s3 else 0.0
             p4_pipes = _existing_pipes("P29", "P30", "P3")
             n4_nodes = n_ptar | _endpoints(p4_pipes)
             return [
@@ -4227,52 +4283,52 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": set(src_ids),
                     "pipes": set(src_pipes),
                     "desc": (
-                        "El evento extremo dispara la escorrentía desde el inicio, saturando incluso "
-                        "colectores de 10\" (P1, P2, P36) y de 14\" (P13) en los primeros minutos."
+                        "El evento extremo satura de inmediato las cabeceras al tope físico (≤115%) "
+                        "llenando los pozos y generando escorrentía superficial por rebose."
                     ),
-                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Almacenado red: {stor1:.1f} m³",
+                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Pozos: {stor1:.1f} m³  ·  Rebose: {flood1:.1f} m³",
                 },
                 {
-                    "title": "Saturación masiva de cabeceras (8\", 10\" y 14\")",
+                    "title": "Presurización en cabeceras (8\", 10\" y 14\")",
                     "target_min": 25.0,
                     "step_idx": idx2,
                     "nodes": n2_nodes,
                     "pipes": set(p2_pipes),
                     "desc": (
-                        "Los tramos de 8\" superan 8× Qmax y los ramales P12/P13 desde el nodo 9 entran "
-                        "en sobrecarga sostenida, disparando el volumen represado en los pozos."
+                        "Los tubos conducen a su límite físico presurizado (~115%) aunque la demanda "
+                        "alcanza >4× Qmax; el exceso físico rebosa en superficie sin romper la masa."
                     ),
-                    "metrics": f"8\": {u2_max:.1f}%  ·  P13(14\"): {u_p13:.1f}%  ·  Represado: {v2_stor:.1f} m³",
+                    "metrics": f"8\": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P13: {u_p13:.1f}% ({d_p13:.2f}×)  ·  Rebose: {v2_flood:.0f} m³",
                 },
                 {
-                    "title": "Laminación crítica en P25, P23, P28 y P3",
+                    "title": "Saturación troncal en P25, P23, P28 y P3",
                     "target_min": 40.0,
                     "step_idx": idx3,
                     "nodes": n3_nodes,
                     "pipes": set(p3_pipes),
                     "desc": (
-                        "Los ejes colectores hacia PTAR 31 operan al límite físico de conducción, "
-                        "reteniendo gran parte de la tormenta como almacenamiento temporal en pozos."
+                        "Los ejes colectores hacia PTAR 31 operan a capacidad física plena mientras la "
+                        "vía absorbe el excedente superficial acumulado durante el aguacero."
                     ),
-                    "metrics": f"P25: {u25:.1f}%  ·  P3: {u_p3:.1f}%  ·  Almacenado: {stor3:.1f} m³",
+                    "metrics": f"P25: {u25:.1f}% ({d25:.2f}×)  ·  P3: {u_p3:.1f}%  ·  Rebose red: {flood3:.0f} m³",
                 },
                 {
-                    "title": "Descarga limitada en PTAR 31 y drenaje diferido",
+                    "title": "Descarga tope en PTAR 31 y volumen rebosado",
                     "target_min": 65.0,
                     "step_idx": idx4,
                     "nodes": n4_nodes,
                     "pipes": set(p4_pipes),
                     "desc": (
-                        "Finalizada la lluvia, la PTAR 31 permanece en su caudal tope mientras la red "
-                        "conserva un volumen masivo represado que requiere evacuación diferida."
+                        "Finalizada la tormenta, PTAR 31 mantiene su caudal máximo laminado mientras la "
+                        "ecuación de masa audita exactamente descarga + pozos + tránsito + rebose."
                     ),
-                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Almacenado: {stor4:.1f} m³  ·  Err = {err4:.1e} m³",
+                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Rebose: {flood4:.0f} m³  ·  Err = {err4:.1e} m³",
                 },
             ]
 
         if sc_id == 3:
             idx3, s3 = _snap_for_min(40.0)
-            q25, u25 = _pipe_qu(s3, "P25")
+            q25, u25, d25 = _pipe_qud(s3, "P25")
             return [
                 {
                     "title": "Inyección en las 8 alcantarillas fuente",
@@ -4281,22 +4337,22 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": set(src_ids),
                     "pipes": set(src_pipes),
                     "desc": (
-                        "Los 8 nodos fuente (1, 6, 9, 17, 18, 19, 20 y 27) inyectan el caudal del Método "
-                        "Racional (C=0.75, A=388 ha) más el caudal sanitario base respetando el tránsito de Manning."
+                        "Los 8 nodos fuente (1, 6, 9, 17, 18, 19, 20 y 27) inyectan el aporte del Método "
+                        "Racional (C=0.75, A=388 ha) más el caudal sanitario según Manning."
                     ),
                     "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
                 },
                 {
-                    "title": "Estrangulamiento inicial en tuberías de 8\"",
+                    "title": "Saturación física inicial en tuberías de 8\"",
                     "target_min": 25.0,
                     "step_idx": idx2,
                     "nodes": n_head8,
                     "pipes": set(p_head8),
                     "desc": (
-                        "Los tramos iniciales P31, P39 y P43 (8\") saturan su capacidad Qmax y activan "
-                        "almacenamiento temporal en los pozos 17, 19 y 20 sin pérdida de masa."
+                        "Los tramos iniciales P31, P39 y P43 (8\") operan en sobrecarga física (≤115%), "
+                        "llenan la capacidad de sus pozos y generan rebose superficial controlado."
                     ),
-                    "metrics": f"Util. máx: {u2_max:.2f}%  ·  Represado (17,19,20): {v2_stor:.2f} m³",
+                    "metrics": f"Util. fís: {u2_max:.1f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",
                 },
                 {
                     "title": "Convergencia crítica en el tramo P25",
@@ -4305,10 +4361,10 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": n_25,
                     "pipes": set(p_25),
                     "desc": (
-                        "La unión de varias subcuencas sobre el pozo 23 hacia J (P25) dispara el caudal "
-                        "muy por encima de la capacidad hidráulica del colector."
+                        "La unión de varias subcuencas sobre el pozo 23 hacia J (P25) lleva el tubo al "
+                        "límite presurizado mientras la demanda supera más del doble de Qmax."
                     ),
-                    "metrics": f"P25: Q = {q25:.5f} m³/s  ·  Utilización = {u25:.2f}%",
+                    "metrics": f"P25: Q_fís = {q25:.4f} m³/s  ·  Util. = {u25:.1f}% (Dem. {d25:.2f}×)",
                 },
                 {
                     "title": "Amortiguación y descarga en PTAR Punta Canoa",
@@ -4320,7 +4376,7 @@ class BicentenarioSewerApp(tk.Tk):
                         "Los colectores troncales de 20\" (P29 y P30) reciben la onda laminada aguas arriba "
                         "y estabilizan la entrega al Nodo sumidero 31."
                     ),
-                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  P29/P30: {u_ptar4:.2f}%  ·  Err = {err4:.1e} m³",
+                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Rebose: {flood4:.0f} m³  ·  Err = {err4:.1e} m³",
                 },
             ]
 

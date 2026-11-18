@@ -135,6 +135,12 @@ HYETOGRAPH_TO_ES: Dict[str, str] = {
 }
 ES_TO_HYETOGRAPH: Dict[str, str] = {v: k for k, v in HYETOGRAPH_TO_ES.items()}
 
+SOURCE_DIST_TO_ES: Dict[str, str] = {
+    "capacity": "Por capacidad",
+    "equal": "Uniforme (1/8)",
+}
+ES_TO_SOURCE_DIST: Dict[str, str] = {v: k for k, v in SOURCE_DIST_TO_ES.items()}
+
 
 def translate_scenario_name(condition: str, compact: bool = False) -> str:
     """Traduce el nombre del escenario del dataset al español para la interfaz."""
