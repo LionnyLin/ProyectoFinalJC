@@ -1,28 +1,29 @@
 ---
-version: 1
+version: 2
 slug: "src-gui-app-py"
 primary_target: "src/gui/app.py"
-related_targets: ["src/gui/network_canvas.py","src/gui/charts_panel.py","src/gui/theme.py"]
+related_targets: ["src/gui/network_canvas.py","src/gui/charts_panel.py","src/gui/theme.py","src/gui/icons.py"]
 ---
 
 # Surface Brief — Simulador Hidráulico Ciudad Bicentenario
 
 ## Scope and Visitor Mode
 
-- **Surface:** Aplicación de escritorio Python/Tkinter (`src/gui/app.py`, `network_canvas.py`, `charts_panel.py`, `theme.py`)
+- **Surface:** Aplicación de escritorio Python/Tkinter (`src/gui/app.py`, `network_canvas.py`, `charts_panel.py`, `theme.py`, `icons.py`)
 - **Mode:** `operate`
 
 ## Audience, Job, Action & Constraints
 
 - **Audiencia:** Estudiantes/evaluadores de Estructuras de Datos y analistas hidráulicos en portátiles, proyectores o monitores amplios.
-- **Tarea:** Cargar la red, ajustar escenario/parámetros hidráulicos, simular y reproducir el tránsito temporal hacia la PTAR (`31`), consultar recorridos (`BFS`, `DFS`, aguas arriba/abajo), inspeccionar tuberías críticas, graficar evolución/comparación de 5 escenarios y exportar CSV/DOCX/MD.
-- **Restricciones:** Preservar 100% de requisitos funcionales, escala de 5 colores de la Sección 7 (`#22c55e`, `#eab308`, `#f97316`, `#ef4444`, `#991b1b`), Python 3.11 + Tkinter + Matplotlib, y adaptabilidad total a distintos tamaños de ventana (desde ~`900×620` hasta `1920×1080+`).
+- **Idioma:** 100 % en español en toda la presentación gráfica (títulos, escenarios, parámetros, reglas de bifurcación/hietograma, tablas, gráficas, tooltips, inspector y barra de estado).
+- **Paleta fijada por el usuario:** `#4A4A4A` (Grafito), `#CBCBCB` (Plata mineral), `#FFFFE3` (Vitela / Marfil cálido) y `#6D8196` (Azul pizarra), manteniendo intacta y en cuarentena la escala oficial de 5 colores de la Sección 7 (`#22c55e`, `#eab308`, `#f97316`, `#ef4444`, `#991b1b` / `#7f1d1d`).
+- **Restricciones:** Preservar 100 % de los requisitos funcionales, pruebas unitarias (`tests/test_gui.py` y demás), Python 3.11 + Tkinter + Matplotlib, y adaptabilidad total a distintos tamaños de ventana (`compact < 940px`, `medium 940–1219px`, `wide >= 1220px`).
 
 ## Direction contract
 
-- **THESIS:** Reemplaza el tablero oscuro rígido de tres columnas fijas por una mesa de trabajo diurna estilo **Atlas Urbano de Infraestructura** (`#F7F8FA` papel técnico de dibujo, `#131820` barra superior y riel de comandos obsidiana, `#0284C7` cobalto hidráulico para trazados activos) que mantiene legible el grafo dirigido (`46` nodos, `59` tuberías) y todos los controles esenciales en cualquier tamaño de ventana sin recortes ni colisiones.
-- **OWN-WORLD:** Riel izquierdo y barra superior en obsidiana mate (`#131820` / `#1B222D` / borde `#2A3444`) frente a un lienzo cartográfico claro (`#F7F8FA` / retícula `#E6EAF0`) y panel analítico blanco (`#FFFFFF` / divisores 1px `#D8DFE8`). Cero tarjetas anidadas ni ornamentos decorativos; cuarentena estricta de color para que solo las 5 categorías de utilización, el sumidero PTAR (`#0D9488`) y la ruta seleccionada (`#0284C7`) destaquen con máxima claridad.
-- **STORY:** Al abrir o redimensionar la app, el usuario identifica de inmediato el estado crítico de la red, reproduce o recorre el tiempo sin parpadeos en las gráficas, traza rutas `BFS`/`DFS`/aguas arriba/aguas abajo con lectura tramo a tramo y consulta/compara los 5 escenarios o exporta reportes desde cualquier resolución.
-- **FIRST VIEWPORT:** Barra superior adaptativa (título del proyecto + acciones de archivo/reporte que colapsan a menú compacto en ventanas estrechas), banda KPI/estado adaptable, riel izquierdo colapsable con scroll por rueda del ratón (`Escenario y Parámetros`, `Escala de Utilización`, `Consultas y Recorridos`), lienzo central `NetworkCanvas` con barra flotante de zoom/ajuste y reproductor temporal (`Inicio`, `-1`, `Play/Pausa` unificado, `+1`, `Velocidad`, `Balance de masa`), y panel derecho colapsable (`Inspector`, `Críticas`, `Evolución`, `Comparación`) que en pantallas estrechas funciona como cajón/pestaña conmutable sin aplastar el grafo.
-- **FORM:** Candidato 4 (*Atlas Urbano de Infraestructura*), elevado con disciplina tabular de tablero de salidas (columnas numéricas alineadas en KPIs y tablas), cuarentena cromática de léxico técnico (jerarquía tipográfica sin ruido) y seguimiento tramo-a-tramo en rutas `BFS`/`DFS` (`Fuente → Tramos → PTAR 31`). `seed:87601e9bf2c85850`.
+- **THESIS:** Abandona el riel lateral oscuro obsidiana y los paneles blancos genéricos para articular una mesa cartográfica de archivo en **Vitela (`#FFFFE3`), Plata Mineral (`#CBCBCB`), Grafito (`#4A4A4A`) y Azul Pizarra (`#6D8196`)**, donde los datos hidráulicos viven sobre láminas claras de alto contraste ancladas por una cabecera y consola de bitácora en grafito sólido.
+- **OWN-WORLD:** Cabecera de comando y barra de cierre en `#4A4A4A` con regla estructural `#6D8196` (2px) y tipografía `#FFFFE3`; muelles laterales en `#CBCBCB` que enmarcan tarjetas planas `#FFFFE3` con filetes `1px` `#4A4A4A`; lienzo central sobre papel vitela `#FFFFE3` con retícula ortogonal sutil y cápsula flotante `#4A4A4A`; toda interacción primaria y foco de selección resueltos en `#6D8196` con tinta `#FFFFE3`.
+- **STORY:** Al abrir o redimensionar la ventana, el operador lee de inmediato el reloj de simulación sobre placa `#4A4A4A` junto a los 4 indicadores KPI en `#FFFFE3`, identifica tuberías críticas sobre la lámina marfil sin deslumbramiento, ejecuta recorridos `BFS`/`DFS` con lectura en bitácora oscura y alterna entre los 5 escenarios en español fluido.
+- **FIRST VIEWPORT:** Cabecera superior en `#4A4A4A` (emblema vectorial de red, título, insignia de dataset/escenario, conmutadores `Controles`/`Análisis` y acciones de archivo/reporte), seguida de franja de telemetría (reloj `#4A4A4A` + 4 KPIs `#FFFFE3` con acento superior `#6D8196`), muelle izquierdo `#CBCBCB` con tarjetas `#FFFFE3` (`Simulación` / `Recorridos`), lienzo central `#FFFFE3` con controles flotantes `#4A4A4A` y reproductor inferior `#CBCBCB`/`#FFFFE3`, y muelle derecho analítico (`Inspector`, `Tuberías Críticas`, `Evolución`, `Comparación`) cerrado por barra de estado `#4A4A4A`.
+- **FORM:** Candidato 5 (*Lámina Cartográfica de Archivo Hidráulico*), elevado por la disciplina de jerarquía por cambio de fila en tiempo real (del tablero de salidas) y la legibilidad de diagrama de tránsito en codos e intersecciones (`PTAR 31` y rutas `BFS`/`DFS` con lectura directa). `seed:7bc550bcc657cb12`.
 - **FINISH:** unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
