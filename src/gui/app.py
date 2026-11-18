@@ -10,13 +10,11 @@ from src.algorithms import (
     OVERLOAD_PERSISTENCE_LEVELS,
     SourceAttributionResult,
     TraversalAnimFrame,
-    bfs,
     bfs_anim_frames,
     build_route_to_sink,
     classify_overload_persistence,
     classify_utilization,
     compute_source_attribution,
-    dfs,
     dfs_anim_frames,
     find_isolated_from_sinks,
     rank_critical_pipes,
@@ -207,8 +205,7 @@ class BicentenarioSewerApp(tk.Tk):
 
         default_path = initial_data_path or self._find_default_dataset()
         if default_path:
-            self._load_path(default_path, silent_error=False)
-            if self.dataset is not None:
+            if self._load_path(default_path, silent_error=False):
                 self.run_simulation()
 
         self.update_idletasks()
@@ -796,6 +793,29 @@ class BicentenarioSewerApp(tk.Tk):
         self.network_canvas.set_basin_focus(None, None)
         self.network_canvas.select_pipe(None)
         self.network_canvas.select_node(None)
+        self._crit_tab_dirty = True
+        self._charts_tab_dirty = True
+        self._suppress_tree_select = True
+        try:
+            sel = self.tree_critical.selection()
+            if sel:
+                self.tree_critical.selection_remove(*sel)
+        except tk.TclError:
+            pass
+        finally:
+            self._suppress_tree_select = False
+        if self._active_right_tab() == 2 and self.result is not None and self.result.snapshots:
+            self._charts_tab_dirty = False
+            snap = self.result.snapshots[self.current_step]
+            self.temporal_charts.update_plots(
+                self.result,
+                None,
+                snap.time_min,
+                previous_result=self._previous_result,
+                route_pipes=self._resolve_active_route(),
+                current_step_index=self.current_step,
+                diameter_overrides=self._diameter_overrides_map(),
+            )
         self._refresh_inspector()
 
     def _on_window_configure(self, event: tk.Event) -> None:
@@ -1832,7 +1852,7 @@ class BicentenarioSewerApp(tk.Tk):
         int_hdr.pack(fill=tk.X, padx=8, pady=(6, 2))
         tk.Label(
             int_hdr,
-            text="Intervención en vivo (Idea 1)",
+            text="Intervención en vivo",
             bg=theme.PAPER_SUBTLE,
             fg=theme.ACCENT_TEXT_ON_LIGHT,
             font=(self.display_font, 8, "bold"),
@@ -2352,19 +2372,19 @@ class BicentenarioSewerApp(tk.Tk):
         self.network_canvas.show_util_labels = self.var_show_util_labels.get()
         self.network_canvas.redraw()
 
-    def _load_path(self, path: str, silent_error: bool = False) -> None:
+    def _load_path(self, path: str, silent_error: bool = False) -> bool:
         try:
             dataset = load_dataset(path)
         except DataLoadError as exc:
             if not silent_error:
                 messagebox.showerror("Error de validación de datos", str(exc))
             self.status_var.set(f"Error al cargar: {exc}")
-            return
+            return False
         except Exception as exc:
             if not silent_error:
                 messagebox.showerror("Error inesperado", str(exc))
             self.status_var.set(f"Error inesperado: {exc}")
-            return
+            return False
 
         self._player_pause()
         self._stop_traversal_anim(clear_canvas=False)
@@ -2382,6 +2402,17 @@ class BicentenarioSewerApp(tk.Tk):
         self._isolated_pipes.clear()
         self._basin_isolated = False
         self._active_route_pipes = []
+        self._last_attr_key = None
+        self._source_attribution = None
+        self._prefix_peak_util = []
+        self._prefix_overload_min = []
+        for item in self.tree_comp.get_children():
+            self.tree_comp.delete(item)
+        self.comparison_charts.update_comparison([])
+        if hasattr(self, "lbl_comp_hint"):
+            self.lbl_comp_hint.configure(
+                text="Doble clic para activar escenario", fg=theme.INK_MUTED
+            )
 
         self.network_canvas.set_graph(dataset.graph)
 
@@ -2416,23 +2447,20 @@ class BicentenarioSewerApp(tk.Tk):
         self.status_var.set(f"Red cargada: {self._dataset_summary_text}")
         self._render_structure_strip("Queue", [])
         self._refresh_inspector()
+        return True
 
     def _action_load_excel(self) -> None:
         path = filedialog.askopenfilename(
             title="Seleccionar archivo Excel de la red",
             filetypes=[("Archivos Excel", "*.xlsx"), ("Todos los archivos", "*.*")],
         )
-        if path:
-            self._load_path(path)
-            if self.dataset is not None:
-                self.run_simulation()
+        if path and self._load_path(path):
+            self.run_simulation()
 
     def _action_load_csv(self) -> None:
         path = filedialog.askdirectory(title="Seleccionar carpeta con archivos CSV")
-        if path:
-            self._load_path(path)
-            if self.dataset is not None:
-                self.run_simulation()
+        if path and self._load_path(path):
+            self.run_simulation()
 
     def _action_export_csv(self) -> None:
         if self.dataset is None:
@@ -2440,8 +2468,11 @@ class BicentenarioSewerApp(tk.Tk):
             return
         out_dir = filedialog.askdirectory(title="Seleccionar carpeta destino para CSV")
         if out_dir:
-            export_to_csv_dir(self.dataset, out_dir)
-            messagebox.showinfo("Exportación completada", f"Archivos CSV exportados en:\n{out_dir}")
+            try:
+                export_to_csv_dir(self.dataset, out_dir)
+                messagebox.showinfo("Exportación completada", f"Archivos CSV exportados en:\n{out_dir}")
+            except Exception as exc:
+                messagebox.showerror("Error al exportar CSV", f"No se pudieron exportar los archivos CSV:\n{exc}")
 
     def _action_generate_report(self) -> None:
         if self.dataset is None or self.result is None:
@@ -2458,9 +2489,21 @@ class BicentenarioSewerApp(tk.Tk):
         )
         if not out_file:
             return
-        comps = self.comparisons or compare_all_scenarios(self.dataset, self.result.config)
+        need_recomp = not self.comparisons or self._comparisons_dirty
+        comps = (
+            compare_all_scenarios(self.dataset, self.result.config)
+            if need_recomp
+            else self.comparisons
+        )
         self.comparisons = comps
         self._comparisons_dirty = False
+        if need_recomp:
+            if hasattr(self, "lbl_comp_hint"):
+                self.lbl_comp_hint.configure(
+                    text="Doble clic para activar escenario", fg=theme.INK_MUTED
+                )
+            self._populate_comp_tree()
+            self.comparison_charts.update_comparison(comps)
         if out_file.lower().endswith(".docx"):
             try:
                 written = generate_docx_report(self.dataset, self.result, comps, out_file)
@@ -2471,15 +2514,24 @@ class BicentenarioSewerApp(tk.Tk):
                 return
             except Exception as exc:
                 fallback = os.path.splitext(out_file)[0] + ".md"
-                written = generate_markdown_report(self.dataset, self.result, comps, fallback)
-                messagebox.showwarning(
-                    "Respaldo Markdown generado",
-                    f"No se pudo generar .docx ({exc}).\nSe exportó respaldo Markdown/CSV en:\n{written}",
-                )
+                try:
+                    written = generate_markdown_report(self.dataset, self.result, comps, fallback)
+                    messagebox.showwarning(
+                        "Respaldo Markdown generado",
+                        f"No se pudo generar .docx ({exc}).\nSe exportó respaldo Markdown/CSV en:\n{written}",
+                    )
+                except Exception as md_exc:
+                    messagebox.showerror(
+                        "Error al exportar reporte",
+                        f"Falló la generación de .docx ({exc}) y el respaldo Markdown ({md_exc}).",
+                    )
                 return
 
-        written = generate_markdown_report(self.dataset, self.result, comps, out_file)
-        messagebox.showinfo("Reporte generado", f"Reporte y tabla CSV generados en:\n{written}")
+        try:
+            written = generate_markdown_report(self.dataset, self.result, comps, out_file)
+            messagebox.showinfo("Reporte generado", f"Reporte y tabla CSV generados en:\n{written}")
+        except Exception as exc:
+            messagebox.showerror("Error al exportar reporte", f"No se pudo generar el reporte:\n{exc}")
 
     def _action_show_assumptions(self) -> None:
         msg = (
@@ -2592,8 +2644,8 @@ class BicentenarioSewerApp(tk.Tk):
 
         if preserve_previous and self.result is not None:
             self._previous_result = self.result
-        elif not preserve_previous and self.result is not None and self._interventions:
-            self._previous_result = self.result
+        elif self.result is not None and self.result.config == cfg:
+            pass
         else:
             self._previous_result = None
 
@@ -2618,7 +2670,8 @@ class BicentenarioSewerApp(tk.Tk):
             if not self._slider_restore_pending:
                 self._slider_restore_pending = True
                 self.after_idle(self._restore_slider_command)
-        self.lbl_t_end.configure(text=f"{cfg.duration_min:.0f}m")
+        end_min = self.result.snapshots[-1].time_min if self.result.snapshots else cfg.duration_min
+        self.lbl_t_end.configure(text=f"{end_min:.0f}m")
         self._update_guided_tour_button_label()
 
         # Iniciar siempre en el minuto 0 (comienzo de la simulación)
@@ -2641,8 +2694,12 @@ class BicentenarioSewerApp(tk.Tk):
         pipe_ids = self.dataset.graph.pipe_ids() if self.dataset is not None else []
         cur_peak: Dict[str, float] = {pid: 0.0 for pid in pipe_ids}
         cur_ov: Dict[str, float] = {pid: 0.0 for pid in pipe_ids}
-        dt_min = float(result.config.dt_min)
-        dur_min = float(result.config.duration_min)
+        dt_min = max(0.1, float(result.config.dt_min))
+        dur_min = (
+            float(result.snapshots[-1].time_min)
+            if result.snapshots
+            else max(dt_min, float(result.config.duration_min))
+        )
         self._prefix_peak_util = []
         self._prefix_overload_min = []
         for snap in result.snapshots:
@@ -2972,6 +3029,17 @@ class BicentenarioSewerApp(tk.Tk):
         self._sync_intervention_controls()
         if self._basin_isolated:
             self._apply_basin_isolation()
+        if self._active_right_tab() == 1 and self.tree_critical.exists(pipe_id):
+            self._suppress_tree_select = True
+            try:
+                if list(self.tree_critical.selection()) != [pipe_id]:
+                    self.tree_critical.selection_set(pipe_id)
+                if not self.is_playing:
+                    self.tree_critical.see(pipe_id)
+            finally:
+                self._suppress_tree_select = False
+        else:
+            self._crit_tab_dirty = True
         self._refresh_inspector()
         if self.result is not None:
             snap = self.result.snapshots[self.current_step]
@@ -2991,6 +3059,16 @@ class BicentenarioSewerApp(tk.Tk):
         self.var_bfs_start.set(node_id)
         if self._basin_isolated:
             self._apply_basin_isolation()
+        self._crit_tab_dirty = True
+        self._suppress_tree_select = True
+        try:
+            sel = self.tree_critical.selection()
+            if sel:
+                self.tree_critical.selection_remove(*sel)
+        except tk.TclError:
+            pass
+        finally:
+            self._suppress_tree_select = False
         self._refresh_inspector()
         if self.result is not None:
             snap = self.result.snapshots[self.current_step]
@@ -3357,6 +3435,7 @@ class BicentenarioSewerApp(tk.Tk):
             f"Nodos ({len(nodes)}): {', '.join(nodes)}\n"
             f"Tuberías ({len(pipes)}): {', '.join(p.pipe_id for p in pipes)}"
         )
+        self.status_var.set(f"{label} desde {nid}: {len(nodes)} nodo(s), {len(pipes)} tubería(s).")
 
     def _clear_highlights(self) -> None:
         self._stop_traversal_anim(clear_canvas=True)
@@ -4383,7 +4462,10 @@ class BicentenarioSewerApp(tk.Tk):
         # Respaldo dinámico para escenarios personalizados de otros datasets
         ranked = sorted(
             (self.result.peak_pipe_utilization.items() if self.result else []),
-            key=lambda kv: -kv[1],
+            key=lambda kv: (
+                -kv[1],
+                -(self.result.peak_pipe_demand_ratio.get(kv[0], 0.0) if self.result else 0.0),
+            ),
         )
         top_head = [pid for pid, _ in ranked[:3]] or p_head8
         top_mid = [pid for pid, _ in ranked[3:6]] or p_25 or top_head

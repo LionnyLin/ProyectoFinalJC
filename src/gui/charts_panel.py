@@ -256,6 +256,7 @@ class TemporalChartsPanel(tk.Frame):
                 fg=theme.INK_PRIMARY,
                 font=(self._ui_font, 8, "normal"),
             )
+            _sync_figure_to_widget(self.canvas, self.figure)
             _safe_tight_layout(self.figure, self.canvas.get_tk_widget())
             self.canvas.draw_idle()
 
@@ -311,6 +312,7 @@ class TemporalChartsPanel(tk.Frame):
 
         if result is None or not result.snapshots:
             self.ax_flow.set_title("Sin simulación ejecutada", color=theme.INK_PRIMARY, fontsize=8.5)
+            _sync_figure_to_widget(self.canvas, self.figure)
             _safe_tight_layout(self.figure, self.canvas.get_tk_widget())
             self.canvas.draw_idle()
             return
@@ -391,7 +393,9 @@ class TemporalChartsPanel(tk.Frame):
             target_pids = [selected_pipe_id]
         else:
             sorted_p = sorted(
-                result.peak_pipe_utilization.items(), key=lambda kv: kv[1], reverse=True
+                result.peak_pipe_utilization.items(),
+                key=lambda kv: (kv[1], result.peak_pipe_demand_ratio.get(kv[0], 0.0)),
+                reverse=True,
             )
             target_pids = [pid for pid, _ in sorted_p[:3]]
 

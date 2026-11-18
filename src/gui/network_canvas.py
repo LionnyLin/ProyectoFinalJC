@@ -256,7 +256,6 @@ class NetworkCanvas(tk.Canvas):
         self._overload_minutes_map.clear()
         self._traversal_frame = None
         self._fast_cache_valid = False
-        n_nodes, n_pipes, *_ = graph.summary()
         self._update_stamp_label()
         self.reset_view()
 
@@ -427,6 +426,8 @@ class NetworkCanvas(tk.Canvas):
             self._schedule_pulse_tick()
         elif not playing and self._is_playing:
             self.stop_pulse_animation()
+            for meta in self._pulse_items:
+                self._item_to_pipe.pop(meta.item_id, None)
             self.delete("flow_pulse")
             self._pulse_items.clear()
 
@@ -572,13 +573,21 @@ class NetworkCanvas(tk.Canvas):
             )
             if self._map_mode == "overload_minutes" and not is_closed and ov_or_u >= 0.5:
                 ov_badge_lbl = f"{ov_or_u:.0f}m >100%"
-                if self.show_pipe_labels:
-                    text_lbl = f"{pid} · {ov_badge_lbl}"
+                if prefix_parts:
+                    if self.show_pipe_labels and prefix_parts[-1] == pid:
+                        text_lbl = " ".join(prefix_parts[:-1] + [f"{pid} · {ov_badge_lbl}"])
+                    else:
+                        text_lbl = " ".join(prefix_parts + [ov_badge_lbl])
                 else:
-                    text_lbl = ov_badge_lbl
-                fg = theme.SHELL_TEXT
-                bg = theme.SHELL_BG
-                border = "#ef4444"
+                    text_lbl = f"{pid} · {ov_badge_lbl}" if self.show_pipe_labels else ov_badge_lbl
+                if is_sel:
+                    fg = theme.ACCENT_INK
+                    bg = theme.ACCENT_PRIMARY
+                    border = theme.INK_PRIMARY
+                else:
+                    fg = theme.SHELL_TEXT
+                    bg = theme.SHELL_BG
+                    border = "#ef4444"
             else:
                 parts = list(prefix_parts)
                 if self.show_util_labels and not is_closed and suf_lbl:
@@ -610,6 +619,8 @@ class NetworkCanvas(tk.Canvas):
         self._pipe_label_refs = new_label_refs
 
         # 3. Actualizar anillos topográficos de inundación en pozos
+        for fid in self.find_withtag("flood_ring"):
+            self._item_to_node.pop(fid, None)
         self.delete("flood_ring")
         sf = self._scale_factor_cache
         sqrt_z = math.sqrt(self._zoom)
@@ -626,6 +637,20 @@ class NetworkCanvas(tk.Canvas):
                 self.tag_lower("flood_ring", "node_layer")
             except tk.TclError:
                 pass
+
+        # 4. Actualizar pulsos solo si cambió el conjunto activo o cantidad de pulsos
+        if self._is_playing:
+            cur_counts: Dict[str, int] = {}
+            for m in self._pulse_items:
+                cur_counts[m.pipe_id] = cur_counts.get(m.pipe_id, 0) + 1
+            desired_counts = {pid: sig[0] for pid, sig in active_pulse_sig.items()}
+            if cur_counts != desired_counts:
+                self._rebuild_pulses_from_cache()
+            else:
+                for m in self._pulse_items:
+                    sig = active_pulse_sig.get(m.pipe_id)
+                    if sig is not None:
+                        self.itemconfigure(m.item_id, fill=sig[1])
 
     def _draw_flood_rings(
         self,
@@ -663,20 +688,6 @@ class NetworkCanvas(tk.Canvas):
             )
             self._item_to_node[ring_id] = nid
         return True
-
-        # 4. Actualizar pulsos solo si cambió el conjunto activo o cantidad de pulsos
-        if self._is_playing:
-            cur_counts: Dict[str, int] = {}
-            for m in self._pulse_items:
-                cur_counts[m.pipe_id] = cur_counts.get(m.pipe_id, 0) + 1
-            desired_counts = {pid: sig[0] for pid, sig in active_pulse_sig.items()}
-            if cur_counts != desired_counts:
-                self._rebuild_pulses_from_cache()
-            else:
-                for m in self._pulse_items:
-                    sig = active_pulse_sig.get(m.pipe_id)
-                    if sig is not None:
-                        self.itemconfigure(m.item_id, fill=sig[1])
 
     def set_highlights(
         self,
