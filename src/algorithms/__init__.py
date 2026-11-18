@@ -19,10 +19,14 @@ from .queries import (
     trace_upstream,
 )
 from .analysis import (
+    OVERLOAD_PERSISTENCE_LEVELS,
     UTILIZATION_LEVELS,
     UtilizationCategory,
     CriticalPipeRecord,
+    SourceAttributionResult,
+    classify_overload_persistence,
     classify_utilization,
+    compute_source_attribution,
     rank_critical_pipes,
 )
 
@@ -42,8 +46,12 @@ __all__ = [
     "find_isolated_from_sinks",
     "build_route_to_sink",
     "UTILIZATION_LEVELS",
+    "OVERLOAD_PERSISTENCE_LEVELS",
     "UtilizationCategory",
     "CriticalPipeRecord",
+    "SourceAttributionResult",
     "classify_utilization",
+    "classify_overload_persistence",
+    "compute_source_attribution",
     "rank_critical_pipes",
 ]

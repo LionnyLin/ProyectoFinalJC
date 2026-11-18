@@ -7,7 +7,9 @@ from src.algorithms import (
     bfs,
     bfs_anim_frames,
     build_route_to_sink,
+    classify_overload_persistence,
     classify_utilization,
+    compute_source_attribution,
     dfs,
     dfs_anim_frames,
     find_isolated_from_sinks,
@@ -103,6 +105,22 @@ class TestAlgorithms(unittest.TestCase):
         self.assertTrue(res_d.target_reached)
         self.assertGreaterEqual(len(frames_d), 3)
         self.assertEqual(frames_d[0].structure_name, "Stack")
+
+    def test_source_attribution_and_overload_persistence_levels(self) -> None:
+        attr_prop = compute_source_attribution(self.graph, snapshot=None, split_rule="proportional")
+        self.assertEqual(attr_prop.pipe_shares["P31"], [("17", 1.0)])
+        sink_sum = sum(frac for _s, frac in attr_prop.node_shares["31"])
+        self.assertAlmostEqual(sink_sum, 1.0, places=6)
+        self.assertGreater(len(attr_prop.pipe_shares["P25"]), 1)
+
+        attr_eq = compute_source_attribution(self.graph, snapshot=None, split_rule="equal")
+        self.assertAlmostEqual(sum(frac for _s, frac in attr_eq.node_shares["31"]), 1.0, places=6)
+
+        self.assertEqual(classify_overload_persistence(0.0, 90.0)[0], 0)
+        self.assertEqual(classify_overload_persistence(15.0, 90.0)[0], 1)
+        self.assertEqual(classify_overload_persistence(35.0, 90.0)[0], 2)
+        self.assertEqual(classify_overload_persistence(60.0, 90.0)[0], 3)
+        self.assertEqual(classify_overload_persistence(80.0, 90.0)[0], 4)
 
 
 if __name__ == "__main__":
