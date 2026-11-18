@@ -122,7 +122,7 @@ class SewerSimulationEngine:
         source_set = set(self.graph.source_ids())
         sink_set = set(self.graph.sink_ids())
         cap_manhole = max(0.0, float(config.max_manhole_storage_m3))
-        max_phys_util = max(100.0, float(config.max_physical_utilization_pct))
+        max_phys_util = max(100.1, float(config.max_physical_utilization_pct))
 
         interventions: Dict[str, PipeIntervention] = config.interventions or {}
         eff_params = {
@@ -396,14 +396,19 @@ class SewerSimulationEngine:
 
         elapsed_ms = (time.perf_counter() - t_start) * 1000.0
         snapshots_list = self.history.to_list()
+        actual_duration_min = (
+            snapshots_list[-1].time_min
+            if snapshots_list
+            else max(dt_min, float(config.duration_min))
+        )
         overloaded_minutes: Dict[str, float] = {pid: 0.0 for pid in self.graph.pipe_ids()}
         for snap in self.history:
             if snap.step_index == 0:
                 continue
             for pid in snap.overloaded_pipe_ids:
                 overloaded_minutes[pid] = min(
-                    config.duration_min,
-                    overloaded_minutes.get(pid, 0.0) + config.dt_min,
+                    actual_duration_min,
+                    overloaded_minutes.get(pid, 0.0) + dt_min,
                 )
 
         last_snap = snapshots_list[-1]

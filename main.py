@@ -51,15 +51,16 @@ def main() -> int:
             intensity_mm_h=30.0,
         )
         summaries = compare_all_scenarios(dataset, base_cfg)
+        primary = summaries[2] if len(summaries) > 2 else summaries[0]
 
         if args.report:
             out = generate_markdown_report(
-                dataset, summaries[2].result, summaries, args.report
+                dataset, primary.result, summaries, args.report
             )
             print(f"Reporte Markdown generado en: {out}")
         if args.report_docx:
             out = generate_docx_report(
-                dataset, summaries[2].result, summaries, args.report_docx
+                dataset, primary.result, summaries, args.report_docx
             )
             print(f"Reporte Word (.docx) generado en: {out}")
         if args.technical_docx:

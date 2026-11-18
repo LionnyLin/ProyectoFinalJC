@@ -10,13 +10,13 @@ set "PY_CMD="
 where py >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
     py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
-    if %ERRORLEVEL% EQU 0 set "PY_CMD=py -3"
+    if not errorlevel 1 set "PY_CMD=py -3"
 )
 if "%PY_CMD%"=="" (
     where python >nul 2>&1
     if %ERRORLEVEL% EQU 0 (
         python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
-        if %ERRORLEVEL% EQU 0 set "PY_CMD=python"
+        if not errorlevel 1 set "PY_CMD=python"
     )
 )
 if "%PY_CMD%"=="" (
