@@ -69,7 +69,20 @@ class NetworkCanvas(tk.Canvas):
         self.bind("<Leave>", lambda _e: self._hide_tooltip())
 
     def _build_overlays(self) -> None:
-        """Crea controles flotantes de zoom/vista y guía mínima de interacción."""
+        """Crea controles flotantes de zoom/vista, sello cartográfico y guía de interacción."""
+        self._stamp_lbl = tk.Label(
+            self,
+            text="PLANO HIDRÁULICO · 46 NODOS · 59 TRAMOS",
+            bg=theme.DOCK_BG,
+            fg=theme.INK_PRIMARY,
+            highlightthickness=1,
+            highlightbackground=theme.DOCK_BORDER,
+            padx=9,
+            pady=4,
+            font=(self.mono_font, 7, "bold"),
+        )
+        self._stamp_lbl.place(relx=0.0, rely=0.0, x=12, y=12, anchor="nw")
+
         self._zoom_bar = tk.Frame(
             self,
             bg=theme.CANVAS_FLOAT_BG,
@@ -84,9 +97,9 @@ class NetworkCanvas(tk.Canvas):
                 text=txt,
                 command=cmd,
                 bg=theme.CANVAS_FLOAT_BG,
-                fg=theme.INK_PRIMARY,
-                activebackground=theme.PAPER_HOVER,
-                activeforeground=theme.INK_PRIMARY,
+                fg=theme.CANVAS_FLOAT_FG,
+                activebackground=theme.CANVAS_FLOAT_HOVER,
+                activeforeground=theme.CANVAS_FLOAT_FG,
                 relief="flat",
                 bd=0,
                 padx=8,
@@ -94,33 +107,33 @@ class NetworkCanvas(tk.Canvas):
                 font=(self.ui_font, 8, "bold"),
                 cursor="hand2",
             )
-            b.bind("<Enter>", lambda _e: b.configure(bg=theme.PAPER_HOVER))
+            b.bind("<Enter>", lambda _e: b.configure(bg=theme.CANVAS_FLOAT_HOVER))
             b.bind("<Leave>", lambda _e: b.configure(bg=theme.CANVAS_FLOAT_BG))
             return b
 
         _make_mini_btn("−", self.zoom_out).pack(side=tk.LEFT)
-        tk.Frame(self._zoom_bar, bg=theme.PAPER_BORDER, width=1).pack(side=tk.LEFT, fill=tk.Y, pady=4)
+        tk.Frame(self._zoom_bar, bg=theme.ACCENT_PRIMARY, width=1).pack(side=tk.LEFT, fill=tk.Y, pady=4)
         self._lbl_zoom = tk.Label(
             self._zoom_bar,
             text="100%",
             bg=theme.CANVAS_FLOAT_BG,
-            fg=theme.INK_SECONDARY,
-            font=(self.mono_font, 8),
+            fg=theme.CANVAS_FLOAT_FG,
+            font=(self.mono_font, 8, "bold"),
             width=5,
         )
         self._lbl_zoom.pack(side=tk.LEFT, padx=2)
-        tk.Frame(self._zoom_bar, bg=theme.PAPER_BORDER, width=1).pack(side=tk.LEFT, fill=tk.Y, pady=4)
+        tk.Frame(self._zoom_bar, bg=theme.ACCENT_PRIMARY, width=1).pack(side=tk.LEFT, fill=tk.Y, pady=4)
         _make_mini_btn("+", self.zoom_in).pack(side=tk.LEFT)
-        tk.Frame(self._zoom_bar, bg=theme.PAPER_BORDER, width=1).pack(side=tk.LEFT, fill=tk.Y, pady=4)
+        tk.Frame(self._zoom_bar, bg=theme.ACCENT_PRIMARY, width=1).pack(side=tk.LEFT, fill=tk.Y, pady=4)
         _make_mini_btn("Ajustar", self.reset_view).pack(side=tk.LEFT)
 
         self._hint_bar = tk.Label(
             self,
             text="Arrastrar: mover  ·  Rueda: zoom  ·  Clic: inspeccionar  ·  Doble clic: ajustar",
-            bg=theme.CANVAS_FLOAT_BG,
-            fg=theme.INK_MUTED,
+            bg=theme.DOCK_BG,
+            fg=theme.INK_PRIMARY,
             highlightthickness=1,
-            highlightbackground=theme.CANVAS_FLOAT_BORDER,
+            highlightbackground=theme.DOCK_BORDER,
             padx=9,
             pady=4,
             font=(self.ui_font, 8),
@@ -128,6 +141,11 @@ class NetworkCanvas(tk.Canvas):
         self._hint_bar.place(relx=0.0, rely=1.0, x=12, y=-12, anchor="sw")
 
     def _on_configure(self, event: tk.Event) -> None:
+        if event.width >= 580 and event.height >= 400:
+            self._stamp_lbl.place(relx=0.0, rely=0.0, x=12, y=12, anchor="nw")
+        else:
+            self._stamp_lbl.place_forget()
+
         if event.width >= 520 and event.height >= 400:
             self._hint_bar.place(relx=0.0, rely=1.0, x=12, y=-12, anchor="sw")
         else:
@@ -557,12 +575,12 @@ class NetworkCanvas(tk.Canvas):
         for node in self.graph.nodes():
             nx, ny = positions[node.node_id]
             if node.node_type == "sink":
-                px = max(60.0, nx)
-                py = ny - node_radius - 14
-                placed_boxes.append((px - 56, py - 9, px + 56, py + 9))
+                px = max(68.0, nx)
+                py = ny - node_radius - 15
+                placed_boxes.append((px - 70, py - 10, px + 70, py + 10))
             elif node.node_type == "source" and not dense_mode:
-                ty = (ny - node_radius - 11) if node.y < 0.2 else (ny + node_radius + 11)
-                placed_boxes.append((nx - 24, ty - 7, nx + 24, ty + 7))
+                ty = (ny - node_radius - 12) if node.y < 0.2 else (ny + node_radius + 12)
+                placed_boxes.append((nx - 26, ty - 8, nx + 26, ty + 8))
 
         # Ordenar por prioridad: seleccionada > resaltada > sobrecargada > crítica > mayor %
         label_queue.sort(key=lambda item: (item[0], item[1]), reverse=True)
@@ -571,17 +589,17 @@ class NetworkCanvas(tk.Canvas):
             fg = (
                 theme.ACCENT_INK
                 if is_sel
-                else ("#991b1b" if is_over else (theme.ACCENT_PRIMARY if is_hl else theme.INK_SECONDARY))
+                else ("#991b1b" if is_over else (theme.ACCENT_TEXT_ON_LIGHT if is_hl else theme.INK_PRIMARY))
             )
             bg = (
                 theme.ACCENT_PRIMARY
                 if is_sel
-                else ("#FEF2F2" if is_over else (theme.ACCENT_SOFT if is_hl else theme.CANVAS_FLOAT_BG))
+                else ("#FEF2F2" if is_over else (theme.ACCENT_SOFT if is_hl else theme.PAPER_BG))
             )
             border = (
-                theme.ACCENT_PRIMARY
+                theme.INK_PRIMARY
                 if is_sel
-                else ("#FCA5A5" if is_over else (theme.PIPE_HIGHLIGHT_PATH if is_hl else "#E2E8F0"))
+                else ("#FCA5A5" if is_over else (theme.PIPE_HIGHLIGHT_PATH if is_hl else theme.PAPER_BORDER))
             )
             font_spec = (
                 self.mono_font,
@@ -688,33 +706,43 @@ class NetworkCanvas(tk.Canvas):
             self._item_to_node[txt_id] = node.node_id
 
             if node.node_type == "sink":
-                ptar_x = max(60.0, x)
-                ptar_y = y - r - 14
+                ptar_x = max(68.0, x)
+                ptar_y = y - r - 15
                 ptar_id = self.create_text(
                     ptar_x,
                     ptar_y,
-                    text="PTAR Punta Canoa",
-                    fill=theme.NODE_SINK_BORDER,
+                    text="PTAR Punta Canoa · 31",
+                    fill=theme.SHELL_TEXT,
                     font=(self.ui_font, 8, "bold"),
                 )
                 pb = self.bbox(ptar_id)
                 if pb is not None:
                     pbg = self.create_rectangle(
-                        pb[0] - 4, pb[1] - 1, pb[2] + 4, pb[3] + 1,
-                        fill=theme.CANVAS_FLOAT_BG,
-                        outline=theme.NODE_SINK_BORDER,
-                        width=1,
+                        pb[0] - 5, pb[1] - 2, pb[2] + 5, pb[3] + 2,
+                        fill=theme.SHELL_BG,
+                        outline=theme.ACCENT_PRIMARY,
+                        width=1.5,
                     )
                     self.tag_lower(pbg, ptar_id)
                     self._item_to_node[pbg] = node.node_id
                 self._item_to_node[ptar_id] = node.node_id
             elif node.node_type == "source" and not dense_mode:
-                tag_y = (y - r - 11) if node.y < 0.2 else (y + r + 11)
+                tag_y = (y - r - 12) if node.y < 0.2 else (y + r + 12)
                 src_tag = self.create_text(
                     x,
                     tag_y,
                     text="Fuente",
-                    fill=theme.ACCENT_PRIMARY,
+                    fill=theme.INK_PRIMARY,
                     font=(self.ui_font, 7, "bold"),
                 )
+                sb = self.bbox(src_tag)
+                if sb is not None:
+                    sbg = self.create_rectangle(
+                        sb[0] - 4, sb[1] - 1, sb[2] + 4, sb[3] + 1,
+                        fill=theme.DOCK_BG,
+                        outline=theme.INK_PRIMARY,
+                        width=1,
+                    )
+                    self.tag_lower(sbg, src_tag)
+                    self._item_to_node[sbg] = node.node_id
                 self._item_to_node[src_tag] = node.node_id

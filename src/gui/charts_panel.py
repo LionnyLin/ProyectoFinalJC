@@ -14,11 +14,11 @@ from . import theme
 
 def _apply_axis_style(ax) -> None:
     ax.set_facecolor(theme.PAPER_ALT_ROW)
-    ax.tick_params(colors=theme.INK_SECONDARY, labelsize=7.5)
+    ax.tick_params(colors=theme.INK_PRIMARY, labelsize=7.5)
     for spine in ax.spines.values():
-        spine.set_color(theme.PAPER_BORDER)
-        spine.set_linewidth(0.8)
-    ax.grid(True, linestyle="--", alpha=0.55, color=theme.PAPER_BORDER)
+        spine.set_color(theme.INK_PRIMARY)
+        spine.set_linewidth(0.85)
+    ax.grid(True, linestyle="--", alpha=0.75, color=theme.PAPER_BORDER)
 
 
 class TemporalChartsPanel(tk.Frame):
@@ -94,14 +94,14 @@ class TemporalChartsPanel(tk.Frame):
         ptar_out = [s.total_sink_discharge_m3s for s in result.snapshots]
 
         self.ax_flow.plot(
-            times, inflows, label="Entrada Fuentes", color=theme.ACCENT_PRIMARY, linewidth=2.0
+            times, inflows, label="Entrada fuentes", color=theme.ACCENT_PRIMARY, linewidth=2.1
         )
         self.ax_flow.plot(
-            times, ptar_out, label="Descarga PTAR (31)", color=theme.NODE_SINK_FILL, linewidth=2.1
+            times, ptar_out, label="Descarga PTAR (31)", color=theme.INK_PRIMARY, linewidth=2.1
         )
         t_cur = current_time_min if current_time_min is not None else times[0]
         self._cursor_flow = self.ax_flow.axvline(
-            t_cur, color=theme.INK_PRIMARY, linestyle=":", linewidth=1.2, alpha=0.85
+            t_cur, color=theme.ACCENT_PRIMARY, linestyle=":", linewidth=1.4, alpha=0.9
         )
         self.ax_flow.set_title(
             "Balance de Caudales (m³/s)",
@@ -111,7 +111,7 @@ class TemporalChartsPanel(tk.Frame):
             fontfamily=["Inter", "Segoe UI", "DejaVu Sans"],
             pad=22,
         )
-        self.ax_flow.set_ylabel("m³/s", color=theme.INK_SECONDARY, fontsize=8)
+        self.ax_flow.set_ylabel("m³/s", color=theme.INK_PRIMARY, fontsize=8)
         self.ax_flow.legend(
             loc="lower center",
             bbox_to_anchor=(0.5, 1.01),
@@ -130,7 +130,7 @@ class TemporalChartsPanel(tk.Frame):
             )
             target_pids = [pid for pid, _ in sorted_p[:3]]
 
-        palette = [theme.ACCENT_PRIMARY, "#f97316", theme.NODE_SINK_FILL]
+        palette = [theme.ACCENT_PRIMARY, "#f97316", theme.INK_PRIMARY]
         for idx, pid in enumerate(target_pids):
             utils = [
                 s.pipe_states[pid].utilization_pct if pid in s.pipe_states else 0.0
@@ -139,7 +139,7 @@ class TemporalChartsPanel(tk.Frame):
             self.ax_util.plot(
                 times,
                 utils,
-                label=f"{pid} (máx {result.peak_pipe_utilization.get(pid, 0.0):.1f}%)",
+                label=f"{pid} (máx. {result.peak_pipe_utilization.get(pid, 0.0):.1f}%)",
                 color=palette[idx % len(palette)],
                 linewidth=1.9,
             )
@@ -148,7 +148,7 @@ class TemporalChartsPanel(tk.Frame):
             100.0, color="#dc2626", linestyle="--", linewidth=1.1, label="Capacidad 100%"
         )
         self._cursor_util = self.ax_util.axvline(
-            t_cur, color=theme.INK_PRIMARY, linestyle=":", linewidth=1.2, alpha=0.85
+            t_cur, color=theme.ACCENT_PRIMARY, linestyle=":", linewidth=1.4, alpha=0.9
         )
         title_u = (
             f"Utilización Temporal — {selected_pipe_id}"
@@ -298,19 +298,20 @@ class ComparisonChartsPanel(tk.Frame):
             labelcolor=theme.INK_PRIMARY,
         )
 
-        colors = [theme.NODE_SINK_FILL, theme.ACCENT_PRIMARY, "#eab308", "#f97316", "#dc2626"]
+        colors = [theme.ACCENT_PRIMARY, theme.INK_PRIMARY, "#eab308", "#f97316", "#dc2626"]
         max_q = 0.01
         for idx, s in enumerate(summaries):
             ts = [snap.time_min for snap in s.result.snapshots]
             qs = [snap.total_sink_discharge_m3s for snap in s.result.snapshots]
             if qs:
                 max_q = max(max_q, max(qs))
+            cond_es = theme.translate_scenario_name(s.condition, compact=True)
             self.ax_ptar.plot(
                 ts,
                 qs,
-                label=f"E{s.scenario_id} {s.intensity_mm_h:.0f}",
+                label=f"E{s.scenario_id} {cond_es} ({s.intensity_mm_h:.0f})",
                 color=colors[idx % len(colors)],
-                linewidth=1.8,
+                linewidth=1.9,
             )
         self.ax_ptar.set_ylim(0, max_q * 1.42)
         self.ax_ptar.set_title(
