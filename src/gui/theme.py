@@ -9,7 +9,7 @@ from typing import Dict, Tuple
 # Paleta principal solicitada
 PALETTE_GRAPHITE = "#4A4A4A"
 PALETTE_SILVER = "#CBCBCB"
-PALETTE_IVORY = "#FFFFE3"
+PALETTE_IVORY = "#FDF8F5"
 PALETTE_SLATE = "#6D8196"
 
 # Superficies del Shell superior y consola de bitácora (Grafito #4A4A4A)
