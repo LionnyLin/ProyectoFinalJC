@@ -76,7 +76,8 @@ def generate_single_column_figures(
         lbl = f"{pid} ({pk:.0f}%/{dem:.1f}x)" if dem > 1.05 else f"{pid} ({pk:.1f}%)"
         ax2.plot(ts, utils, label=lbl, color=palette[idx % len(palette)], linewidth=1.4)
     ax2.axhline(100.0, color="#991b1b", linestyle="--", linewidth=1.1, label="Límite 100%")
-    ax2.set_ylim(0.0, 128.0)
+    max_u = max((pk for _, pk in top5), default=100.0)
+    ax2.set_ylim(0.0, max(128.0, max_u * 1.12))
     ax2.set_title("Utilización Física — Top 5 Tuberías Críticas")
     ax2.set_xlabel("Tiempo (min)")
     ax2.set_ylabel("Utilización física (%)")
@@ -116,6 +117,7 @@ if __name__ == "__main__":
     base_cfg = SimulationConfig(scenario_id=3, scenario_name="Moderate rain", intensity_mm_h=30.0)
     comps = compare_all_scenarios(ds, base_cfg)
     out = os.path.join(base_dir, "docs", "figuras")
-    generated = generate_single_column_figures(comps[2].result, comps, out)
+    primary = comps[2] if len(comps) > 2 else comps[0]
+    generated = generate_single_column_figures(primary.result, comps, out)
     for g in generated:
         print("Figura 3.5x2.8 in generada:", g)

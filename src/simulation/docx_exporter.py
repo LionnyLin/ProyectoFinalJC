@@ -24,8 +24,15 @@ from src.algorithms.analysis import rank_critical_pipes
 from src.io.data_loader import NetworkDataset
 from .charts_export import generate_single_column_figures
 from .comparison import ScenarioSummary
-from .models import SimulationResult
+from .models import SimulationResult, resolve_pipe_hydraulics
 from .omml_equations import M_NS, add_omml_equation
+
+
+def _pipe_sort_key(pipe) -> tuple:
+    pid = pipe.pipe_id
+    if len(pid) > 1 and pid[1:].isdigit():
+        return (0, int(pid[1:]), pid)
+    return (1, 0, pid)
 
 PLUM_HEX = "3B153A"
 ZEBRA_HEX = "F6EEF6"
@@ -286,6 +293,15 @@ def generate_docx_report(
         f"caudal sanitario = {cfg.dry_weather_flow_per_source_m3s:.4f} m³/s/fuente.",
         "Cuenca y aportes: ",
     )
+    interventions = cfg.interventions or {}
+    if interventions:
+        int_desc = ", ".join(
+            f"{pid} (obst. {inv.obstruction_pct:.0f}%"
+            + (f", D={inv.diameter_in_override:.0f} in" if inv.diameter_in_override is not None else "")
+            + ")"
+            for pid, inv in sorted(interventions.items())
+        )
+        _add_bullet(doc, int_desc, "Intervenciones activas: ")
 
     _add_heading_1(doc, "2. Ecuaciones del Modelo Hidráulico")
     _add_body(doc, "Cada expresión se formula de manera independiente en formato OMML nativo a 8.5 pt:")
@@ -342,11 +358,20 @@ def generate_docx_report(
             _add_single_column_figure(doc, fig_paths[2], "Figura 3. Comparación de tuberías críticas y sobrecargadas por escenario.")
 
     _add_heading_1(doc, "5. Top 20 Tuberías por Utilización Física Pico")
+    eff_qmax_map = {
+        p.pipe_id: resolve_pipe_hydraulics(p, interventions.get(p.pipe_id))[0]
+        for p in dataset.graph.pipes()
+    }
     ranked = rank_critical_pipes(
         dataset.graph,
         current_result.peak_pipe_flow,
         current_result.peak_pipe_utilization,
+        pipe_qmax_overrides=eff_qmax_map,
         pipe_demand_ratios_pct=current_result.peak_pipe_demand_ratio,
+        pipe_excess_flows_m3s={
+            pid: max(0.0, current_result.peak_pipe_demand_flow.get(pid, 0.0) - eff_qmax_map[pid])
+            for pid in eff_qmax_map
+        },
     )
     _add_plain_table(
         doc,
@@ -448,8 +473,8 @@ def generate_technical_document_docx(
     _add_body(
         doc,
         f"A partir de los datos suministrados en DataSetBicentenario.xlsx, la red comprende {n_nodes} "
-        f"vértices ({n_src} fuentes: {', '.join(dataset.graph.source_ids())}; 37 pozos; y {n_snk} sumidero: "
-        f"nodo 31) y {n_pipes} tuberías con diámetros entre 8 y 20 pulgadas.",
+        f"vértices ({n_src} fuentes: {', '.join(dataset.graph.source_ids())}; {n_nodes - n_src - n_snk} pozos; y {n_snk} sumidero: "
+        f"nodo {', '.join(dataset.graph.sink_ids())}) y {n_pipes} tuberías con diámetros entre 8 y 20 pulgadas.",
     )
 
     _add_heading_1(doc, "2. Diseño y Estructuras de Datos")
@@ -592,7 +617,7 @@ def generate_technical_document_docx(
                 f"{p.q_max_m3s:.4f}",
                 f"{p.transit_time_min:.2f}",
             )
-            for p in sorted(dataset.graph.pipes(), key=lambda x: int(x.pipe_id[1:]))
+            for p in sorted(dataset.graph.pipes(), key=_pipe_sort_key)
         ],
         col_widths_in=(0.42, 0.68, 0.42, 0.60, 0.68, 0.60),
         font_pt=6.6,
@@ -622,7 +647,7 @@ def generate_technical_document_docx(
         "Comandos reproducibles en cualquier equipo con Python 3.11+ y dependencias de requirements.txt: "
         "(1) python main.py para abrir la interfaz gráfica interactiva; "
         "(2) python -m unittest discover -s tests -v para ejecutar la batería de pruebas; "
-        "(3) python main.py --report-docx docs/DOCUMENTO_TECNICO.docx para regenerar este entregable.",
+        "(3) python main.py --technical-docx docs/DOCUMENTO_TECNICO.docx para regenerar este entregable.",
     )
 
     _validate_docx_compliance(doc)

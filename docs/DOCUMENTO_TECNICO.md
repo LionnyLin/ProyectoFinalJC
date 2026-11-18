@@ -21,7 +21,7 @@ El proyecto sigue una arquitectura modular desacoplada por responsabilidades:
 - `src/data_structures/`: Implementaciones propias (desde cero) de las seis estructuras de datos obligatorias (`HashTable`, `LinkedList`, `Queue`, `PriorityQueue`, `Stack`, `DirectedGraph`).
 - `src/algorithms/`: Algoritmos de recorrido (`bfs`, `dfs`, `topological_sort`), búsqueda y trazado (`find_node`, `find_pipe`, `search_entities`, `trace_downstream`, `trace_upstream`), y clasificación/ranking de criticidad (`classify_utilization`, `rank_critical_pipes`).
 - `src/io/`: Carga y validación estricta de datos desde Excel (`.xlsx`) y carpetas CSV (`data_loader.py`).
-- `src/simulation/`: Motor discreto-temporal conservativo de masa (`engine.py`), comparador multiescenario (`comparison.py`) y generador de reportes Markdown/CSV (`reporter.py`).
+- `src/simulation/`: Motor discreto-temporal conservativo de masa (`engine.py`), comparador multiescenario (`comparison.py`), figuras a una columna (`charts_export.py`) y generadores de reportes Markdown/CSV (`reporter.py`) y Word `.docx` con ecuaciones OMML (`docx_exporter.py`).
 - `src/gui/`: Aplicación de escritorio Tkinter con lienzo interactivo del grafo (`network_canvas.py`), gráficas Matplotlib embebidas (`charts_panel.py`) y controles completos de simulación (`app.py`).
 - `tests/`: Suite de 16 pruebas unitarias automatizadas con `unittest`.
 

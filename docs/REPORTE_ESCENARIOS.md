@@ -1,7 +1,7 @@
 # Reporte de Simulación — Red de Alcantarillado Ciudad Bicentenario
 
-**Fecha de generación:** 2026-11-18 15:30:30  
-**Fuente de datos:** `C:\Users\lionn\OneDrive\Documents\ProyectoFinalJC\data\DataSetBicentenario.xlsx`  
+**Fecha de generación:** 2026-11-18 17:45:54  
+**Fuente de datos:** `data/DataSetBicentenario.xlsx`  
 **Descarga final (Sumidero):** 31 (PTAR Punta Canoa)  
 
 ## 1. Resumen de la Red
@@ -28,10 +28,10 @@
 - **Caudal pico en PTAR Punta Canoa:** 0.3078 m³/s
 - **Volumen remanente (en pozos + tránsito al cierre):** 170.250 m³
 - **Rebose superficial acumulado en vía:** 1,042.450 m³
-- **Error máximo de balance de masa:** 3.547e-11 m³
+- **Error máximo de balance de masa:** 3.365e-11 m³
 - **Tuberías críticas (>= 75 %):** 21 (P1, P12, P13, P2, P22, P23, P25, P27, P28, P3, P31, P36, P37, P38, P39, P4, P43, P5, P51, P6, P7)
 - **Tuberías sobrecargadas (> 100 %):** 15 (P1, P12, P13, P2, P23, P25, P28, P3, P31, P36, P37, P39, P4, P43, P5)
-- **Tiempo de cómputo:** 142.68 ms
+- **Tiempo de cómputo:** 106.13 ms
 
 ## 4. Ranking de Tuberías por Utilización Física Pico
 | # | Tubería | Tramo | Q_físico (m³/s) | Q_max (m³/s) | Util. Fís (%) | Demanda | Estado | Déficit (m³/s) |
@@ -67,6 +67,6 @@
 |:---:|:---|---:|---:|---:|:---:|---:|---:|---:|---:|---:|
 | 1 | Dry weather | 0.0 | 10.25% | 0.10x | P25 | 0 | 0 | 0.0240 | 0.00 | 2.47e-12 |
 | 2 | Light rain | 10.0 | 104.46% | 1.22x | P25 | 1 | 1 | 0.2070 | 48.24 | 9.32e-12 |
-| 3 | Moderate rain | 30.0 | 113.06% | 2.28x | P25 | 21 | 15 | 0.3078 | 1,042.45 | 3.55e-11 |
-| 4 | Heavy rain | 60.0 | 113.75% | 2.55x | P31 | 21 | 15 | 0.3078 | 3,226.70 | 6.82e-11 |
-| 5 | Extreme rain | 100.0 | 114.91% | 4.19x | P31 | 21 | 15 | 0.3078 | 6,139.02 | 5.55e-11 |
+| 3 | Moderate rain | 30.0 | 113.06% | 2.28x | P25 | 21 | 15 | 0.3078 | 1,042.45 | 3.37e-11 |
+| 4 | Heavy rain | 60.0 | 113.75% | 2.55x | P31 | 21 | 15 | 0.3078 | 3,226.70 | 6.73e-11 |
+| 5 | Extreme rain | 100.0 | 114.91% | 4.19x | P31 | 21 | 15 | 0.3078 | 6,139.02 | 5.46e-11 |

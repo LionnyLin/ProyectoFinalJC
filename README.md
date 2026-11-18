@@ -67,6 +67,6 @@ python -m unittest discover -s tests -v
 - `src/algorithms/`: BFS, DFS, consultas y análisis de criticidad.
 - `src/io/`: Cargadores y validadores Excel/CSV.
 - `src/simulation/`: Motor de simulación, comparación, figuras `3.5 × 2.8 in` y exportador Word `.docx` (OMML `8.5 pt`) sin Pandoc.
-- `src/gui/`: Interfaz gráfica adaptable Tkinter + Matplotlib en español con sistema visual **Lámina Cartográfica de Archivo Hidráulico** (Grafito `#4A4A4A`, Plata `#CBCBCB`, Marfil `#FDF8F5` y Azul Pizarra `#6D8196`).
+- `src/gui/`: Interfaz gráfica adaptable Tkinter + Matplotlib en español con sistema visual **Lámina Cartográfica de Archivo Hidráulico** (Grafito `#4A4A4A`, Plata `#CBCBCB`, Marfil `#FFFFE3` y Azul Pizarra `#6D8196`).
 - `docs/`: Documento técnico en Word (`DOCUMENTO_TECNICO.docx`), Markdown y reportes de escenarios.
 - `tests/`: Suite de pruebas unitarias.

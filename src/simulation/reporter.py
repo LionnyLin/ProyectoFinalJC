@@ -8,7 +8,7 @@ from typing import List, Optional
 from src.algorithms.analysis import classify_utilization, rank_critical_pipes
 from src.io.data_loader import NetworkDataset
 from .comparison import ScenarioSummary
-from .models import SimulationResult
+from .models import SimulationResult, resolve_pipe_hydraulics
 
 
 def generate_markdown_report(
@@ -21,23 +21,38 @@ def generate_markdown_report(
     cfg = current_result.config
     n_nodes, n_pipes, n_src, n_snk, total_len = dataset.graph.summary()
     last_snap = current_result.snapshots[-1]
+    interventions = cfg.interventions or {}
+    eff_qmax_map = {
+        p.pipe_id: resolve_pipe_hydraulics(p, interventions.get(p.pipe_id))[0]
+        for p in dataset.graph.pipes()
+    }
     ranked = rank_critical_pipes(
         dataset.graph,
         current_result.peak_pipe_flow,
         current_result.peak_pipe_utilization,
+        pipe_qmax_overrides=eff_qmax_map,
         pipe_demand_ratios_pct=current_result.peak_pipe_demand_ratio,
         pipe_excess_flows_m3s={
-            pid: max(0.0, current_result.peak_pipe_demand_flow.get(pid, 0.0) - p.q_max_m3s)
-            for p in dataset.graph.pipes()
-            for pid in [p.pipe_id]
+            pid: max(0.0, current_result.peak_pipe_demand_flow.get(pid, 0.0) - eff_qmax_map[pid])
+            for pid in eff_qmax_map
         },
     )
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    abs_src = os.path.abspath(dataset.source_path)
+    try:
+        if os.path.commonpath([repo_root, abs_src]) == repo_root:
+            source_display = os.path.relpath(abs_src, repo_root).replace("\\", "/")
+        else:
+            source_display = dataset.source_path
+    except ValueError:
+        source_display = dataset.source_path
 
     lines: List[str] = [
         "# Reporte de Simulación — Red de Alcantarillado Ciudad Bicentenario",
         "",
         f"**Fecha de generación:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
-        f"**Fuente de datos:** `{dataset.source_path}`  ",
+        f"**Fuente de datos:** `{source_display}`  ",
         f"**Descarga final (Sumidero):** {', '.join(dataset.graph.sink_ids())} (PTAR Punta Canoa)  ",
         "",
         "## 1. Resumen de la Red",
@@ -57,6 +72,16 @@ def generate_markdown_report(
         "- **Tiempo de tránsito:** $t_i = L_i / V_i$, con $V_i = Q_{max,i} / A_i$ (velocidad a tubo lleno de Manning)",
         f"- **Utilización física vs. demanda:** Conducción física acotada a $\\le {cfg.max_physical_utilization_pct:.0f}\\%$ bajo sobrepresión; el exceso de demanda se reporta por separado como índice ($\\times Q_{{max}}$) y déficit.",
         f"- **Pozos finitos y rebose:** Capacidad máxima de pozo = {cfg.max_manhole_storage_m3:.1f} m³ antes de derivar excedente a rebose superficial en vía con conservación exacta de masa.",
+    ]
+    if interventions:
+        int_desc = ", ".join(
+            f"{pid} (obst. {inv.obstruction_pct:.0f}%"
+            + (f', Ø {inv.diameter_in_override:.0f}"' if inv.diameter_in_override is not None else "")
+            + ")"
+            for pid, inv in sorted(interventions.items())
+        )
+        lines.append(f"- **Intervenciones activas:** {int_desc}")
+    lines.extend([
         "",
         "## 3. Resultados Globales y Conservación de Masa",
         f"- **Volumen total inyectado:** {current_result.total_inflow_m3:,.3f} m³",
@@ -72,7 +97,7 @@ def generate_markdown_report(
         "## 4. Ranking de Tuberías por Utilización Física Pico",
         "| # | Tubería | Tramo | Q_físico (m³/s) | Q_max (m³/s) | Util. Fís (%) | Demanda | Estado | Déficit (m³/s) |",
         "|---:|:---:|:---:|---:|---:|---:|---:|:---|---:|",
-    ]
+    ])
 
     for rec in ranked[:25]:
         lines.append(
