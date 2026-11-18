@@ -47,7 +47,7 @@ Simulador hidráulico y laboratorio visual de estructuras de datos sobre un graf
 
 - Dataset real: `data/DataSetBicentenario.xlsx` y `data/csv/*.csv` (46 nodos, 59 tuberías, 5 escenarios de precipitación, cuenca `C=0.75`, `A=388 ha`).
 - Documentación técnica real: `docs/DOCUMENTO_TECNICO.md`, `docs/REPORTE_ESCENARIOS.md`, `README.md`.
-- Suite de pruebas existente: `tests/` (16 pruebas unitarias).
+- Suite de pruebas existente: `tests/` (35 pruebas unitarias).
 
 ## Product Principles
 

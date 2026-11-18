@@ -113,8 +113,14 @@ class TestAlgorithms(unittest.TestCase):
         self.assertAlmostEqual(sink_sum, 1.0, places=6)
         self.assertGreater(len(attr_prop.pipe_shares["P25"]), 1)
 
-        attr_eq = compute_source_attribution(self.graph, snapshot=None, split_rule="equal")
+        attr_eq = compute_source_attribution(
+            self.graph, snapshot=None, split_rule="equal", source_distribution="equal"
+        )
         self.assertAlmostEqual(sum(frac for _s, frac in attr_eq.node_shares["31"]), 1.0, places=6)
+        # Con reparto por capacidad vs uniforme 1/8, la participación de la fuente 9 en PTAR 31 cambia
+        share_9_cap = dict(attr_prop.node_shares["31"]).get("9", 0.0)
+        share_9_eq = dict(attr_eq.node_shares["31"]).get("9", 0.0)
+        self.assertGreater(share_9_cap, share_9_eq)
 
         self.assertEqual(classify_overload_persistence(0.0, 90.0)[0], 0)
         self.assertEqual(classify_overload_persistence(15.0, 90.0)[0], 1)

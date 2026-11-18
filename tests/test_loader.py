@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from src.io.data_loader import DataLoadError, load_dataset
+from src.io.data_loader import DataLoadError, export_to_csv_dir, load_dataset
 
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -37,6 +37,17 @@ class TestLoader(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(DataLoadError):
                 load_dataset(tmpdir)
+
+    def test_csv_blank_rows_are_ignored_gracefully(self) -> None:
+        ds_base = load_dataset(DATA_CSV)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_to_csv_dir(ds_base, tmpdir)
+            for fname in ("pipes.csv", "precipitation_scenarios.csv"):
+                with open(os.path.join(tmpdir, fname), "a", encoding="utf-8") as f:
+                    f.write(",,,,,\n")
+            ds_reloaded = load_dataset(tmpdir)
+            self.assertEqual(ds_reloaded.graph.summary()[:4], (46, 59, 8, 1))
+            self.assertEqual(len(ds_reloaded.scenarios), 5)
 
 
 if __name__ == "__main__":

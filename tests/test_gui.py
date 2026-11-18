@@ -393,6 +393,24 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertTrue(self.app.is_playing)
         self.app._player_pause()
 
+        # En t=40 un redraw completo conserva la etiqueta de P25 y _hide_tooltip limpia _last_hover_key
+        self.app._set_step(40)
+        self.app.network_canvas.redraw()
+        self.assertIn("P25", self.app.network_canvas._pipe_label_refs)
+        self.app.network_canvas._last_hover_key = "node:31"
+        self.app.network_canvas._hide_tooltip()
+        self.assertIsNone(self.app.network_canvas._last_hover_key)
+
+        # Iniciar BFS con Guía de Sustentación activa cierra la guía automáticamente para mostrar la ruta
+        self.app.toggle_guided_tour()
+        self.assertTrue(self.app._tour_active)
+        self.app.var_bfs_start.set("6")
+        self.app.var_bfs_target.set("31")
+        self.app._run_traversal("BFS")
+        self.assertFalse(self.app._tour_active)
+        self.assertFalse(self.app.network_canvas._tour_active)
+        self.assertIn("31", self.app.network_canvas.highlight_node_ids)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,7 +23,7 @@ El proyecto sigue una arquitectura modular desacoplada por responsabilidades:
 - `src/io/`: Carga y validación estricta de datos desde Excel (`.xlsx`) y carpetas CSV (`data_loader.py`).
 - `src/simulation/`: Motor discreto-temporal conservativo de masa (`engine.py`), comparador multiescenario (`comparison.py`), figuras a una columna (`charts_export.py`) y generadores de reportes Markdown/CSV (`reporter.py`) y Word `.docx` con ecuaciones OMML (`docx_exporter.py`).
 - `src/gui/`: Aplicación de escritorio Tkinter con lienzo interactivo del grafo (`network_canvas.py`), gráficas Matplotlib embebidas (`charts_panel.py`) y controles completos de simulación (`app.py`).
-- `tests/`: Suite de 16 pruebas unitarias automatizadas con `unittest`.
+- `tests/`: Suite de 35 pruebas unitarias automatizadas con `unittest`.
 
 ---
 
@@ -90,9 +90,9 @@ Con los parámetros de referencia (simulación `90 min`, lluvia uniforme `60 min
 |:---:|:---|---:|---:|---:|:---:|---:|---:|---:|---:|---:|
 | 1 | Dry weather | 0 | 10.25% | 0.10x | P25 | 0 | 0 | 0.0240 | 0.00 | 2.47e-12 |
 | 2 | Light rain | 10 | 104.46% | 1.22x | P25 | 1 | 1 | 0.2070 | 48.24 | 9.32e-12 |
-| 3 | Moderate rain | 30 | 113.06% | 2.28x | P25 | 21 | 15 | 0.3078 | 1,042.45 | 3.55e-11 |
-| 4 | Heavy rain | 60 | 113.75% | 2.55x | P31 | 21 | 15 | 0.3078 | 3,226.70 | 6.82e-11 |
-| 5 | Extreme rain | 100 | 114.91% | 4.19x | P31 | 21 | 15 | 0.3078 | 6,139.02 | 5.55e-11 |
+| 3 | Moderate rain | 30 | 113.06% | 2.28x | P25 | 21 | 15 | 0.3078 | 1,042.45 | 3.37e-11 |
+| 4 | Heavy rain | 60 | 113.75% | 2.55x | P31 | 21 | 15 | 0.3078 | 3,226.70 | 6.73e-11 |
+| 5 | Extreme rain | 100 | 114.91% | 4.19x | P31 | 21 | 15 | 0.3078 | 6,139.02 | 5.46e-11 |
 
 El reporte completo por tubería se genera en [`REPORTE_ESCENARIOS.md`](REPORTE_ESCENARIOS.md) y `REPORTE_ESCENARIOS_tuberias.csv`.
 
