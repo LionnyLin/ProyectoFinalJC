@@ -9,7 +9,7 @@ from typing import Dict, Tuple
 # Paleta principal solicitada
 PALETTE_GRAPHITE = "#4A4A4A"
 PALETTE_SILVER = "#CBCBCB"
-PALETTE_IVORY = "#FDF8F5"
+PALETTE_IVORY = "#FFFFE3"
 PALETTE_SLATE = "#6D8196"
 
 # Superficies del Shell superior y consola de bitácora (Grafito #4A4A4A)
@@ -69,7 +69,8 @@ NODE_SINK_TEXT = PALETTE_IVORY
 NODE_MANHOLE_FILL = PALETTE_IVORY
 NODE_MANHOLE_BORDER = PALETTE_GRAPHITE
 NODE_MANHOLE_TEXT = PALETTE_GRAPHITE
-NODE_SURCHARGE_RING = "#D97706"
+NODE_SURCHARGE_RING = "#EF4444"
+NODE_SURCHARGE_RING_DEEP = "#991B1B"
 
 PIPE_IDLE_COLOR = PALETTE_SLATE
 PIPE_HIGHLIGHT_PATH = PALETTE_SLATE
@@ -160,6 +161,33 @@ TEXT_SECONDARY = INK_SECONDARY
 TEXT_MUTED = INK_MUTED
 
 _FONTS_REGISTERED = False
+_DPI_AWARENESS_SET = False
+
+
+def enable_dpi_awareness() -> None:
+    """Activa DPI awareness nativo en Windows antes de crear Tk para evitar escalado borroso."""
+    global _DPI_AWARENESS_SET
+    if _DPI_AWARENESS_SET or os.name != "nt":
+        return
+    _DPI_AWARENESS_SET = True
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def resolve_dpi_scale(root: tk.Misc) -> float:
+    """Retorna el factor de escala DPI respecto a 96 DPI base (mínimo 1.0)."""
+    try:
+        dpi = float(root.winfo_fpixels("1i"))
+        if dpi > 0.0:
+            return max(1.0, min(3.0, dpi / 96.0))
+    except Exception:
+        pass
+    return 1.0
 
 
 def _register_local_inter_fonts() -> bool:

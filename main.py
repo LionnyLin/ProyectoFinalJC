@@ -69,6 +69,9 @@ def main() -> int:
             print(f"Documento Técnico (.docx) generado en: {out}")
         return 0
 
+    from src.gui.theme import enable_dpi_awareness
+
+    enable_dpi_awareness()
     from src.gui import BicentenarioSewerApp
 
     app = BicentenarioSewerApp(initial_data_path=args.data)
