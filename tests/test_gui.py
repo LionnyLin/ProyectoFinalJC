@@ -249,6 +249,134 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.app._set_map_mode("instant")
         _pump(self.app, 60)
 
+    def test_left_panel_scroll_clamping_no_blank_gap(self) -> None:
+        # 1. En ventana alta (contenido cabe completo), intentar rodar no crea espacio gris superior
+        self.app.geometry("1400x1400+10+10")
+        _pump(self.app, 180)
+        self.assertLessEqual(
+            self.app.left_frame.winfo_reqheight(),
+            self.app.left_canvas.winfo_height(),
+        )
+        self.app._scroll_left_canvas(-10)
+        self.app.left_canvas.yview_scroll(-5, "units")
+        _pump(self.app, 80)
+        self.assertAlmostEqual(self.app.left_canvas.canvasy(0), 0.0, places=2)
+        self.assertEqual(
+            self.app._rail_sim_container.winfo_rooty() - self.app.left_canvas.winfo_rooty(),
+            0,
+        )
+
+        # 2. En ventana baja (contenido requiere scroll), sí permite bajar y al agrandar vuelve a 0
+        self.app.geometry("1200x560+10+10")
+        _pump(self.app, 180)
+        if self.app.left_frame.winfo_reqheight() > self.app.left_canvas.winfo_height():
+            self.app._scroll_left_canvas(4)
+            _pump(self.app, 80)
+            self.assertGreater(self.app.left_canvas.yview()[0], 0.0)
+            self.app.geometry("1400x1400+10+10")
+            _pump(self.app, 180)
+            self.assertAlmostEqual(self.app.left_canvas.canvasy(0), 0.0, places=2)
+            self.assertEqual(self.app.left_canvas.yview(), (0.0, 1.0))
+
+        # 3. Cambiar entre pestañas del panel izquierdo conserva yview en 0
+        self.app._switch_rail_tab("trav")
+        _pump(self.app, 80)
+        self.assertAlmostEqual(self.app.left_canvas.canvasy(0), 0.0, places=2)
+        self.app._switch_rail_tab("sim")
+        _pump(self.app, 80)
+        self.assertAlmostEqual(self.app.left_canvas.canvasy(0), 0.0, places=2)
+
+    def test_guided_tour_per_scenario_and_autoplay_on_execute(self) -> None:
+        # 1. Cada escenario tiene su propio recorrido guiado e indica claramente la escena
+        vals = list(self.app.combo_scenario["values"])
+        self.assertEqual(len(vals), 5)
+
+        self.app.toggle_guided_tour()
+        _pump(self.app, 180)
+        self.assertTrue(self.app._tour_active)
+
+        seen_titles = set()
+        for idx, scen_lbl in enumerate(vals, start=1):
+            self.app.var_scenario.set(scen_lbl)
+            self.app.combo_scenario.event_generate("<<ComboboxSelected>>")
+            _pump(self.app, 180)
+
+            self.assertIn(f"Esc. {idx}", self.app.btn_guided_tour.cget("text"))
+            self.assertIn(f"ESC. {idx}", self.app._lbl_tour_hdr.cget("text"))
+            self.assertIn(f"Escenario {idx}:", self.app._lbl_tour_scenario.cget("text"))
+            stops = self.app._build_tour_stops()
+            self.assertEqual(len(stops), 4)
+            seen_titles.add(str(stops[1]["title"]))
+
+        # Los 5 escenarios producen hallazgos diferenciados
+        self.assertEqual(len(seen_titles), 5)
+
+        # 2. Al presionar "Ejecutar simulación", cierra la guía y reproduce automáticamente
+        self.app.var_speed.set("10x")
+        self.app.btn_run_sim.invoke()
+        _pump(self.app, 180)
+        self.assertFalse(self.app._tour_active)
+        self.assertTrue(self.app.is_playing)
+        self.assertGreater(self.app.current_step, 0)
+        self.app._player_pause()
+
+        # 3. Validación robusta ante entradas vacías o fuera de rango en parámetros
+        self.app.var_duration.set(0.0)
+        with self.assertRaises(ValueError):
+            self.app._build_sim_config()
+        # _run_param_rerun no debe lanzar excepción si el campo está temporalmente inválido
+        self.app._run_param_rerun()
+        self.app.var_duration.set(90.0)
+
+    def test_stress_map_modes_track_current_time_and_reset_on_execute(self) -> None:
+        # Escenario 3 por defecto: en t = 0 min la sobrecarga acumulada es 0m
+        self.app._set_step(0)
+        self.app._set_map_mode("overload_minutes")
+        _pump(self.app, 80)
+        self.assertEqual(self.app.network_canvas._overload_minutes_map.get("P31", 0.0), 0.0)
+        self.assertIn("0.0 min", self.app.network_canvas._stamp_lbl.cget("text"))
+        self.assertIn("0 min", self.app._legend_header_label.cget("text"))
+
+        # Al avanzar al minuto 25, refleja valores acumulados hasta t = 25 min y muestra t = 25
+        self.app._set_step(25)
+        _pump(self.app, 80)
+        self.assertAlmostEqual(
+            self.app.network_canvas._overload_minutes_map.get("P31", 0.0), 25.0, places=3
+        )
+        self.assertIn("25.0 min", self.app.network_canvas._stamp_lbl.cget("text"))
+        self.assertIn("25 min", self.app._legend_header_label.cget("text"))
+
+        # En Pico Máximo al minuto 25 muestra t = 25 y pico hasta ese minuto
+        self.app._set_map_mode("peak")
+        _pump(self.app, 80)
+        self.assertIn("25.0 min", self.app.network_canvas._stamp_lbl.cget("text"))
+        self.assertGreater(self.app.network_canvas._peak_util_map.get("P31", 0.0), 100.0)
+        # P30 en Esc. 3 al min 25 aún no llega a su pico máximo final de min 60
+        peak_p30_t25 = self.app.network_canvas._peak_util_map.get("P30", 0.0)
+        self.app._set_step(65)
+        _pump(self.app, 80)
+        self.assertGreaterEqual(
+            self.app.network_canvas._peak_util_map.get("P30", 0.0), peak_p30_t25
+        )
+
+        # Si está en Pico Máximo y presiona Ejecutar simulación -> regresa a Instantáneo y reproduce
+        self.app.var_speed.set("10x")
+        self.app.btn_run_sim.invoke()
+        _pump(self.app, 180)
+        self.assertEqual(self.app._map_mode, "instant")
+        self.assertEqual(self.app.network_canvas._map_mode, "instant")
+        self.assertTrue(self.app.is_playing)
+        self.app._player_pause()
+
+        # También si presiona Reproducir estando en Minutos en Sobrecarga -> regresa a Instantáneo
+        self.app._set_map_mode("overload_minutes")
+        _pump(self.app, 60)
+        self.app.toggle_play_pause()
+        _pump(self.app, 120)
+        self.assertEqual(self.app._map_mode, "instant")
+        self.assertTrue(self.app.is_playing)
+        self.app._player_pause()
+
 
 if __name__ == "__main__":
     unittest.main()
