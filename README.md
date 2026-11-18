@@ -13,9 +13,10 @@ Aplicación de escritorio en Python para la representación, simulación tempora
 ## Requisitos
 
 - Python 3.11+
-- `openpyxl`
-- `matplotlib`
+- `openpyxl`, `matplotlib`, `python-docx`, `lxml`, `Pillow` (instalables con `pip install -r requirements.txt`)
 - `tkinter` (incluido en Python estándar para Windows)
+
+*(Nota: la exportación a Word `.docx` con ecuaciones OMML nativas funciona 100 % en Python puro sin requerir Pandoc instalado en el equipo de sustentación).*
 
 ## Ejecución
 
@@ -24,9 +25,16 @@ Aplicación de escritorio en Python para la representación, simulación tempora
 python main.py
 ```
 
-### Generación de Reporte por Línea de Comandos (CLI)
+### Generación de Reportes y Documento Técnico (CLI)
 ```bash
+python main.py --report-docx docs/REPORTE_ESCENARIOS.docx
+python main.py --technical-docx docs/DOCUMENTO_TECNICO.docx
 python main.py --report docs/REPORTE_ESCENARIOS.md
+```
+
+### Figuras Matplotlib a una columna (`3.5 × 2.8 in`)
+```bash
+python -m src.simulation.charts_export
 ```
 
 ### Pruebas Unitarias
@@ -36,12 +44,13 @@ python -m unittest discover -s tests -v
 
 ## Estructura del Proyecto
 
-- `main.py`: Punto de entrada (GUI y modo CLI `--report`).
+- `main.py`: Punto de entrada (GUI y modos CLI `--report`, `--report-docx`, `--technical-docx`).
+- `requirements.txt`: Dependencias portables para ejecución en otro equipo.
 - `data/`: Dataset oficial `DataSetBicentenario.xlsx` y su versión en `csv/`.
 - `src/data_structures/`: Estructuras de datos obligatorias propias.
 - `src/algorithms/`: BFS, DFS, consultas y análisis de criticidad.
 - `src/io/`: Cargadores y validadores Excel/CSV.
-- `src/simulation/`: Motor de simulación, comparación de escenarios y reportes.
-- `src/gui/`: Interfaz gráfica Tkinter + Matplotlib.
-- `docs/DOCUMENTO_TECNICO.md`: Documento técnico completo del proyecto.
+- `src/simulation/`: Motor de simulación, comparación, figuras `3.5 × 2.8 in` y exportador Word `.docx` (OMML `8.5 pt`) sin Pandoc.
+- `src/gui/`: Interfaz gráfica Tkinter + Matplotlib con paleta **Plum (`#3B153A`)** y **Xanthous (`#F0C987`)**.
+- `docs/`: Documento técnico en Word (`DOCUMENTO_TECNICO.docx`), Markdown y reportes de escenarios.
 - `tests/`: Suite de pruebas unitarias.
