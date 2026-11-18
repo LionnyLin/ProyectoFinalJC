@@ -108,6 +108,9 @@ OMML_TEMPLATES: Dict[str, str] = {
         '<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>(t) + </m:t></m:r>'
         '<m:sSub><m:e><m:r><m:t>V</m:t></m:r></m:e>'
         '<m:sub><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>tránsito</m:t></m:r></m:sub></m:sSub>'
+        '<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>(t) + </m:t></m:r>'
+        '<m:sSub><m:e><m:r><m:t>V</m:t></m:r></m:e>'
+        '<m:sub><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>rebose</m:t></m:r></m:sub></m:sSub>'
         '<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>(t)</m:t></m:r>'
         '</m:oMath></m:oMathPara>'
     ),

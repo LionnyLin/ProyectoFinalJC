@@ -64,7 +64,7 @@ Dado que la red modelada corresponde a conducción sanitaria (`Ø 8"` a `Ø 20"`
 - Un **factor de ingreso pluvial configurable** ($f_{\text{ing}}$, valor calibrado por defecto `2.5%` para representar infiltración y conexiones erradas, con selector directo a `100%` para evaluar el Método Racional puro sin atenuación).
 - Un **caudal sanitario base en tiempo seco** configurable (`0.0030 m³/s` por fuente por defecto), que permite observar flujo base en el Escenario 1 (`0 mm/h`).
 
-El caudal se distribuye entre los 8 nodos fuente (`1, 6, 9, 17, 18, 19, 20, 27`).
+El caudal pluvial se distribuye entre los 8 nodos fuente (`1, 6, 9, 17, 18, 19, 20, 27`) mediante selector configurable: **ponderado por capacidad instalada de salida** (predeterminado, evitando castigar artificialmente cabeceras de 8") o **reparto uniforme `1/8`** (comparable con la distribución homogénea).
 
 ### 5.2 Tiempos de Tránsito y Cola de Prioridad
 Cada tubería $i$ utiliza la capacidad precalculada $Q_{\max,i}$ (Manning) para obtener su velocidad de referencia a tubo lleno:
@@ -73,26 +73,26 @@ $$V_i = \frac{Q_{\max,i}}{\pi D_i^2 / 4}, \qquad t_i = \frac{L_i}{V_i}$$
 
 En la red de Ciudad Bicentenario, $V_i \in [0.914, 1.684]\text{ m/s}$ y $t_i \in [0.81, 18.05]\text{ min}$. Cuando un volumen entra a una tubería cuyo tiempo de tránsito supera $\Delta t$, se agenda en la `PriorityQueue` global con clave `t_llegada`, evitando el desplazamiento instantáneo del agua.
 
-### 5.3 Regla de Bifurcación y Gestión de Sobrecargas
+### 5.3 Utilización Física Acotada, Demanda y Rebose Superficial
 - En pozos con múltiples salidas, el caudal se reparte de forma **proporcional a $Q_{\max}$** (o uniforme como opción comparable).
-- El porcentaje de utilización se calcula como $O_i(t) = \frac{Q_i(t)}{Q_{\max,i}} \times 100$.
-- Cuando la demanda supera la capacidad de la tubería ($O_i(t) > 100\%$), el transporte físico aguas abajo se limita a $Q_{\max,i} \cdot \Delta t$ y el **volumen excedente se almacena temporalmente en el pozo aguas arriba** (`stored_volume_m3`), drenando progresivamente cuando cesa la lluvia y garantizando conservación exacta de masa en cada instante $t$:
+- Se distingue entre **utilización física acotada** $O_i(t) \in [0, 115\%]$ (donde la sobrepresión por columna de agua en el pozo satura asintóticamente a $115\%$ y el caudal conducido aguas abajo se acota a $Q_{\max,i}$) y el **índice de demanda** $D_i(t) = Q_{\text{demanda},i}(t) / Q_{\max,i}$ ($\times Q_{\max}$) junto al déficit en $\text{m}^3/\text{s}$.
+- Cada pozo posee una capacidad física amortiguadora finita ($V_{\text{pozo,max}} = 4.0\text{ m}^3$ por defecto); al superarse, el excedente se deriva a **rebose superficial en vía** (`surface_flooding_m3`), cerrando la conservación exacta de masa en cada instante $t$:
 
-$$V_{\text{inyectado}}(t) = V_{\text{PTAR}}(t) + V_{\text{pozos}}(t) + V_{\text{tránsito}}(t)$$
+$$V_{\text{inyectado}}(t) = V_{\text{PTAR}}(t) + V_{\text{pozos}}(t) + V_{\text{tránsito}}(t) + V_{\text{rebose}}(t)$$
 
 ---
 
 ## 6. Resultados de Simulación y Comparación de Escenarios
 
-Con los parámetros de referencia (simulación `90 min`, lluvia uniforme `60 min`, $\Delta t = 1\text{ min}$, $f_{\text{ing}} = 2.5\%$, $Q_{\text{san}} = 0.003\text{ m}^3/\text{s}$ por fuente):
+Con los parámetros de referencia (simulación `90 min`, lluvia uniforme `60 min`, $\Delta t = 1\text{ min}$, $f_{\text{ing}} = 2.5\%$, reparto por capacidad instalada en fuentes, $Q_{\text{san}} = 0.003\text{ m}^3/\text{s}$ por fuente):
 
-| Escenario | Condición | Intensidad (mm/h) | Util. Máx (%) | Tubería Crítica | Críticas (>=75%) | Sobrecargadas (>100%) | Pico PTAR 31 (m³/s) | Error Masa (m³) |
-|:---:|:---|---:|---:|:---:|---:|---:|---:|---:|
-| 1 | Dry weather | 0 | 10.25% | P25 | 0 | 0 | 0.0240 | 2.47e-12 |
-| 2 | Light rain | 10 | 96.59% | P25 | 4 | 0 | 0.2262 | 8.64e-12 |
-| 3 | Moderate rain | 30 | 265.87% | P31 | 17 | 11 | 0.3054 | 4.09e-11 |
-| 4 | Heavy rain | 60 | 521.62% | P31 | 21 | 13 | 0.3078 | 1.27e-10 |
-| 5 | Extreme rain | 100 | 862.63% | P31 | 21 | 15 | 0.3078 | 8.46e-11 |
+| Escenario | Condición | Intensidad (mm/h) | Util. Fís. Máx (%) | Demanda Máx | Tubería Crítica | Críticas (>=75%) | Sobrecargadas (>100%) | Pico PTAR 31 (m³/s) | Rebose (m³) | Error Masa (m³) |
+|:---:|:---|---:|---:|---:|:---:|---:|---:|---:|---:|---:|
+| 1 | Dry weather | 0 | 10.25% | 0.10x | P25 | 0 | 0 | 0.0240 | 0.00 | 2.47e-12 |
+| 2 | Light rain | 10 | 104.46% | 1.22x | P25 | 1 | 1 | 0.2070 | 48.24 | 9.32e-12 |
+| 3 | Moderate rain | 30 | 113.06% | 2.28x | P25 | 21 | 15 | 0.3078 | 1,042.45 | 3.55e-11 |
+| 4 | Heavy rain | 60 | 113.75% | 2.55x | P31 | 21 | 15 | 0.3078 | 3,226.70 | 6.82e-11 |
+| 5 | Extreme rain | 100 | 114.91% | 4.19x | P31 | 21 | 15 | 0.3078 | 6,139.02 | 5.55e-11 |
 
 El reporte completo por tubería se genera en [`REPORTE_ESCENARIOS.md`](REPORTE_ESCENARIOS.md) y `REPORTE_ESCENARIOS_tuberias.csv`.
 
@@ -100,17 +100,17 @@ El reporte completo por tubería se genera en [`REPORTE_ESCENARIOS.md`](REPORTE_
 
 ## 7. Validación y Pruebas
 
-La suite automatizada (`python -m unittest discover -s tests -v`) ejecuta **16 pruebas unitarias** que verifican:
+La suite automatizada (`python -m unittest discover -s tests -v`) verifica de extremo a extremo:
 1. Operaciones, colisiones, redimensionamiento y ordenamiento de `HashTable`, `LinkedList`, `Queue`, `PriorityQueue`, `Stack` y `DirectedGraph`.
 2. Recorridos `BFS` y `DFS` alcanzando la PTAR (`31`) desde los 8 nodos fuente, reconstrucción de caminos con `Stack`, y validación topológica DAG (`46/46`).
 3. Paridad exacta entre carga desde `DataSetBicentenario.xlsx` y `data/csv/` (`46` nodos, `59` tuberías, `19,163.57 m`), más rechazo controlado de archivos inválidos.
 4. Retardo físico por tiempo de tránsito (en $t = 1\text{ min}$ la descarga en `P30` y nodo `31` es `0.0 m³/s`).
-5. Detección de sobrecargas (`> 100%`), retención en pozos sin pérdida de masa (error $< 10^{-6}\text{ m}^3$) y determinismo exacto entre corridas repetidas.
+5. Separación entre utilización física acotada ($\le 115\%$) e índice de demanda, pozos finitos con rebose superficial, conservación de masa (error $< 10^{-6}\text{ m}^3$) y comportamiento interactivo completo de la GUI.
 
 ---
 
 ## 8. Conclusiones y Limitaciones
 
 - La representación mediante grafo dirigido propio permite integrar recorridos clásicos (BFS/DFS) con un motor temporal discreto eficiente (< 90 ms por simulación de 90 pasos).
-- Los tramos iniciales de diámetro `8"` (`P31`, `P39`, `P43`, `P4`, `P5`) y las conexiones convergentes (`P25`, `P3`) concentran los primeros cuellos de botella de la red al incrementarse la intensidad de lluvia.
-- **Limitaciones:** El modelo no resuelve las ecuaciones hidrodinámicas completas de Saint-Venant ni calcula tirantes/láminas de agua por sección; el almacenamiento en pozos representa una abstracción volumétrica agregada para garantizar la conservación de masa en un contexto académico.
+- Los tramos iniciales de diámetro `8"` (`P31`, `P39`, `P43`, `P4`, `P5`) y las conexiones convergentes (`P25`, `P3`) concentran los primeros cuellos de botella y el rebose superficial al incrementarse la intensidad de lluvia.
+- **Limitaciones:** El modelo no resuelve las ecuaciones hidrodinámicas completas de Saint-Venant ni calcula tirantes/láminas de agua por sección; el almacenamiento finito en pozos y el rebose superficial representan una abstracción volumétrica de sistema dual para garantizar la conservación de masa y el realismo físico en un contexto académico.

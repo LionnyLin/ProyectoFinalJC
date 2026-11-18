@@ -62,19 +62,26 @@ def generate_single_column_figures(
     plt.close(fig1)
     paths.append(p1)
 
-    # Figura 2: Top 5 tuberías con mayor utilización
+    # Figura 2: Top 5 tuberías con mayor utilización física y demanda
     fig2, ax2 = plt.subplots(figsize=SINGLE_COL_FIGSIZE, dpi=DPI, constrained_layout=True)
-    top5 = sorted(result.peak_pipe_utilization.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    top5 = sorted(
+        result.peak_pipe_utilization.items(),
+        key=lambda kv: (kv[1], result.peak_pipe_demand_ratio.get(kv[0], 0.0)),
+        reverse=True,
+    )[:5]
     palette = ["#7f1d1d", "#dc2626", "#ea580c", "#ca8a04", "#0284c7"]
     for idx, (pid, pk) in enumerate(top5):
         utils = [s.pipe_states[pid].utilization_pct for s in result.snapshots]
-        ax2.plot(ts, utils, label=f"{pid} ({pk:.1f}%)", color=palette[idx % len(palette)], linewidth=1.4)
+        dem = result.peak_pipe_demand_ratio.get(pid, pk) / 100.0
+        lbl = f"{pid} ({pk:.0f}%/{dem:.1f}x)" if dem > 1.05 else f"{pid} ({pk:.1f}%)"
+        ax2.plot(ts, utils, label=lbl, color=palette[idx % len(palette)], linewidth=1.4)
     ax2.axhline(100.0, color="#991b1b", linestyle="--", linewidth=1.1, label="Límite 100%")
-    ax2.set_title("Utilización Temporal — Top 5 Tuberías Críticas")
+    ax2.set_ylim(0.0, 128.0)
+    ax2.set_title("Utilización Física — Top 5 Tuberías Críticas")
     ax2.set_xlabel("Tiempo (min)")
-    ax2.set_ylabel("Utilización (%)")
+    ax2.set_ylabel("Utilización física (%)")
     ax2.grid(True)
-    ax2.legend(loc="upper right", ncol=2, frameon=True)
+    ax2.legend(loc="lower right", ncol=2, frameon=True)
     p2 = os.path.join(out_dir, "fig2_top5_utilizacion.png")
     fig2.savefig(p2, dpi=DPI)
     plt.close(fig2)

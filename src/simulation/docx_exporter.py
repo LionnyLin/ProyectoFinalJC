@@ -282,7 +282,8 @@ def generate_docx_report(
     _add_bullet(
         doc,
         f"C = {dataset.basin.runoff_coefficient_c}, A = {dataset.basin.area_ha} ha, "
-        f"factor de ingreso = {cfg.ingress_factor * 100:.1f}%, caudal sanitario = {cfg.dry_weather_flow_per_source_m3s:.4f} m³/s/fuente.",
+        f"factor de ingreso = {cfg.ingress_factor * 100:.1f}%, reparto fuentes = {cfg.source_distribution}, "
+        f"caudal sanitario = {cfg.dry_weather_flow_per_source_m3s:.4f} m³/s/fuente.",
         "Cuenca y aportes: ",
     )
 
@@ -304,6 +305,7 @@ def generate_docx_report(
             ("Volumen descargado PTAR 31 (m3)", f"{current_result.total_sink_discharge_m3:,.3f}"),
             ("Caudal pico en PTAR 31 (m3/s)", f"{current_result.peak_sink_discharge_m3s:.4f}"),
             ("Volumen remanente pozos/tránsito (m3)", f"{current_result.final_residual_m3:,.3f}"),
+            ("Rebose superficial en vía (m3)", f"{current_result.total_surface_flooding_m3:,.3f}"),
             ("Error máximo balance de masa (m3)", f"{current_result.max_mass_balance_error_m3:.3e}"),
             ("Tuberías críticas (>=75 %)", str(len(current_result.ever_critical_pipes))),
             ("Tuberías sobrecargadas (>100 %)", str(len(current_result.ever_overloaded_pipes))),
@@ -329,6 +331,8 @@ def generate_docx_report(
                 max_stored_surcharge_m3=sum(current_result.max_manhole_storage_m3.values()),
                 mass_balance_error_m3=current_result.max_mass_balance_error_m3,
                 result=current_result,
+                max_demand_ratio_pct=max(current_result.peak_pipe_demand_ratio.values(), default=0.0),
+                total_surface_flooding_m3=current_result.total_surface_flooding_m3,
             )
         ]
         fig_paths = generate_single_column_figures(current_result, comp_for_fig, tmpdir)
@@ -337,15 +341,16 @@ def generate_docx_report(
         if len(comp_for_fig) > 1:
             _add_single_column_figure(doc, fig_paths[2], "Figura 3. Comparación de tuberías críticas y sobrecargadas por escenario.")
 
-    _add_heading_1(doc, "5. Top 20 Tuberías por Utilización Pico")
+    _add_heading_1(doc, "5. Top 20 Tuberías por Utilización Física Pico")
     ranked = rank_critical_pipes(
         dataset.graph,
         current_result.peak_pipe_flow,
         current_result.peak_pipe_utilization,
+        pipe_demand_ratios_pct=current_result.peak_pipe_demand_ratio,
     )
     _add_plain_table(
         doc,
-        headers=("#", "Tub.", "Tramo", "Q pico", "Q max", "Util (%)", "Estado"),
+        headers=("#", "Tub.", "Tramo", "Q fís.", "Q max", "Util/Dem", "Estado"),
         rows=[
             (
                 r.rank,
@@ -353,34 +358,34 @@ def generate_docx_report(
                 f"{r.from_node}->{r.to_node}",
                 f"{r.flow_m3s:.4f}",
                 f"{r.q_max_m3s:.4f}",
-                f"{r.utilization_pct:.1f}%",
+                f"{r.utilization_pct:.0f}%/{r.demand_ratio_pct/100:.1f}x",
                 r.category.label,
             )
             for r in ranked[:20]
         ],
-        col_widths_in=(0.24, 0.38, 0.56, 0.48, 0.48, 0.48, 0.83),
-        font_pt=6.8,
+        col_widths_in=(0.24, 0.36, 0.54, 0.45, 0.45, 0.62, 0.79),
+        font_pt=6.7,
     )
 
     if comps:
         _add_heading_1(doc, "6. Comparación Multiescenario")
         _add_plain_table(
             doc,
-            headers=("Esc.", "mm/h", "Máx %", "Crít.", ">=75", ">100", "PTAR m3/s"),
+            headers=("Esc.", "mm/h", "Fís%", "Dem.", "Crít.", ">100", "Rebose m3"),
             rows=[
                 (
                     f"E{s.scenario_id}",
                     f"{s.intensity_mm_h:.0f}",
                     f"{s.max_utilization_pct:.1f}%",
+                    f"{s.max_demand_ratio_pct/100:.2f}x",
                     s.most_critical_pipe,
-                    s.num_critical_pipes,
                     s.num_overloaded_pipes,
-                    f"{s.peak_sink_discharge_m3s:.4f}",
+                    f"{s.total_surface_flooding_m3:,.1f}",
                 )
                 for s in comps
             ],
-            col_widths_in=(0.35, 0.42, 0.55, 0.44, 0.42, 0.44, 0.78),
-            font_pt=7.0,
+            col_widths_in=(0.32, 0.40, 0.48, 0.44, 0.42, 0.40, 0.94),
+            font_pt=6.8,
         )
 
     _validate_docx_compliance(doc)
@@ -498,13 +503,13 @@ def generate_technical_document_docx(
     add_omml_equation(doc, "transit", "5")
     _add_body(
         doc,
-        "En cada intervalo discreto de 1 minuto se evalúa el porcentaje de utilización respecto a la capacidad máxima:",
+        "En cada intervalo discreto de 1 minuto se evalúa la utilización física acotada (≤115 % bajo sobrepresión) y el índice de demanda respecto a Q_max,i:",
     )
     add_omml_equation(doc, "utilization", "6")
     _add_body(
         doc,
         "Cuando el caudal demandado excede Q_max,i (>100 %), la conducción física aguas abajo se acota a la "
-        "capacidad nominal y el volumen excedente se retiene en el pozo aguas arriba, cumpliendo el balance de masa:",
+        "capacidad nominal y el volumen excedente se retiene en el pozo aguas arriba hasta su capacidad útil (4.0 m³), derivando cualquier exceso adicional a rebose superficial en vía con conservación exacta de masa:",
     )
     add_omml_equation(doc, "mass_balance", "7")
 
@@ -512,26 +517,26 @@ def generate_technical_document_docx(
     _add_body(
         doc,
         "La simulación ejecutada durante 90 min (lluvia uniforme de 60 min, paso de 1 min, f_ing = 2.5 %, "
-        "caudal sanitario = 0.003 m3/s por fuente) evidencia la transición progresiva de los cinco estados de color:",
+        "reparto por capacidad instalada en fuentes y caudal sanitario = 0.003 m3/s por fuente) evidencia la transición progresiva de los cinco estados de color:",
     )
     _add_plain_table(
         doc,
-        headers=("Esc.", "Condición", "mm/h", "Máx %", "Crít.", ">=75", ">100", "PTAR"),
+        headers=("Esc.", "Condición", "mm/h", "Fís%", "Dem.", "Crít.", ">100", "PTAR"),
         rows=[
             (
                 f"E{s.scenario_id}",
                 s.condition,
                 f"{s.intensity_mm_h:.0f}",
                 f"{s.max_utilization_pct:.1f}",
+                f"{s.max_demand_ratio_pct/100:.2f}x",
                 s.most_critical_pipe,
-                s.num_critical_pipes,
                 s.num_overloaded_pipes,
                 f"{s.peak_sink_discharge_m3s:.3f}",
             )
             for s in comparisons
         ],
-        col_widths_in=(0.30, 0.78, 0.36, 0.44, 0.38, 0.34, 0.36, 0.44),
-        font_pt=6.7,
+        col_widths_in=(0.28, 0.72, 0.34, 0.38, 0.40, 0.36, 0.36, 0.44),
+        font_pt=6.6,
     )
 
     fig_dir = os.path.join(os.path.dirname(os.path.abspath(out_path)), "figuras")
@@ -596,13 +601,13 @@ def generate_technical_document_docx(
     _add_heading_1(doc, "Anexo C. Resultados Detallados por Escenario")
     _add_plain_table(
         doc,
-        headers=("Esc.", "Iny.(m3)", "PTAR(m3)", "Almac.(m3)", "Err.Masa"),
+        headers=("Esc.", "Iny.(m3)", "PTAR(m3)", "Reb.(m3)", "Err.Masa"),
         rows=[
             (
                 f"E{s.scenario_id}",
                 f"{s.total_inflow_m3:,.1f}",
                 f"{s.total_sink_discharge_m3:,.1f}",
-                f"{s.max_stored_surcharge_m3:,.1f}",
+                f"{s.total_surface_flooding_m3:,.1f}",
                 f"{s.mass_balance_error_m3:.2e}",
             )
             for s in comparisons
