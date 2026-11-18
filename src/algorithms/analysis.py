@@ -154,19 +154,34 @@ def compute_source_attribution(
     snapshot: Optional[Any] = None,
     split_rule: str = "proportional",
     pipe_qmax_overrides: Optional[Dict[str, float]] = None,
+    source_distribution: str = "capacity",
 ) -> SourceAttributionResult:
     """Propaga la firma de cada fuente por orden topológico respetando bifurcación y convergencia."""
     topo_order, _is_dag = topological_sort(graph)
     node_mix_raw: Dict[str, Dict[str, float]] = {nid: {} for nid in graph.node_ids()}
     node_struct_q: Dict[str, float] = {nid: 0.0 for nid in graph.node_ids()}
 
-    for sid in graph.source_ids():
+    sources = graph.source_ids()
+    if source_distribution == "equal":
+        default_src_q = {sid: 1.0 for sid in sources}
+    else:
+        raw_caps = {
+            sid: sum(e.q_max_m3s for e in graph.outgoing_pipes(sid))
+            for sid in sources
+        }
+        total_cap = sum(raw_caps.values())
+        if total_cap > 1e-12:
+            default_src_q = {sid: raw_caps[sid] / total_cap for sid in sources}
+        else:
+            default_src_q = {sid: 1.0 for sid in sources}
+
+    for sid in sources:
         node_mix_raw[sid][sid] = 1.0
         if snapshot is not None and sid in snapshot.node_states:
             in_q = float(snapshot.node_states[sid].inflow_m3s)
-            node_struct_q[sid] = in_q if in_q > 1e-12 else 1.0
+            node_struct_q[sid] = in_q if in_q > 1e-12 else default_src_q[sid]
         else:
-            node_struct_q[sid] = 1.0
+            node_struct_q[sid] = default_src_q[sid]
 
     node_shares: Dict[str, List[Tuple[str, float]]] = {}
     pipe_shares: Dict[str, List[Tuple[str, float]]] = {}

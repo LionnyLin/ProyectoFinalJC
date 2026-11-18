@@ -117,6 +117,16 @@ def _parse_float(raw: object, field_name: str, row_ctx: str) -> float:
     return val
 
 
+def _is_blank_csv_row(row: dict) -> bool:
+    for k, v in row.items():
+        if k is None:
+            if any(str(item or "").strip() for item in (v or [])):
+                return False
+        elif str(v or "").strip():
+            return False
+    return True
+
+
 def _load_coords_csv(path: str) -> Dict[str, Tuple[float, float, str]]:
     coords: Dict[str, Tuple[float, float, str]] = {}
     if not os.path.isfile(path):
@@ -345,7 +355,7 @@ def load_from_excel(
         scenarios: List[PrecipitationScenario] = []
         for r in range(2, ws_scen.max_row + 1):
             sid_raw = ws_scen.cell(r, 1).value
-            if sid_raw is None:
+            if sid_raw is None or not str(sid_raw).strip():
                 continue
             ctx = f"Precipitation Scenarios fila {r}"
             sid = int(_parse_float(sid_raw, "Scenario", ctx))
@@ -408,6 +418,8 @@ def load_from_csv_dir(csv_dir: str) -> NetworkDataset:
 
     with open(os.path.join(csv_dir, "pipes.csv"), "r", encoding="utf-8-sig", newline="") as f:
         for idx, row in enumerate(csv.DictReader(f), start=2):
+            if _is_blank_csv_row(row):
+                continue
             ctx = f"pipes.csv fila {idx}"
             pid = (row.get("pipe_id") or "").strip()
             u = (row.get("from_node") or "").strip()
@@ -448,6 +460,8 @@ def load_from_csv_dir(csv_dir: str) -> NetworkDataset:
         os.path.join(csv_dir, "precipitation_scenarios.csv"), "r", encoding="utf-8-sig", newline=""
     ) as f:
         for idx, row in enumerate(csv.DictReader(f), start=2):
+            if _is_blank_csv_row(row):
+                continue
             ctx = f"precipitation_scenarios.csv fila {idx}"
             scenarios.append(
                 PrecipitationScenario(

@@ -426,6 +426,14 @@ def generate_technical_document_docx(
 ) -> str:
     """Genera el Documento Técnico completo en Word (.docx) con Bibliografía y Anexos A-D."""
     doc = _configure_two_column_document()
+    if not comparisons:
+        from .comparison import compare_all_scenarios
+        from .models import SimulationConfig
+
+        comparisons = compare_all_scenarios(
+            dataset,
+            SimulationConfig(scenario_id=3, scenario_name="Moderate rain", intensity_mm_h=30.0),
+        )
     base_res = comparisons[2].result if len(comparisons) > 2 else comparisons[0].result
     n_nodes, n_pipes, n_src, n_snk, total_len = dataset.graph.summary()
 

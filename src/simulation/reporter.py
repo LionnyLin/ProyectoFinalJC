@@ -20,7 +20,7 @@ def generate_markdown_report(
     """Genera un reporte detallado en Markdown y retorna la ruta escrita."""
     cfg = current_result.config
     n_nodes, n_pipes, n_src, n_snk, total_len = dataset.graph.summary()
-    last_snap = current_result.snapshots[-1]
+    last_snap = current_result.snapshots[-1] if current_result.snapshots else None
     interventions = cfg.interventions or {}
     eff_qmax_map = {
         p.pipe_id: resolve_pipe_hydraulics(p, interventions.get(p.pipe_id))[0]
@@ -135,7 +135,11 @@ def generate_markdown_report(
             "peak_demand_factor", "state", "excess_flow_m3s", "final_utilization_pct",
         ])
         for rec in ranked:
-            final_u = last_snap.pipe_states[rec.pipe_id].utilization_pct
+            final_u = (
+                last_snap.pipe_states[rec.pipe_id].utilization_pct
+                if (last_snap is not None and rec.pipe_id in last_snap.pipe_states)
+                else 0.0
+            )
             w.writerow([
                 rec.rank,
                 rec.pipe_id,
