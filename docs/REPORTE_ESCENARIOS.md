@@ -1,6 +1,6 @@
 # Reporte de Simulación — Red de Alcantarillado Ciudad Bicentenario
 
-**Fecha de generación:** 2026-11-18 17:45:54  
+**Fecha de generación:** 2026-11-18 18:38:21  
 **Fuente de datos:** `data/DataSetBicentenario.xlsx`  
 **Descarga final (Sumidero):** 31 (PTAR Punta Canoa)  
 
@@ -31,7 +31,7 @@
 - **Error máximo de balance de masa:** 3.365e-11 m³
 - **Tuberías críticas (>= 75 %):** 21 (P1, P12, P13, P2, P22, P23, P25, P27, P28, P3, P31, P36, P37, P38, P39, P4, P43, P5, P51, P6, P7)
 - **Tuberías sobrecargadas (> 100 %):** 15 (P1, P12, P13, P2, P23, P25, P28, P3, P31, P36, P37, P39, P4, P43, P5)
-- **Tiempo de cómputo:** 106.13 ms
+- **Tiempo de cómputo:** 120.08 ms
 
 ## 4. Ranking de Tuberías por Utilización Física Pico
 | # | Tubería | Tramo | Q_físico (m³/s) | Q_max (m³/s) | Util. Fís (%) | Demanda | Estado | Déficit (m³/s) |
