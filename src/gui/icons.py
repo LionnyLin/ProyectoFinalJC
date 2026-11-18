@@ -15,9 +15,31 @@ def _render_icon(size: int, draw_fn) -> ImageTk.PhotoImage:
     return ImageTk.PhotoImage(img)
 
 
-def build_icon_set(fg_dark: str, fg_light: str, fg_on_accent: str) -> Dict[str, ImageTk.PhotoImage]:
+def build_icon_set(
+    fg_dark: str,
+    fg_light: str,
+    fg_on_accent: str,
+    accent_color: str = "#6D8196",
+) -> Dict[str, ImageTk.PhotoImage]:
     """Construye el conjunto coherente de iconos de la interfaz."""
     icons: Dict[str, ImageTk.PhotoImage] = {}
+
+    def _brand_network(col_line: str, col_node: str, col_sink: str, sz: int = 22) -> ImageTk.PhotoImage:
+        def fn(d: ImageDraw.ImageDraw, dim: int, s: int) -> None:
+            sw = max(2, int(1.8 * s))
+            p1 = (dim * 0.22, dim * 0.24)
+            p2 = (dim * 0.22, dim * 0.76)
+            pm = (dim * 0.54, dim * 0.50)
+            ps = (dim * 0.80, dim * 0.50)
+            d.line([p1, pm], fill=col_line, width=sw)
+            d.line([p2, pm], fill=col_line, width=sw)
+            d.line([pm, ps], fill=col_sink, width=sw)
+            r = dim * 0.11
+            for cx, cy in (p1, p2, pm):
+                d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col_node, outline=col_line, width=max(1, s))
+            rs = dim * 0.13
+            d.ellipse([ps[0] - rs, ps[1] - rs, ps[0] + rs, ps[1] + rs], fill=col_sink, outline=col_node, width=max(1, s))
+        return _render_icon(sz, fn)
 
     def _play(col: str, sz: int = 12) -> ImageTk.PhotoImage:
         def fn(d: ImageDraw.ImageDraw, dim: int, _s: int) -> None:
@@ -103,6 +125,7 @@ def build_icon_set(fg_dark: str, fg_light: str, fg_on_accent: str) -> Dict[str, 
             d.line([(dim * 0.68, dim * 0.50), (dim * 0.92, dim * 0.50)], fill=col, width=sw)
         return _render_icon(sz, fn)
 
+    icons["brand_network"] = _brand_network(fg_dark, fg_dark, accent_color, 22)
     icons["play_on_accent"] = _play(fg_on_accent, 11)
     icons["pause_on_accent"] = _pause(fg_on_accent, 11)
     icons["play_ink"] = _play(fg_light, 11)
@@ -110,10 +133,10 @@ def build_icon_set(fg_dark: str, fg_light: str, fg_on_accent: str) -> Dict[str, 
     icons["step_back_light"] = _step_back(fg_light, 11)
     icons["step_fwd_light"] = _step_fwd(fg_light, 11)
     icons["sliders_light"] = _sliders(fg_dark, 13)
-    icons["sliders_ink"] = _sliders(fg_light, 13)
+    icons["sliders_ink"] = _sliders(fg_on_accent, 13)
     icons["chart_light"] = _chart(fg_dark, 13)
-    icons["chart_ink"] = _chart(fg_light, 13)
+    icons["chart_ink"] = _chart(fg_on_accent, 13)
     icons["chevron_light"] = _chevron_down(fg_dark, 10)
-    icons["search_ink"] = _search(fg_light, 12)
+    icons["search_ink"] = _search(fg_on_accent, 12)
     icons["crosshair_light"] = _crosshair(fg_light, 12)
     return icons
