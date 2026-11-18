@@ -1,0 +1,56 @@
+"""Punto de entrada principal del Simulador de Alcantarillado de Ciudad Bicentenario."""
+
+import argparse
+import os
+import sys
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Simulación y visualización de la red de alcantarillado de Ciudad Bicentenario."
+    )
+    parser.add_argument(
+        "--data",
+        help="Ruta opcional a DataSetBicentenario.xlsx o carpeta CSV.",
+        default=None,
+    )
+    parser.add_argument(
+        "--report",
+        help="Ejecuta los 5 escenarios en modo CLI y exporta un reporte Markdown en la ruta indicada.",
+        default=None,
+    )
+    args = parser.parse_args()
+
+    if args.report:
+        from src.io.data_loader import load_dataset
+        from src.simulation import (
+            SimulationConfig,
+            compare_all_scenarios,
+            generate_markdown_report,
+        )
+
+        data_path = args.data or os.path.join(
+            os.path.dirname(__file__), "data", "DataSetBicentenario.xlsx"
+        )
+        dataset = load_dataset(data_path)
+        base_cfg = SimulationConfig(
+            scenario_id=3,
+            scenario_name="Moderate rain",
+            intensity_mm_h=30.0,
+        )
+        summaries = compare_all_scenarios(dataset, base_cfg)
+        out = generate_markdown_report(
+            dataset, summaries[2].result, summaries, args.report
+        )
+        print(f"Reporte generado exitosamente en: {out}")
+        return 0
+
+    from src.gui import BicentenarioSewerApp
+
+    app = BicentenarioSewerApp(initial_data_path=args.data)
+    app.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
