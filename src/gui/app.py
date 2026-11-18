@@ -1,18 +1,25 @@
 """Aplicación principal rediseñada — Lámina Cartográfica de Archivo Hidráulico (#4A4A4A, #CBCBCB, #FFFFE3, #6D8196)."""
 
+import math
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set
 
 from src.algorithms import (
+    TraversalAnimFrame,
     bfs,
+    bfs_anim_frames,
+    build_route_to_sink,
     dfs,
+    dfs_anim_frames,
+    find_isolated_from_sinks,
     rank_critical_pipes,
     search_entities,
     trace_downstream,
     trace_upstream,
 )
+from src.data_structures import PipeEdge
 from src.io.data_loader import (
     DataLoadError,
     NetworkDataset,
@@ -20,6 +27,7 @@ from src.io.data_loader import (
     load_dataset,
 )
 from src.simulation import (
+    PipeIntervention,
     ScenarioSummary,
     SewerSimulationEngine,
     SimulationConfig,
@@ -28,18 +36,42 @@ from src.simulation import (
     compare_all_scenarios,
     generate_docx_report,
     generate_markdown_report,
+    resolve_pipe_hydraulics,
 )
 from . import theme
 from .charts_panel import ComparisonChartsPanel, TemporalChartsPanel
 from .icons import build_icon_set
 from .network_canvas import NetworkCanvas
 
+_COMMERCIAL_DIAMETERS_IN = [
+    "Original",
+    '6"',
+    '8"',
+    '10"',
+    '12"',
+    '14"',
+    '16"',
+    '18"',
+    '20"',
+    '24"',
+    '30"',
+    '36"',
+    '42"',
+    '48"',
+]
+
 
 class BicentenarioSewerApp(tk.Tk):
     """Interfaz gráfica adaptable para simulación y análisis de la red de alcantarillado."""
 
     def __init__(self, initial_data_path: Optional[str] = None) -> None:
+        theme.enable_dpi_awareness()
         super().__init__()
+        self._dpi_scale: float = theme.resolve_dpi_scale(self)
+        # Limitar DPI embebido (máx. ~115) y bloquear el reescalado dinámico de TkAgg para evitar recortes
+        self._mpl_dpi: int = min(116, max(96, int(round(96.0 * min(1.20, self._dpi_scale)))))
+        self._param_rerun_after: Optional[str] = None
+
         self.title("Red de Alcantarillado Ciudad Bicentenario · Simulador Hidráulico")
         self._configure_initial_geometry()
         self.configure(bg=theme.DOCK_BORDER)
@@ -51,11 +83,13 @@ class BicentenarioSewerApp(tk.Tk):
             fg_light=theme.INK_PRIMARY,
             fg_on_accent=theme.ACCENT_INK,
             accent_color=theme.ACCENT_PRIMARY,
+            scale=self._dpi_scale,
         )
 
         self.dataset: Optional[NetworkDataset] = None
         self.engine: Optional[SewerSimulationEngine] = None
         self.result: Optional[SimulationResult] = None
+        self._previous_result: Optional[SimulationResult] = None
         self.comparisons: List[ScenarioSummary] = []
         self._comparisons_dirty: bool = True
 
@@ -66,7 +100,24 @@ class BicentenarioSewerApp(tk.Tk):
         self._selected_pipe_id: Optional[str] = None
         self._selected_node_id: Optional[str] = None
         self._updating_slider: bool = False
+        self._slider_restore_pending: bool = False
         self._suppress_tree_select: bool = False
+        self._inspector_layout_state: Optional[tuple] = None
+        self._insp_tab_dirty: bool = False
+        self._crit_tab_dirty: bool = False
+        self._charts_tab_dirty: bool = False
+
+        # Estado de Cirugía Cartográfica, Cuenca Aportante y Animación BFS/DFS
+        self._interventions: Dict[str, PipeIntervention] = {}
+        self._isolated_nodes: Set[str] = set()
+        self._isolated_pipes: Set[str] = set()
+        self._basin_isolated: bool = False
+        self._active_route_pipes: List[PipeEdge] = []
+        self._last_traversal_alg: str = "BFS"
+        self._anim_frames: List[TraversalAnimFrame] = []
+        self._anim_idx: int = 0
+        self._anim_after_id: Optional[str] = None
+        self._is_animating_traversal: bool = False
 
         # Estado responsivo y de paneles
         self._show_left: bool = True
@@ -96,6 +147,8 @@ class BicentenarioSewerApp(tk.Tk):
         self.var_crit_filter = tk.StringVar(value="all")
         self.var_show_pipe_labels = tk.BooleanVar(value=True)
         self.var_show_util_labels = tk.BooleanVar(value=True)
+        self.var_obstruction_pct = tk.DoubleVar(value=0.0)
+        self.var_diam_override = tk.StringVar(value="Original")
 
         self.var_split_rule_es.trace_add(
             "write",
@@ -137,11 +190,14 @@ class BicentenarioSewerApp(tk.Tk):
         self.update_idletasks()
         self._apply_responsive_layout(self.winfo_width(), self.winfo_height())
 
+    def _px(self, base_px: int) -> int:
+        return max(1, int(round(base_px * self._dpi_scale)))
+
     def _configure_initial_geometry(self) -> None:
         sw = max(800, self.winfo_screenwidth())
         sh = max(600, self.winfo_screenheight())
-        init_w = max(860, min(1440, int(sw * 0.92)))
-        init_h = max(580, min(880, int(sh * 0.88)))
+        init_w = max(860, min(int(round(1440 * min(1.15, self._dpi_scale))), int(sw * 0.92)))
+        init_h = max(580, min(int(round(880 * min(1.15, self._dpi_scale))), int(sh * 0.88)))
         pos_x = max(0, (sw - init_w) // 2)
         pos_y = max(0, (sh - init_h) // 2)
         self.geometry(f"{init_w}x{init_h}+{pos_x}+{pos_y}")
@@ -201,7 +257,7 @@ class BicentenarioSewerApp(tk.Tk):
             background=theme.PAPER_BG,
             foreground=theme.INK_PRIMARY,
             fieldbackground=theme.PAPER_BG,
-            rowheight=25,
+            rowheight=self._px(24),
             borderwidth=0,
             font=(self.mono_font, 8),
         )
@@ -356,7 +412,7 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _build_layout(self) -> None:
         # 1. Barra superior grafito (#4A4A4A) con filete azul pizarra (#6D8196)
-        self.topbar = tk.Frame(self, bg=theme.SHELL_BG, height=54)
+        self.topbar = tk.Frame(self, bg=theme.SHELL_BG, height=self._px(54))
         self.topbar.pack(side=tk.TOP, fill=tk.X)
         tk.Frame(self, bg=theme.ACCENT_PRIMARY, height=3).pack(side=tk.TOP, fill=tk.X)
 
@@ -479,7 +535,7 @@ class BicentenarioSewerApp(tk.Tk):
         self.menu_btn_file.configure(menu=file_menu)
 
         # 2. Barra de estado inferior en grafito (#4A4A4A) con línea azul pizarra
-        statusbar = tk.Frame(self, bg=theme.SHELL_BG, height=27)
+        statusbar = tk.Frame(self, bg=theme.SHELL_BG, height=self._px(27))
         statusbar.pack(side=tk.BOTTOM, fill=tk.X)
         tk.Frame(self, bg=theme.ACCENT_PRIMARY, height=2).pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -514,7 +570,7 @@ class BicentenarioSewerApp(tk.Tk):
         self.main_pane.pack(fill=tk.BOTH, expand=True)
 
         # Panel izquierdo: Muelle Plata Mineral (#CBCBCB) con láminas Vitela (#FFFFE3)
-        self.left_panel = tk.Frame(self.main_pane, bg=theme.DOCK_BG, width=288)
+        self.left_panel = tk.Frame(self.main_pane, bg=theme.DOCK_BG, width=self._px(288))
         self.left_panel.pack_propagate(False)
 
         rail_tabs_bar = tk.Frame(self.left_panel, bg=theme.DOCK_BG)
@@ -576,7 +632,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._build_center_panel(self.center_panel)
 
         # Panel derecho: Muelle analítico en Plata Mineral + Notebook Vitela
-        self.right_panel = tk.Frame(self.main_pane, bg=theme.DOCK_BG, width=382)
+        self.right_panel = tk.Frame(self.main_pane, bg=theme.DOCK_BG, width=self._px(382))
         self.right_panel.pack_propagate(False)
         self._right_tabs_compact: Optional[bool] = None
         self.right_panel.bind("<Configure>", self._on_right_configure)
@@ -654,6 +710,8 @@ class BicentenarioSewerApp(tk.Tk):
         self._clear_highlights()
         self._selected_pipe_id = None
         self._selected_node_id = None
+        self._basin_isolated = False
+        self.network_canvas.set_basin_focus(None, None)
         self.network_canvas.select_pipe(None)
         self.network_canvas.select_node(None)
         self._refresh_inspector()
@@ -720,7 +778,6 @@ class BicentenarioSewerApp(tk.Tk):
         # 3. Adaptación de paneles laterales según umbral
         if tier_changed:
             if new_tier == "compact" and self._show_left and self._show_right:
-                # En ventana compacta priorizamos un cajón lateral a la vez para no aplastar el mapa
                 self._show_right = False
             self._sync_panes()
             self._update_toggle_styles()
@@ -751,18 +808,18 @@ class BicentenarioSewerApp(tk.Tk):
             self.update_idletasks()
             if self._show_left and self._show_right and len(panes) == 3:
                 if total_w >= theme.BREAKPOINT_MEDIUM:
-                    left_target = min(292, max(272, int(total_w * 0.21)))
-                    right_target = min(392, max(332, int(total_w * 0.27)))
+                    left_target = min(self._px(304), max(272, int(total_w * 0.21)))
+                    right_target = min(self._px(440), max(360, int(total_w * 0.30)))
                 else:
                     left_target = min(272, max(264, int(total_w * 0.25)))
-                    right_target = min(334, max(292, int(total_w * 0.30)))
+                    right_target = min(344, max(296, int(total_w * 0.31)))
                 self.main_pane.sash_place(0, left_target, 0)
                 self.main_pane.sash_place(1, max(left_target + 320, total_w - right_target), 0)
             elif self._show_left and not self._show_right and len(panes) == 2:
-                left_target = min(296, max(264, int(total_w * 0.26)))
+                left_target = min(self._px(304), max(264, int(total_w * 0.27)))
                 self.main_pane.sash_place(0, left_target, 0)
             elif not self._show_left and self._show_right and len(panes) == 2:
-                right_target = min(420, max(324, int(total_w * 0.39)))
+                right_target = min(self._px(420), max(324, int(total_w * 0.39)))
                 self.main_pane.sash_place(0, max(320, total_w - right_target), 0)
         except tk.TclError:
             pass
@@ -868,6 +925,7 @@ class BicentenarioSewerApp(tk.Tk):
             style="Light.TCombobox",
         )
         self.combo_scenario.pack(fill=tk.X, pady=(0, 8))
+        self.combo_scenario.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=False))
 
         grid = tk.Frame(sec_sim, bg=theme.PAPER_BG)
         grid.pack(fill=tk.X)
@@ -886,12 +944,13 @@ class BicentenarioSewerApp(tk.Tk):
                 fg=theme.INK_PRIMARY,
                 font=(self.ui_font, 8),
             ).grid(row=row_i, column=0, sticky="w", pady=2)
-            tk.Spinbox(
+            sb = tk.Spinbox(
                 grid,
                 textvariable=var,
                 from_=frm,
                 to=to,
                 increment=inc,
+                command=self._schedule_param_rerun,
                 width=8,
                 bg=theme.PAPER_BG,
                 fg=theme.INK_PRIMARY,
@@ -902,7 +961,9 @@ class BicentenarioSewerApp(tk.Tk):
                 highlightcolor=theme.ACCENT_PRIMARY,
                 relief="flat",
                 font=(self.mono_font, 9),
-            ).grid(row=row_i, column=1, sticky="e", pady=2)
+            )
+            sb.grid(row=row_i, column=1, sticky="e", pady=2)
+            sb.bind("<Return>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
         grid.columnconfigure(0, weight=1)
 
         preset_row = tk.Frame(sec_sim, bg=theme.PAPER_BG)
@@ -935,14 +996,16 @@ class BicentenarioSewerApp(tk.Tk):
             fg=theme.INK_PRIMARY,
             font=(self.ui_font, 8),
         ).pack(side=tk.LEFT)
-        ttk.Combobox(
+        self.combo_split_rule = ttk.Combobox(
             row_rules,
             textvariable=self.var_split_rule_es,
             values=list(theme.SPLIT_RULE_TO_ES.values()),
             state="readonly",
             width=14,
             style="Light.TCombobox",
-        ).pack(side=tk.RIGHT)
+        )
+        self.combo_split_rule.pack(side=tk.RIGHT)
+        self.combo_split_rule.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
 
         row_hyeto = tk.Frame(sec_sim, bg=theme.PAPER_BG)
         row_hyeto.pack(fill=tk.X, pady=3)
@@ -953,14 +1016,16 @@ class BicentenarioSewerApp(tk.Tk):
             fg=theme.INK_PRIMARY,
             font=(self.ui_font, 8),
         ).pack(side=tk.LEFT)
-        ttk.Combobox(
+        self.combo_hyetograph = ttk.Combobox(
             row_hyeto,
             textvariable=self.var_hyetograph_es,
             values=list(theme.HYETOGRAPH_TO_ES.values()),
             state="readonly",
             width=14,
             style="Light.TCombobox",
-        ).pack(side=tk.RIGHT)
+        )
+        self.combo_hyetograph.pack(side=tk.RIGHT)
+        self.combo_hyetograph.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
 
         self._make_btn(
             sec_sim,
@@ -986,8 +1051,8 @@ class BicentenarioSewerApp(tk.Tk):
             row.pack(fill=tk.X, pady=2)
             swatch = tk.Frame(
                 row,
-                width=12,
-                height=12,
+                width=self._px(12),
+                height=self._px(12),
                 bg=color_hex,
                 highlightthickness=1,
                 highlightbackground=theme.DOCK_BORDER,
@@ -1076,14 +1141,44 @@ class BicentenarioSewerApp(tk.Tk):
 
         btn_trav_row1 = tk.Frame(sec_alg, bg=theme.PAPER_BG)
         btn_trav_row1.pack(fill=tk.X, pady=(8, 3))
-        for text, cmd in [
-            ("BFS", lambda: self._run_traversal("BFS")),
-            ("DFS", lambda: self._run_traversal("DFS")),
-            ("Limpiar", self._clear_highlights),
-        ]:
-            self._make_btn(
-                btn_trav_row1, text, cmd, variant="dock_secondary", padx=6, pady=4, font_size=8
-            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        self._make_btn(
+            btn_trav_row1,
+            "BFS",
+            lambda: self._run_traversal("BFS"),
+            variant="dock_secondary",
+            padx=6,
+            pady=4,
+            font_size=8,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+        self._make_btn(
+            btn_trav_row1,
+            "DFS",
+            lambda: self._run_traversal("DFS"),
+            variant="dock_secondary",
+            padx=6,
+            pady=4,
+            font_size=8,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        self._make_btn(
+            btn_trav_row1,
+            "Limpiar",
+            self._clear_highlights,
+            variant="dock_secondary",
+            padx=6,
+            pady=4,
+            font_size=8,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+
+        self.btn_anim_traversal = self._make_btn(
+            sec_alg,
+            "Animar recorrido",
+            self._action_toggle_traversal_anim,
+            variant="primary",
+            padx=8,
+            pady=4,
+            font_size=8,
+        )
+        self.btn_anim_traversal.pack(fill=tk.X, pady=(2, 3))
 
         btn_trav_row2 = tk.Frame(sec_alg, bg=theme.PAPER_BG)
         btn_trav_row2.pack(fill=tk.X, pady=(0, 2))
@@ -1092,13 +1187,36 @@ class BicentenarioSewerApp(tk.Tk):
             ("Aguas arriba", lambda: self._run_trace("up")),
         ]:
             self._make_btn(
-                btn_trav_row2, text, cmd, variant="dock_secondary", padx=6, pady=4, font_size=8
+                btn_trav_row2, text, cmd, variant="dock_secondary", padx=5, pady=4, font_size=8
             ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
-        # Bitácora oscura (#4A4A4A) para lectura de rutas
+        # Bitácora oscura (#4A4A4A) + Tira visual de Queue / Stack
         sec_log = self._make_rail_section(
             self._rail_trav_container, "Bitácora de recorrido", dark_header=False
         )
+
+        self._struct_strip_box = tk.Frame(
+            sec_log,
+            bg=theme.PAPER_SUBTLE,
+            highlightthickness=1,
+            highlightbackground=theme.DOCK_BORDER,
+        )
+        self._struct_strip_box.pack(fill=tk.X, pady=(0, 6))
+        self._lbl_struct_header = tk.Label(
+            self._struct_strip_box,
+            text="Queue (BFS) · FRENTE → FINAL",
+            bg=theme.PAPER_SUBTLE,
+            fg=theme.INK_PRIMARY,
+            font=(self.mono_font, 7, "bold"),
+            anchor="w",
+            padx=6,
+            pady=3,
+        )
+        self._lbl_struct_header.pack(fill=tk.X)
+        self._struct_cells_row = tk.Frame(self._struct_strip_box, bg=theme.PAPER_SUBTLE)
+        self._struct_cells_row.pack(fill=tk.X, padx=5, pady=(0, 5))
+        self._render_structure_strip("Queue", [])
+
         self.txt_traversal = tk.Text(
             sec_log,
             height=6,
@@ -1116,6 +1234,60 @@ class BicentenarioSewerApp(tk.Tk):
         self.txt_traversal.configure(state=tk.DISABLED)
 
         self._switch_rail_tab("sim")
+
+    def _render_structure_strip(self, structure_name: str, items: List[str], step_text: str = "") -> None:
+        for child in list(self._struct_cells_row.winfo_children()):
+            child.destroy()
+
+        if structure_name == "Stack":
+            hdr = "Pila (Stack) · TOPE ↑"
+        else:
+            hdr = "Cola (Queue) · FRENTE → FINAL"
+        if step_text:
+            hdr = f"{hdr}  [{step_text}]"
+        self._lbl_struct_header.configure(text=hdr)
+
+        if not items:
+            tk.Label(
+                self._struct_cells_row,
+                text="(vacía)",
+                bg=theme.PAPER_BG,
+                fg=theme.INK_MUTED,
+                font=(self.mono_font, 7),
+                padx=6,
+                pady=2,
+                highlightthickness=1,
+                highlightbackground=theme.PAPER_BORDER,
+            ).pack(side=tk.LEFT)
+            return
+
+        max_cells = 6
+        shown = items[:max_cells]
+        for idx, val in enumerate(shown):
+            is_head = idx == 0
+            tk.Label(
+                self._struct_cells_row,
+                text=str(val),
+                bg=theme.ACCENT_PRIMARY if is_head else theme.PAPER_BG,
+                fg=theme.ACCENT_INK if is_head else theme.INK_PRIMARY,
+                font=(self.mono_font, 7, "bold"),
+                padx=5,
+                pady=2,
+                highlightthickness=1,
+                highlightbackground=theme.DOCK_BORDER,
+            ).pack(side=tk.LEFT, padx=(0, 2))
+        if len(items) > max_cells:
+            tk.Label(
+                self._struct_cells_row,
+                text=f"+{len(items) - max_cells}",
+                bg=theme.DOCK_BG,
+                fg=theme.INK_PRIMARY,
+                font=(self.mono_font, 7, "bold"),
+                padx=4,
+                pady=2,
+                highlightthickness=1,
+                highlightbackground=theme.DOCK_BORDER,
+            ).pack(side=tk.LEFT)
 
     def _build_center_panel(self, parent: tk.Frame) -> None:
         # Franja superior de telemetría: bloque de reloj en grafito (#4A4A4A) + 4 tarjetas KPI en vitela (#FFFFE3)
@@ -1247,7 +1419,7 @@ class BicentenarioSewerApp(tk.Tk):
             padx=10,
             pady=4,
             font_size=8,
-            width=102,
+            width=self._px(102),
             image=self._icons["play_on_accent"],
             compound=tk.LEFT,
         )
@@ -1285,6 +1457,7 @@ class BicentenarioSewerApp(tk.Tk):
             style="Light.TCombobox",
         )
         self.combo_speed.pack(side=tk.LEFT)
+        self.combo_speed.bind("<<ComboboxSelected>>", self._on_speed_change)
 
         self.lbl_mass_audit = tk.Label(
             self.player_controls_row,
@@ -1335,19 +1508,27 @@ class BicentenarioSewerApp(tk.Tk):
             parent,
             ui_font=self.ui_font,
             mono_font=self.mono_font,
+            dpi_scale=self._dpi_scale,
             on_select_pipe=self._on_pipe_selected,
             on_select_node=self._on_node_selected,
         )
         self.network_canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+    def _on_speed_change(self, _event: tk.Event) -> None:
+        if self.is_playing:
+            self.network_canvas.set_playing(True, self._speed_factor())
+
+    def _speed_factor(self) -> float:
+        return {"1x": 1.0, "2x": 1.35, "5x": 1.85, "10x": 2.4}.get(self.var_speed.get(), 1.2)
 
     def _on_center_configure(self, event: tk.Event) -> None:
         compact = event.width < 600
         if compact != self._player_compact:
             self._player_compact = compact
             if compact:
-                self.btn_reset.configure(text="", padx=6, width=26)
-                self.btn_step_back.configure(text="", padx=6, width=26)
-                self.btn_step_fwd.configure(text="", padx=6, width=26)
+                self.btn_reset.configure(text="", padx=6, width=self._px(26))
+                self.btn_step_back.configure(text="", padx=6, width=self._px(26))
+                self.btn_step_fwd.configure(text="", padx=6, width=self._px(26))
                 self.lbl_speed_cap.pack_forget()
             else:
                 self.btn_reset.configure(text=" Inicio", padx=8, width=0)
@@ -1364,13 +1545,13 @@ class BicentenarioSewerApp(tk.Tk):
     def _update_play_button_label(self) -> None:
         icon = self._icons["pause_on_accent"] if self.is_playing else self._icons["play_on_accent"]
         if self._player_compact:
-            self.btn_play_pause.configure(text="", image=icon, padx=6, width=32)
+            self.btn_play_pause.configure(text="", image=icon, padx=6, width=self._px(32))
         else:
             self.btn_play_pause.configure(
                 text=" Pausar" if self.is_playing else " Reproducir",
                 image=icon,
                 padx=10,
-                width=102,
+                width=self._px(102),
             )
 
     def _build_right_panel(self, parent: tk.Frame) -> None:
@@ -1386,28 +1567,37 @@ class BicentenarioSewerApp(tk.Tk):
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
-        # Tab 1: Inspector y Resumen
+        # Tab 1: Inspector y Resumen + Cirugía Cartográfica (Idea 1)
         tab_info = ttk.Frame(self.notebook)
         self.notebook.add(tab_info, text="Inspector")
 
         self.inspector_actions = tk.Frame(tab_info, bg=theme.DOCK_BG)
         self.btn_focus_selected = self._make_btn(
             self.inspector_actions,
-            " Centrar en mapa",
+            " Centrar",
             self._action_focus_selected,
             variant="light_secondary",
-            padx=8,
+            padx=7,
             pady=3,
             font_size=8,
             image=self._icons["crosshair_light"],
             compound=tk.LEFT,
+        )
+        self.btn_isolate_basin = self._make_btn(
+            self.inspector_actions,
+            "Aislar cuenca",
+            self._action_toggle_basin_isolation,
+            variant="light_secondary",
+            padx=8,
+            pady=3,
+            font_size=8,
         )
         self.btn_insp_upstream = self._make_btn(
             self.inspector_actions,
             "Aguas arriba",
             lambda: self._trace_from_selected("up"),
             variant="light_secondary",
-            padx=8,
+            padx=7,
             pady=3,
             font_size=8,
         )
@@ -1416,11 +1606,132 @@ class BicentenarioSewerApp(tk.Tk):
             "Aguas abajo",
             lambda: self._trace_from_selected("down"),
             variant="light_secondary",
-            padx=8,
+            padx=7,
             pady=3,
             font_size=8,
         )
         self._inspector_actions_sep = tk.Frame(tab_info, bg=theme.DOCK_BORDER, height=1)
+
+        # Tarjeta compacta de intervención en vivo sobre tubería (Idea 1)
+        self.pipe_intervention_card = tk.Frame(tab_info, bg=theme.PAPER_SUBTLE)
+        self._pipe_intervention_sep = tk.Frame(tab_info, bg=theme.DOCK_BORDER, height=1)
+
+        int_hdr = tk.Frame(self.pipe_intervention_card, bg=theme.PAPER_SUBTLE)
+        int_hdr.pack(fill=tk.X, padx=8, pady=(6, 2))
+        tk.Label(
+            int_hdr,
+            text="Intervención en vivo (Idea 1)",
+            bg=theme.PAPER_SUBTLE,
+            fg=theme.ACCENT_TEXT_ON_LIGHT,
+            font=(self.display_font, 8, "bold"),
+        ).pack(side=tk.LEFT)
+        self.btn_restore_all = self._make_btn(
+            int_hdr,
+            "Restaurar red",
+            self._action_restore_all_interventions,
+            variant="light_secondary",
+            padx=6,
+            pady=1,
+            font_size=7,
+        )
+        self.lbl_active_interventions = tk.Label(
+            int_hdr,
+            text="",
+            bg=theme.PAPER_SUBTLE,
+            fg=theme.INK_MUTED,
+            font=(self.mono_font, 7, "bold"),
+        )
+        self.lbl_active_interventions.pack(side=tk.RIGHT, padx=(0, 4))
+
+        row_obst = tk.Frame(self.pipe_intervention_card, bg=theme.PAPER_SUBTLE)
+        row_obst.pack(fill=tk.X, padx=8, pady=2)
+        tk.Label(
+            row_obst,
+            text="Obstrucción (%)",
+            bg=theme.PAPER_SUBTLE,
+            fg=theme.INK_PRIMARY,
+            font=(self.ui_font, 8),
+        ).pack(side=tk.LEFT)
+        self.lbl_obst_val = tk.Label(
+            row_obst,
+            text="0%",
+            bg=theme.PAPER_BG,
+            fg=theme.INK_PRIMARY,
+            font=(self.mono_font, 8, "bold"),
+            width=5,
+            highlightthickness=1,
+            highlightbackground=theme.DOCK_BORDER,
+        )
+        self.lbl_obst_val.pack(side=tk.RIGHT, padx=(4, 0))
+        self.scale_obstruction = tk.Scale(
+            row_obst,
+            from_=0,
+            to=100,
+            resolution=5,
+            orient=tk.HORIZONTAL,
+            showvalue=False,
+            variable=self.var_obstruction_pct,
+            command=lambda v: self.lbl_obst_val.configure(text=f"{float(v):.0f}%"),
+            bg=theme.PAPER_SUBTLE,
+            troughcolor=theme.DOCK_BG,
+            activebackground=theme.ACCENT_PRIMARY,
+            highlightthickness=0,
+            bd=0,
+            sliderlength=14,
+            width=10,
+        )
+        self.scale_obstruction.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=6)
+
+        row_diam = tk.Frame(self.pipe_intervention_card, bg=theme.PAPER_SUBTLE)
+        row_diam.pack(fill=tk.X, padx=8, pady=2)
+        tk.Label(
+            row_diam,
+            text="Diámetro",
+            bg=theme.PAPER_SUBTLE,
+            fg=theme.INK_PRIMARY,
+            font=(self.ui_font, 8),
+        ).pack(side=tk.LEFT)
+        self.lbl_diam_current = tk.Label(
+            row_diam,
+            text="Actual: -",
+            bg=theme.PAPER_BG,
+            fg=theme.ACCENT_TEXT_ON_LIGHT,
+            font=(self.mono_font, 7, "bold"),
+            padx=5,
+            pady=1,
+            highlightthickness=1,
+            highlightbackground=theme.PAPER_BORDER,
+        )
+        self.lbl_diam_current.pack(side=tk.LEFT, padx=(6, 4))
+        self.combo_diam_override = ttk.Combobox(
+            row_diam,
+            textvariable=self.var_diam_override,
+            values=_COMMERCIAL_DIAMETERS_IN,
+            width=11,
+            style="Light.TCombobox",
+        )
+        self.combo_diam_override.pack(side=tk.RIGHT)
+
+        row_int_btns = tk.Frame(self.pipe_intervention_card, bg=theme.PAPER_SUBTLE)
+        row_int_btns.pack(fill=tk.X, padx=8, pady=(4, 6))
+        self._make_btn(
+            row_int_btns,
+            "Aplicar y re-simular",
+            self._action_apply_intervention,
+            variant="primary",
+            padx=8,
+            pady=3,
+            font_size=8,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+        self._make_btn(
+            row_int_btns,
+            "Restaurar tramo",
+            self._action_restore_pipe,
+            variant="dock_secondary",
+            padx=7,
+            pady=3,
+            font_size=8,
+        ).pack(side=tk.LEFT)
 
         self._inspector_wrap = tk.Frame(tab_info, bg=theme.PAPER_BG)
         self._inspector_wrap.pack(fill=tk.BOTH, expand=True)
@@ -1543,10 +1854,15 @@ class BicentenarioSewerApp(tk.Tk):
             justify="center",
         )
 
-        # Tab 3: Evolución Temporal
+        # Tab 3: Evolución Temporal (Hidrograma Antes vs. Después + Perfil Longitudinal)
         tab_charts = ttk.Frame(self.notebook)
         self.notebook.add(tab_charts, text="Evolución")
-        self.temporal_charts = TemporalChartsPanel(tab_charts)
+        self.temporal_charts = TemporalChartsPanel(
+            tab_charts,
+            dpi=self._mpl_dpi,
+            ui_font=self.ui_font,
+            mono_font=self.mono_font,
+        )
         self.temporal_charts.pack(fill=tk.BOTH, expand=True)
 
         # Tab 4: Comparación de Escenarios
@@ -1576,7 +1892,7 @@ class BicentenarioSewerApp(tk.Tk):
 
         comp_cols = ("esc", "int", "max_u", "crit_p", "n_crit", "n_over", "ptar")
         self._comp_tree_compact: Optional[bool] = None
-        self.tree_comp = ttk.Treeview(tab_comp, columns=comp_cols, show="headings", height=6)
+        self.tree_comp = ttk.Treeview(tab_comp, columns=comp_cols, show="headings", height=5)
         self.tree_comp.tag_configure("odd", background=theme.PAPER_ALT_ROW)
         for cid, htext in [
             ("esc", "Escenario"),
@@ -1589,11 +1905,11 @@ class BicentenarioSewerApp(tk.Tk):
         ]:
             self.tree_comp.heading(cid, text=htext)
             self.tree_comp.column(cid, width=54, minwidth=30, anchor="center")
-        self.tree_comp.pack(fill=tk.X, padx=6, pady=(6, 6))
+        self.tree_comp.pack(fill=tk.X, padx=6, pady=(4, 4))
         self.tree_comp.bind("<Double-1>", self._on_comparison_row_activate)
         self.tree_comp.bind("<Configure>", self._resize_comp_columns)
 
-        self.comparison_charts = ComparisonChartsPanel(tab_comp)
+        self.comparison_charts = ComparisonChartsPanel(tab_comp, dpi=self._mpl_dpi)
         self.comparison_charts.pack(fill=tk.BOTH, expand=True)
 
     def _resize_critical_columns(self, event: tk.Event) -> None:
@@ -1737,7 +2053,26 @@ class BicentenarioSewerApp(tk.Tk):
             idx = self.notebook.index(self.notebook.select())
         except tk.TclError:
             return
-        if idx == 3 and (not self.comparisons or self._comparisons_dirty):
+        if idx == 0 and self._insp_tab_dirty:
+            self._insp_tab_dirty = False
+            self._refresh_inspector()
+        elif idx == 1 and self._crit_tab_dirty:
+            self._crit_tab_dirty = False
+            self._refresh_critical_table()
+        elif idx == 2 and self._charts_tab_dirty and self.result is not None:
+            self._charts_tab_dirty = False
+            snap = self.result.snapshots[self.current_step]
+            self.temporal_charts.update_plots(
+                self.result,
+                self._selected_pipe_id,
+                snap.time_min,
+                previous_result=self._previous_result,
+                route_pipes=self._resolve_active_route(),
+                current_step_index=self.current_step,
+                diameter_overrides=self._diameter_overrides_map(),
+                throttle_draw=False,
+            )
+        elif idx == 3 and (not self.comparisons or self._comparisons_dirty):
             self._action_compare_scenarios()
 
     def _mark_comparisons_dirty(self) -> None:
@@ -1747,7 +2082,7 @@ class BicentenarioSewerApp(tk.Tk):
                 text="Parámetros modificados · Recalcular", fg=theme.STATUS_WARN_LIGHT
             )
 
-    # --- Lógica de archivos y simulación ---
+    # --- Lógica de archivos, intervenciones y simulación ---
 
     def _apply_preset(self, ingress_pct: float, dry_flow: float) -> None:
         self.var_ingress_pct.set(ingress_pct)
@@ -1774,13 +2109,20 @@ class BicentenarioSewerApp(tk.Tk):
             return
 
         self._player_pause()
+        self._stop_traversal_anim(clear_canvas=False)
         self.dataset = dataset
         self.engine = SewerSimulationEngine(dataset.graph, dataset.basin)
         self.result = None
+        self._previous_result = None
         self.comparisons = []
         self._comparisons_dirty = True
         self._selected_pipe_id = None
         self._selected_node_id = None
+        self._interventions.clear()
+        self._isolated_nodes.clear()
+        self._isolated_pipes.clear()
+        self._basin_isolated = False
+        self._active_route_pipes = []
 
         self.network_canvas.set_graph(dataset.graph)
 
@@ -1812,6 +2154,7 @@ class BicentenarioSewerApp(tk.Tk):
             f"{n_nodes} nodos · {n_pipes} tuberías · {total_len:,.1f} m ({os.path.basename(path)})"
         )
         self.status_var.set(f"Red cargada: {self._dataset_summary_text}")
+        self._render_structure_strip("Queue", [])
         self._refresh_inspector()
 
     def _action_load_excel(self) -> None:
@@ -1901,20 +2244,54 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _build_sim_config(self) -> SimulationConfig:
         sc = self._selected_scenario_obj()
+        duration = float(self.var_duration.get())
+        storm_dur = float(self.var_storm_dur.get())
+        dt = float(self.var_dt.get())
+        ingress = float(self.var_ingress_pct.get())
+        dry_flow = float(self.var_dry_flow.get())
+        for val, label in (
+            (duration, "Duración simulación"),
+            (storm_dur, "Duración lluvia"),
+            (dt, "Paso temporal Δt"),
+            (ingress, "Ingreso pluvial (%)"),
+            (dry_flow, "Caudal sanitario"),
+        ):
+            if not math.isfinite(val):
+                raise ValueError(f"{label} debe ser un número finito.")
         return SimulationConfig(
             scenario_id=sc.scenario_id,
             scenario_name=sc.condition,
             intensity_mm_h=sc.intensity_mm_h,
-            duration_min=max(5.0, float(self.var_duration.get())),
-            storm_duration_min=max(0.0, float(self.var_storm_dur.get())),
-            dt_min=max(0.25, float(self.var_dt.get())),
-            ingress_factor=max(0.001, min(1.0, float(self.var_ingress_pct.get()) / 100.0)),
-            dry_weather_flow_per_source_m3s=max(0.0, float(self.var_dry_flow.get())),
+            duration_min=max(5.0, duration),
+            storm_duration_min=max(0.0, storm_dur),
+            dt_min=max(0.25, dt),
+            ingress_factor=max(0.001, min(1.0, ingress / 100.0)),
+            dry_weather_flow_per_source_m3s=max(0.0, dry_flow),
             split_rule=self.var_split_rule.get(),
             hyetograph=self.var_hyetograph.get(),
+            interventions=dict(self._interventions),
         )
 
-    def run_simulation(self) -> None:
+    def _schedule_param_rerun(self) -> None:
+        if self._param_rerun_after is not None:
+            try:
+                self.after_cancel(self._param_rerun_after)
+            except tk.TclError:
+                pass
+        self._param_rerun_after = self.after(140, self._run_param_rerun)
+
+    def _run_param_rerun(self) -> None:
+        self._param_rerun_after = None
+        if self.dataset is None or self.engine is None:
+            return
+        self._on_simulation_option_changed(mark_comp=True)
+
+    def _on_simulation_option_changed(self, mark_comp: bool = True) -> None:
+        if mark_comp:
+            self._mark_comparisons_dirty()
+        self.run_simulation(preserve_previous=False)
+
+    def run_simulation(self, preserve_previous: bool = False) -> None:
         if self.dataset is None or self.engine is None:
             return
         self._player_pause()
@@ -1924,19 +2301,69 @@ class BicentenarioSewerApp(tk.Tk):
             messagebox.showerror("Parámetros inválidos", f"Revise los parámetros numéricos: {exc}")
             return
 
+        if preserve_previous and self.result is not None:
+            self._previous_result = self.result
+        elif not preserve_previous and self.result is not None and self._interventions:
+            self._previous_result = self.result
+        else:
+            self._previous_result = None
+
         self.result = self.engine.run(cfg)
         n_snaps = len(self.result.snapshots)
         self._updating_slider = True
-        self.timeline_slider.configure(to=max(0, n_snaps - 1))
-        self._updating_slider = False
+        try:
+            self.timeline_slider.configure(command="", to=max(0, n_snaps - 1))
+        finally:
+            if not self._slider_restore_pending:
+                self._slider_restore_pending = True
+                self.after_idle(self._restore_slider_command)
         self.lbl_t_end.configure(text=f"{cfg.duration_min:.0f}m")
 
-        target_idx = min(n_snaps - 1, max(1, int(cfg.storm_duration_min / cfg.dt_min)))
-        self._set_step(target_idx)
+        # Iniciar siempre en el minuto 0 (comienzo de la simulación)
+        self._set_step(0)
         self.status_var.set(
             f"{self._dataset_summary_text}  ·  Escenario {cfg.scenario_id} ({cfg.intensity_mm_h:.0f} mm/h) "
             f"en {self.result.execution_time_ms:.1f} ms ({n_snaps} instantes)"
         )
+
+    def _resolve_active_route(self) -> List[PipeEdge]:
+        if self.dataset is None:
+            return []
+        g = self.dataset.graph
+        if self._active_route_pipes:
+            return list(self._active_route_pipes)
+        if self._selected_pipe_id and g.has_pipe(self._selected_pipe_id):
+            return build_route_to_sink(g, pipe_id=self._selected_pipe_id, sink_id="31")
+        if self._selected_node_id and g.has_node(self._selected_node_id):
+            return build_route_to_sink(g, node_id=self._selected_node_id, sink_id="31")
+        if g.has_pipe("P31"):
+            return build_route_to_sink(g, pipe_id="P31", sink_id="31")
+        srcs = g.source_ids()
+        if srcs:
+            return build_route_to_sink(g, node_id=srcs[0], sink_id="31")
+        return []
+
+    def _diameter_overrides_map(self) -> Dict[str, float]:
+        return {
+            pid: inv.diameter_in_override
+            for pid, inv in self._interventions.items()
+            if inv.diameter_in_override is not None
+        }
+
+    def _restore_slider_command(self) -> None:
+        self._slider_restore_pending = False
+        try:
+            if self.timeline_slider.winfo_exists():
+                self.timeline_slider.configure(command=self._on_slider_move)
+        except tk.TclError:
+            pass
+        self._updating_slider = False
+
+    def _active_right_tab(self) -> int:
+        try:
+            return int(self.notebook.index(self.notebook.select()))
+        except tk.TclError:
+            return 0
 
     def _set_step(self, step_idx: int) -> None:
         if self.result is None or not self.result.snapshots:
@@ -1946,8 +2373,11 @@ class BicentenarioSewerApp(tk.Tk):
         snap = self.result.snapshots[step_idx]
 
         self._updating_slider = True
+        self.timeline_slider.configure(command="")
         self.timeline_slider.set(step_idx)
-        self._updating_slider = False
+        if not self._slider_restore_pending:
+            self._slider_restore_pending = True
+            self.after_idle(self._restore_slider_command)
 
         self.network_canvas.set_snapshot(snap)
         self._update_clock_label(snap)
@@ -1971,9 +2401,34 @@ class BicentenarioSewerApp(tk.Tk):
 
         self._update_mass_audit_label(snap)
         self._update_legend_counts(snap)
-        self._refresh_critical_table()
-        self._refresh_inspector()
-        self.temporal_charts.update_plots(self.result, self._selected_pipe_id, snap.time_min)
+
+        active_tab = self._active_right_tab()
+        if active_tab == 1:
+            self._crit_tab_dirty = False
+            self._refresh_critical_table()
+        else:
+            self._crit_tab_dirty = True
+
+        if active_tab == 0 or not self.is_playing:
+            self._insp_tab_dirty = False
+            self._refresh_inspector()
+        else:
+            self._insp_tab_dirty = True
+
+        if active_tab == 2:
+            self._charts_tab_dirty = False
+            self.temporal_charts.update_plots(
+                self.result,
+                self._selected_pipe_id,
+                snap.time_min,
+                previous_result=self._previous_result,
+                route_pipes=self._resolve_active_route(),
+                current_step_index=step_idx,
+                diameter_overrides=self._diameter_overrides_map(),
+                throttle_draw=self.is_playing,
+            )
+        else:
+            self._charts_tab_dirty = True
 
     def _update_clock_label(self, snap: Optional[TimeStepSnapshot] = None) -> None:
         if self.result is None or not self.result.snapshots:
@@ -2032,17 +2487,24 @@ class BicentenarioSewerApp(tk.Tk):
     def _player_play(self) -> None:
         if self.result is None:
             return
+        self._stop_traversal_anim(clear_canvas=False)
         if self.current_step >= len(self.result.snapshots) - 1:
             self._set_step(0)
         self.is_playing = True
         self._update_play_button_label()
+        self.network_canvas.set_playing(True, self._speed_factor())
         self._schedule_next_frame()
 
     def _player_pause(self) -> None:
         self.is_playing = False
         if self._after_id is not None:
-            self.after_cancel(self._after_id)
+            try:
+                self.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
             self._after_id = None
+        if hasattr(self, "network_canvas"):
+            self.network_canvas.set_playing(False)
         if hasattr(self, "btn_play_pause"):
             self._update_play_button_label()
 
@@ -2068,22 +2530,192 @@ class BicentenarioSewerApp(tk.Tk):
     def _on_pipe_selected(self, pipe_id: str) -> None:
         self._selected_pipe_id = pipe_id
         self._selected_node_id = None
+        self._sync_intervention_controls()
+        if self._basin_isolated:
+            self._apply_basin_isolation()
         self._refresh_inspector()
         if self.result is not None:
             snap = self.result.snapshots[self.current_step]
-            self.temporal_charts.update_plots(self.result, pipe_id, snap.time_min)
+            self.temporal_charts.update_plots(
+                self.result,
+                pipe_id,
+                snap.time_min,
+                previous_result=self._previous_result,
+                route_pipes=self._resolve_active_route(),
+                current_step_index=self.current_step,
+                diameter_overrides=self._diameter_overrides_map(),
+            )
 
     def _on_node_selected(self, node_id: str) -> None:
         self._selected_node_id = node_id
         self._selected_pipe_id = None
         self.var_bfs_start.set(node_id)
+        if self._basin_isolated:
+            self._apply_basin_isolation()
         self._refresh_inspector()
+        if self.result is not None:
+            snap = self.result.snapshots[self.current_step]
+            self.temporal_charts.update_plots(
+                self.result,
+                None,
+                snap.time_min,
+                previous_result=self._previous_result,
+                route_pipes=self._resolve_active_route(),
+                current_step_index=self.current_step,
+                diameter_overrides=self._diameter_overrides_map(),
+            )
 
     def _action_focus_selected(self) -> None:
         if self._selected_pipe_id:
             self.network_canvas.focus_pipe(self._selected_pipe_id)
         elif self._selected_node_id:
             self.network_canvas.focus_node(self._selected_node_id)
+
+    def _action_toggle_basin_isolation(self) -> None:
+        if self.dataset is None or (not self._selected_pipe_id and not self._selected_node_id):
+            messagebox.showinfo("Sin selección", "Seleccione primero un nodo o tubería del grafo.")
+            return
+        self._basin_isolated = not self._basin_isolated
+        self._apply_basin_isolation()
+        self._refresh_inspector()
+
+    def _apply_basin_isolation(self) -> None:
+        if not self._basin_isolated or self.dataset is None:
+            self.network_canvas.set_basin_focus(None, None)
+            self._set_btn_variant(self.btn_isolate_basin, "light_secondary")
+            return
+
+        g = self.dataset.graph
+        focus_nodes: Set[str] = set()
+        focus_pipes: Set[str] = set()
+
+        if self._selected_pipe_id and g.has_pipe(self._selected_pipe_id):
+            edge = g.get_pipe(self._selected_pipe_id)
+            assert edge is not None
+            up_n, up_p = trace_upstream(g, edge.from_node)
+            dn_n, dn_p = trace_downstream(g, edge.to_node)
+            focus_nodes = set(up_n) | set(dn_n)
+            focus_pipes = {p.pipe_id for p in up_p} | {p.pipe_id for p in dn_p} | {edge.pipe_id}
+        elif self._selected_node_id and g.has_node(self._selected_node_id):
+            up_n, up_p = trace_upstream(g, self._selected_node_id)
+            dn_n, dn_p = trace_downstream(g, self._selected_node_id)
+            focus_nodes = set(up_n) | set(dn_n)
+            focus_pipes = {p.pipe_id for p in up_p} | {p.pipe_id for p in dn_p}
+        else:
+            self._basin_isolated = False
+            self.network_canvas.set_basin_focus(None, None)
+            self._set_btn_variant(self.btn_isolate_basin, "light_secondary")
+            return
+
+        self.network_canvas.set_basin_focus(focus_nodes, focus_pipes)
+        self._set_btn_variant(self.btn_isolate_basin, "primary")
+        self.status_var.set(
+            f"Cuenca aislada: {len(focus_nodes)} nodo(s) y {len(focus_pipes)} tramo(s) activos hacia PTAR 31."
+        )
+
+    def _sync_intervention_controls(self) -> None:
+        if not self._selected_pipe_id or self.dataset is None:
+            return
+        edge = self.dataset.graph.get_pipe(self._selected_pipe_id)
+        if edge is None:
+            return
+        inv = self._interventions.get(self._selected_pipe_id)
+        eff_diam = (
+            inv.diameter_in_override
+            if (inv is not None and inv.diameter_in_override is not None)
+            else edge.diameter_in
+        )
+        self.lbl_diam_current.configure(
+            text=f"Actual: {eff_diam:.0f}\" ({eff_diam * 0.0254:.3f} m)"
+        )
+        orig_label = f"Original ({edge.diameter_in:.0f}\")"
+        self.combo_diam_override.configure(values=[orig_label] + _COMMERCIAL_DIAMETERS_IN[1:])
+        if inv is None:
+            self.var_obstruction_pct.set(0.0)
+            self.lbl_obst_val.configure(text="0%")
+            self.var_diam_override.set(orig_label)
+        else:
+            self.var_obstruction_pct.set(round(inv.obstruction_pct))
+            self.lbl_obst_val.configure(text=f"{inv.obstruction_pct:.0f}%")
+            if inv.diameter_in_override is None:
+                self.var_diam_override.set(orig_label)
+            else:
+                self.var_diam_override.set(f"{inv.diameter_in_override:g}\"")
+
+    def _parse_diameter_override(self, raw: str, base_diam_in: float) -> Optional[float]:
+        text = raw.strip()
+        if not text or text.lower().startswith("original"):
+            return None
+        cleaned = text.replace('"', "").replace("pulg", "").strip()
+        val = float(cleaned)
+        if not math.isfinite(val) or val <= 0.0 or val > 120.0:
+            raise ValueError("El diámetro debe estar entre > 0 y 120 pulgadas.")
+        if abs(val - base_diam_in) < 1e-6:
+            return None
+        return val
+
+    def _sync_isolation_and_canvas(self) -> None:
+        if self.dataset is None:
+            return
+        blocked = {pid for pid, inv in self._interventions.items() if inv.is_closed}
+        self._isolated_nodes, self._isolated_pipes = find_isolated_from_sinks(
+            self.dataset.graph, blocked
+        )
+        self.network_canvas.set_interventions(
+            self._interventions, self._isolated_nodes, self._isolated_pipes
+        )
+        self._mark_comparisons_dirty()
+
+    def _action_apply_intervention(self) -> None:
+        if self.dataset is None or not self._selected_pipe_id:
+            return
+        edge = self.dataset.graph.get_pipe(self._selected_pipe_id)
+        if edge is None:
+            return
+
+        try:
+            obst = float(self.var_obstruction_pct.get())
+            if not math.isfinite(obst) or obst < 0.0 or obst > 100.0:
+                raise ValueError("La obstrucción debe estar entre 0 % y 100 %.")
+            diam_override = self._parse_diameter_override(
+                self.var_diam_override.get(), edge.diameter_in
+            )
+        except Exception as exc:
+            messagebox.showwarning("Intervención inválida", str(exc))
+            return
+
+        if obst <= 1e-6 and diam_override is None:
+            self._interventions.pop(edge.pipe_id, None)
+        else:
+            self._interventions[edge.pipe_id] = PipeIntervention(
+                pipe_id=edge.pipe_id,
+                obstruction_pct=obst,
+                diameter_in_override=diam_override,
+            )
+
+        self._sync_intervention_controls()
+        self._sync_isolation_and_canvas()
+        self.run_simulation(preserve_previous=True)
+        if self._isolated_nodes:
+            self.status_var.set(
+                f"Cirugía en {edge.pipe_id}: {len(self._isolated_nodes)} nodo(s) aislados de la PTAR 31."
+            )
+
+    def _action_restore_pipe(self) -> None:
+        if not self._selected_pipe_id or self._selected_pipe_id not in self._interventions:
+            return
+        self._interventions.pop(self._selected_pipe_id, None)
+        self._sync_intervention_controls()
+        self._sync_isolation_and_canvas()
+        self.run_simulation(preserve_previous=True)
+
+    def _action_restore_all_interventions(self) -> None:
+        if not self._interventions:
+            return
+        self._interventions.clear()
+        self._sync_intervention_controls()
+        self._sync_isolation_and_canvas()
+        self.run_simulation(preserve_previous=True)
 
     def _trace_from_selected(self, direction: str) -> None:
         if self._selected_node_id:
@@ -2101,6 +2733,7 @@ class BicentenarioSewerApp(tk.Tk):
             messagebox.showinfo("Sin resultados", f"No se encontró nodo o tubería para '{q}'.")
             return
 
+        self._stop_traversal_anim(clear_canvas=False)
         exact_pipe = self.dataset.graph.get_pipe(q.upper()) or self.dataset.graph.get_pipe(q)
         exact_node = self.dataset.graph.get_node(q.upper()) or self.dataset.graph.get_node(q)
         if exact_pipe is not None:
@@ -2134,13 +2767,15 @@ class BicentenarioSewerApp(tk.Tk):
     def _run_traversal(self, alg: str) -> None:
         if self.dataset is None:
             return
+        self._stop_traversal_anim(clear_canvas=True)
+        self._last_traversal_alg = alg
         start = self.var_bfs_start.get().strip()
         target = self.var_bfs_target.get().strip() or None
         try:
-            res = (
-                bfs(self.dataset.graph, start, target)
+            res, frames = (
+                bfs_anim_frames(self.dataset.graph, start, target)
                 if alg == "BFS"
-                else dfs(self.dataset.graph, start, target)
+                else dfs_anim_frames(self.dataset.graph, start, target)
             )
         except KeyError as exc:
             messagebox.showwarning("Nodo inválido", str(exc))
@@ -2149,11 +2784,20 @@ class BicentenarioSewerApp(tk.Tk):
         if res.path_pipes:
             hl_pipes = {p.pipe_id for p in res.path_pipes}
             hl_nodes = set(res.path_nodes)
+            self._active_route_pipes = list(res.path_pipes)
         else:
             hl_pipes = {p.pipe_id for p in res.traversed_edges}
             hl_nodes = set(res.visited_order)
+            self._active_route_pipes = []
 
         self.network_canvas.set_highlights(hl_pipes, hl_nodes)
+        if frames:
+            mid_fr = frames[min(1, len(frames) - 1)]
+            self._render_structure_strip(
+                mid_fr.structure_name,
+                mid_fr.structure_items,
+                f"muestra {res.algorithm}",
+            )
 
         lines = [
             f"[{res.algorithm}] {start} → {target or 'toda la red'}",
@@ -2170,10 +2814,91 @@ class BicentenarioSewerApp(tk.Tk):
                 lines.append(f"Sin camino dirigido desde {start} hasta {target}.")
 
         self._set_traversal_text("\n".join(lines))
+        if self.result is not None and self.result.snapshots:
+            snap = self.result.snapshots[self.current_step]
+            self.temporal_charts.update_plots(
+                self.result,
+                self._selected_pipe_id,
+                snap.time_min,
+                previous_result=self._previous_result,
+                route_pipes=self._resolve_active_route(),
+                current_step_index=self.current_step,
+                diameter_overrides=self._diameter_overrides_map(),
+            )
+
+    def _action_toggle_traversal_anim(self) -> None:
+        if self.dataset is None:
+            return
+        if self._is_animating_traversal:
+            self._stop_traversal_anim(clear_canvas=False)
+            return
+
+        self._player_pause()
+        start = self.var_bfs_start.get().strip()
+        target = self.var_bfs_target.get().strip() or None
+        alg = self._last_traversal_alg
+        try:
+            res, frames = (
+                bfs_anim_frames(self.dataset.graph, start, target)
+                if alg == "BFS"
+                else dfs_anim_frames(self.dataset.graph, start, target)
+            )
+        except KeyError as exc:
+            messagebox.showwarning("Nodo inválido", str(exc))
+            return
+
+        if res.path_pipes:
+            self._active_route_pipes = list(res.path_pipes)
+        self._anim_frames = frames
+        self._anim_idx = 0
+        self._is_animating_traversal = True
+        self.btn_anim_traversal.configure(text="Detener anim.")
+        self._step_traversal_anim()
+
+    def _step_traversal_anim(self) -> None:
+        self._anim_after_id = None
+        if not self._is_animating_traversal or not self._anim_frames:
+            self._stop_traversal_anim(clear_canvas=False)
+            return
+
+        fr = self._anim_frames[self._anim_idx]
+        self.network_canvas.set_traversal_frame(fr)
+        self._render_structure_strip(
+            fr.structure_name,
+            fr.structure_items,
+            f"{fr.step_index + 1}/{fr.total_steps}",
+        )
+        self._set_traversal_text(
+            f"[{fr.algorithm} · Paso {fr.step_index + 1}/{fr.total_steps}]\n"
+            f"{fr.note}\n"
+            f"{fr.structure_name}: {', '.join(fr.structure_items[:10]) or '(vacía)'}"
+        )
+
+        self._anim_idx += 1
+        if self._anim_idx >= len(self._anim_frames):
+            self._is_animating_traversal = False
+            self.btn_anim_traversal.configure(text="Animar recorrido")
+            return
+        delay = 560 if fr.algorithm == "BFS" else 340
+        self._anim_after_id = self.after(delay, self._step_traversal_anim)
+
+    def _stop_traversal_anim(self, clear_canvas: bool = True) -> None:
+        self._is_animating_traversal = False
+        if self._anim_after_id is not None:
+            try:
+                self.after_cancel(self._anim_after_id)
+            except tk.TclError:
+                pass
+            self._anim_after_id = None
+        if hasattr(self, "btn_anim_traversal"):
+            self.btn_anim_traversal.configure(text="Animar recorrido")
+        if clear_canvas and hasattr(self, "network_canvas"):
+            self.network_canvas.set_traversal_frame(None)
 
     def _run_trace(self, direction: str) -> None:
         if self.dataset is None:
             return
+        self._stop_traversal_anim(clear_canvas=True)
         nid = self.var_bfs_start.get().strip()
         try:
             nodes, pipes = (
@@ -2193,8 +2918,14 @@ class BicentenarioSewerApp(tk.Tk):
         )
 
     def _clear_highlights(self) -> None:
+        self._stop_traversal_anim(clear_canvas=True)
+        self._active_route_pipes = []
+        self._basin_isolated = False
+        self.network_canvas.set_basin_focus(None, None)
         self.network_canvas.set_highlights(set(), set())
+        self._render_structure_strip("Queue", [])
         self._set_traversal_text("")
+        self._refresh_inspector()
 
     def _set_traversal_text(self, text: str) -> None:
         self.txt_traversal.configure(state=tk.NORMAL)
@@ -2205,9 +2936,9 @@ class BicentenarioSewerApp(tk.Tk):
     def _refresh_critical_table(self) -> None:
         self._suppress_tree_select = True
         try:
-            for item in self.tree_critical.get_children():
-                self.tree_critical.delete(item)
             if self.dataset is None or self.result is None:
+                for item in self.tree_critical.get_children():
+                    self.tree_critical.delete(item)
                 self.lbl_crit_count.configure(text="")
                 self.lbl_crit_empty.place_forget()
                 return
@@ -2215,10 +2946,21 @@ class BicentenarioSewerApp(tk.Tk):
             snap = self.result.snapshots[self.current_step]
             flows = {pid: ps.flow_m3s for pid, ps in snap.pipe_states.items()}
             utils = {pid: ps.utilization_pct for pid, ps in snap.pipe_states.items()}
+            qmax_overrides = {
+                pid: ps.effective_q_max_m3s
+                for pid, ps in snap.pipe_states.items()
+                if ps.effective_q_max_m3s is not None
+            }
 
             flt = self.var_crit_filter.get()
             min_u = 75.0 if flt == "critical" else (100.0001 if flt == "overloaded" else 0.0)
-            ranked = rank_critical_pipes(self.dataset.graph, flows, utils, min_utilization_pct=min_u)
+            ranked = rank_critical_pipes(
+                self.dataset.graph,
+                flows,
+                utils,
+                min_utilization_pct=min_u,
+                pipe_qmax_overrides=qmax_overrides,
+            )
             self.lbl_crit_count.configure(text=f"{len(ranked)} reg.")
 
             short_estado = {
@@ -2229,23 +2971,53 @@ class BicentenarioSewerApp(tk.Tk):
                 "Capacidad excedida": "Excedida",
             }
             compact = bool(self._crit_tree_compact)
-            for idx, rec in enumerate(ranked):
-                estado_txt = short_estado.get(rec.category.label, rec.category.label) if compact else rec.category.label
-                self.tree_critical.insert(
-                    "",
-                    tk.END,
-                    iid=rec.pipe_id,
-                    tags=("odd",) if idx % 2 == 1 else (),
-                    values=(
-                        rec.rank,
+            desired_ids = [rec.pipe_id for rec in ranked]
+            existing_ids = list(self.tree_critical.get_children())
+
+            if existing_ids == desired_ids:
+                for idx, rec in enumerate(ranked):
+                    estado_txt = (
+                        short_estado.get(rec.category.label, rec.category.label)
+                        if compact
+                        else rec.category.label
+                    )
+                    self.tree_critical.item(
                         rec.pipe_id,
-                        f"{rec.from_node}→{rec.to_node}",
-                        f"{rec.flow_m3s:.4f}",
-                        f"{rec.q_max_m3s:.4f}",
-                        f"{rec.utilization_pct:.1f}%",
-                        estado_txt,
-                    ),
-                )
+                        tags=("odd",) if idx % 2 == 1 else (),
+                        values=(
+                            rec.rank,
+                            rec.pipe_id,
+                            f"{rec.from_node}→{rec.to_node}",
+                            f"{rec.flow_m3s:.4f}",
+                            f"{rec.q_max_m3s:.4f}",
+                            f"{rec.utilization_pct:.1f}%",
+                            estado_txt,
+                        ),
+                    )
+            else:
+                for item in existing_ids:
+                    self.tree_critical.delete(item)
+                for idx, rec in enumerate(ranked):
+                    estado_txt = (
+                        short_estado.get(rec.category.label, rec.category.label)
+                        if compact
+                        else rec.category.label
+                    )
+                    self.tree_critical.insert(
+                        "",
+                        tk.END,
+                        iid=rec.pipe_id,
+                        tags=("odd",) if idx % 2 == 1 else (),
+                        values=(
+                            rec.rank,
+                            rec.pipe_id,
+                            f"{rec.from_node}→{rec.to_node}",
+                            f"{rec.flow_m3s:.4f}",
+                            f"{rec.q_max_m3s:.4f}",
+                            f"{rec.utilization_pct:.1f}%",
+                            estado_txt,
+                        ),
+                    )
 
             if not ranked:
                 msg = (
@@ -2258,8 +3030,11 @@ class BicentenarioSewerApp(tk.Tk):
             else:
                 self.lbl_crit_empty.place_forget()
                 if self._selected_pipe_id and self.tree_critical.exists(self._selected_pipe_id):
-                    self.tree_critical.selection_set(self._selected_pipe_id)
-                    self.tree_critical.see(self._selected_pipe_id)
+                    cur_sel = list(self.tree_critical.selection())
+                    if cur_sel != [self._selected_pipe_id]:
+                        self.tree_critical.selection_set(self._selected_pipe_id)
+                    if not self.is_playing:
+                        self.tree_critical.see(self._selected_pipe_id)
         finally:
             self._suppress_tree_select = False
 
@@ -2269,23 +3044,64 @@ class BicentenarioSewerApp(tk.Tk):
         sel = self.tree_critical.selection()
         if sel:
             pid = sel[0]
+            if pid == self._selected_pipe_id:
+                return
             self.network_canvas.select_pipe(pid)
             self._on_pipe_selected(pid)
 
     def _refresh_inspector(self) -> None:
-        # Botones contextuales en cabecera del inspector (ocultos cuando no hay selección)
-        for b in (self.btn_focus_selected, self.btn_insp_upstream, self.btn_insp_downstream):
-            b.pack_forget()
-        self.inspector_actions.pack_forget()
-        self._inspector_actions_sep.pack_forget()
+        sel_kind = "pipe" if self._selected_pipe_id else ("node" if self._selected_node_id else "none")
+        n_int = len(self._interventions)
+        new_layout_state = (sel_kind, n_int > 0, bool(self._basin_isolated))
 
-        if self._selected_pipe_id or self._selected_node_id:
-            self.inspector_actions.pack(fill=tk.X, before=self._inspector_wrap)
-            self._inspector_actions_sep.pack(fill=tk.X, before=self._inspector_wrap)
-            self.btn_focus_selected.pack(side=tk.LEFT, padx=(8, 4), pady=5)
-        if self._selected_node_id:
-            self.btn_insp_upstream.pack(side=tk.LEFT, padx=3, pady=5)
-            self.btn_insp_downstream.pack(side=tk.LEFT, padx=3, pady=5)
+        if new_layout_state != self._inspector_layout_state:
+            prev_sel, prev_has_int, prev_iso = self._inspector_layout_state or (None, False, False)
+            self._inspector_layout_state = new_layout_state
+
+            if sel_kind != prev_sel:
+                for b in (
+                    self.btn_focus_selected,
+                    self.btn_isolate_basin,
+                    self.btn_insp_upstream,
+                    self.btn_insp_downstream,
+                ):
+                    b.pack_forget()
+                self.inspector_actions.pack_forget()
+                self._inspector_actions_sep.pack_forget()
+                self.pipe_intervention_card.pack_forget()
+                self._pipe_intervention_sep.pack_forget()
+
+                if sel_kind != "none":
+                    self.inspector_actions.pack(fill=tk.X, before=self._inspector_wrap)
+                    self._inspector_actions_sep.pack(fill=tk.X, before=self._inspector_wrap)
+                    self.btn_focus_selected.pack(side=tk.LEFT, padx=(8, 3), pady=5)
+                    self.btn_isolate_basin.pack(side=tk.LEFT, padx=3, pady=5)
+                if sel_kind == "node":
+                    self.btn_insp_upstream.pack(side=tk.LEFT, padx=3, pady=5)
+                    self.btn_insp_downstream.pack(side=tk.LEFT, padx=3, pady=5)
+                if sel_kind == "pipe":
+                    self.pipe_intervention_card.pack(fill=tk.X, before=self._inspector_wrap)
+                    self._pipe_intervention_sep.pack(fill=tk.X, before=self._inspector_wrap)
+
+            if sel_kind != "none" and (sel_kind != prev_sel or bool(self._basin_isolated) != prev_iso):
+                self._set_btn_variant(
+                    self.btn_isolate_basin, "primary" if self._basin_isolated else "light_secondary"
+                )
+
+            if sel_kind == "pipe":
+                if n_int > 0:
+                    if not self.btn_restore_all.winfo_manager():
+                        self.btn_restore_all.pack(side=tk.RIGHT)
+                else:
+                    if self.btn_restore_all.winfo_manager():
+                        self.btn_restore_all.pack_forget()
+            elif prev_has_int and self.btn_restore_all.winfo_manager():
+                self.btn_restore_all.pack_forget()
+
+        if sel_kind == "pipe":
+            self.lbl_active_interventions.configure(
+                text=f"{n_int} activa(s)" if n_int else ""
+            )
 
         self.txt_inspector.configure(state=tk.NORMAL)
         self.txt_inspector.delete("1.0", tk.END)
@@ -2305,14 +3121,23 @@ class BicentenarioSewerApp(tk.Tk):
             if self._selected_pipe_id and g.has_pipe(self._selected_pipe_id):
                 p = g.get_pipe(self._selected_pipe_id)
                 assert p is not None
+                inv = self._interventions.get(p.pipe_id)
+                eff_qmax, eff_vel, eff_t_s, eff_diam = resolve_pipe_hydraulics(p, inv)
                 add_line(f"TUBERÍA {p.pipe_id}  ({p.from_node} → {p.to_node})", "heading")
                 add_line("─" * 40, "muted")
-                add_line(f"Diámetro        : {p.diameter_in:.0f}\" ({p.diameter_m:.4f} m)")
+                if inv:
+                    add_line(
+                        f"INTERVENCIÓN    : OBST {inv.obstruction_pct:.0f}% · Ø {eff_diam:.0f}\" (orig. {p.diameter_in:.0f}\")",
+                        "alert",
+                    )
+                if p.pipe_id in self._isolated_pipes:
+                    add_line("[AISLADO DE 31] : Tramo sin conexión hacia PTAR", "alert")
+                add_line(f"Diámetro        : {eff_diam:.0f}\" ({eff_diam * 0.0254:.4f} m)")
                 add_line(f"Longitud        : {p.length_m:.2f} m")
                 add_line(f"Pendiente (S)   : {p.slope:.4f} m/m  |  n: {p.manning_n:.3f}")
-                add_line(f"Capacidad Qmax  : {p.q_max_m3s:.5f} m³/s")
-                add_line(f"Velocidad ref.  : {p.reference_velocity_ms:.3f} m/s")
-                add_line(f"Tiempo tránsito : {p.transit_time_min:.2f} min ({p.transit_time_s:.1f} s)")
+                add_line(f"Capacidad Qmax  : {eff_qmax:.5f} m³/s (base {p.q_max_m3s:.5f})")
+                add_line(f"Velocidad ref.  : {eff_vel:.3f} m/s")
+                add_line(f"Tiempo tránsito : {eff_t_s / 60.0:.2f} min ({eff_t_s:.1f} s)")
                 if p.note:
                     add_line(f"Marca dataset   : {p.note}")
                 if snap and p.pipe_id in snap.pipe_states:
@@ -2344,6 +3169,8 @@ class BicentenarioSewerApp(tk.Tk):
                 }.get(n.node_type, n.node_type.upper())
                 add_line(f"NODO {n.node_id}  ({tipo_es})", "heading")
                 add_line("─" * 40, "muted")
+                if n.node_id in self._isolated_nodes:
+                    add_line("[AISLADO DE 31] : Sin ruta activa hacia la PTAR", "alert")
                 add_line(f"Tuberías entrantes : {', '.join(in_p) or 'Ninguna (Fuente)'}")
                 add_line(f"Tuberías salientes : {', '.join(out_p) or 'Ninguna (PTAR 31)'}")
                 if snap and n.node_id in snap.node_states:
@@ -2374,6 +3201,11 @@ class BicentenarioSewerApp(tk.Tk):
                 add_line(f"Error balance   : {self.result.max_mass_balance_error_m3:.3e} m³")
                 add_line(f"Críticas (≥75%) : {len(self.result.ever_critical_pipes)} tuberías")
                 add_line(f"Sobrec. (>100%) : {len(self.result.ever_overloaded_pipes)} tuberías")
+                if self._interventions:
+                    add_line(
+                        f"Intervenciones  : {', '.join(sorted(self._interventions))} ({len(self._isolated_nodes)} aislados)",
+                        "alert" if self._isolated_nodes else "section",
+                    )
 
         self.txt_inspector.configure(state=tk.DISABLED)
 
@@ -2438,6 +3270,13 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _on_close(self) -> None:
         self._player_pause()
+        self._stop_traversal_anim(clear_canvas=False)
+        if self._param_rerun_after is not None:
+            try:
+                self.after_cancel(self._param_rerun_after)
+            except tk.TclError:
+                pass
+            self._param_rerun_after = None
         for obj in (self, self.network_canvas, self.temporal_charts, self.comparison_charts):
             aid = getattr(obj, "_resize_after_id", None) or getattr(obj, "_resize_after", None)
             if aid is not None:
