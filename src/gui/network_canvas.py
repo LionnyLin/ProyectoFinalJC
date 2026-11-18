@@ -199,6 +199,7 @@ class NetworkCanvas(tk.Canvas):
 
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is self:
+            self._hide_tooltip()
             self.stop_pulse_animation()
             self._stop_camera_animation()
             if self._resize_after is not None:
@@ -256,11 +257,47 @@ class NetworkCanvas(tk.Canvas):
         self._traversal_frame = None
         self._fast_cache_valid = False
         n_nodes, n_pipes, *_ = graph.summary()
-        self._stamp_lbl.configure(text=f"PLANO HIDRÁULICO · {n_nodes} NODOS · {n_pipes} TRAMOS")
+        self._update_stamp_label()
         self.reset_view()
+
+    def _update_stamp_label(self) -> None:
+        if self.graph is None:
+            return
+        n_nodes, n_pipes, *_ = self.graph.summary()
+        if self.snapshot is None:
+            txt = f"PLANO HIDRÁULICO · {n_nodes} NODOS · {n_pipes} TRAMOS"
+        else:
+            t_min = self.snapshot.time_min
+            if self._map_mode == "peak":
+                txt = f"PICO MÁXIMO ACUMULADO · HASTA t = {t_min:.1f} min"
+            elif self._map_mode == "overload_minutes":
+                txt = f"MINUTOS EN SOBRECARGA (>100%) · HASTA t = {t_min:.1f} min"
+            else:
+                txt = f"PLANO HIDRÁULICO · {n_nodes} NODOS · {n_pipes} TRAMOS · t = {t_min:.1f} min"
+        self._stamp_lbl.configure(text=txt)
+
+    def set_stress_maps(
+        self,
+        peak_util: Optional[Dict[str, float]] = None,
+        overload_minutes: Optional[Dict[str, float]] = None,
+        total_duration_min: float = 90.0,
+    ) -> None:
+        """Actualiza los mapas acumulados hasta el instante actual sin forzar redibujo inmediato."""
+        if peak_util is not None:
+            self._peak_util_map = dict(peak_util)
+        if overload_minutes is not None:
+            new_ov = dict(overload_minutes)
+            if self._map_mode == "overload_minutes":
+                prev_badges = {pid for pid, v in self._overload_minutes_map.items() if v >= 0.5}
+                new_badges = {pid for pid, v in new_ov.items() if v >= 0.5}
+                if prev_badges != new_badges:
+                    self._fast_cache_valid = False
+            self._overload_minutes_map = new_ov
+        self._total_duration_min = max(1.0, float(total_duration_min))
 
     def set_snapshot(self, snapshot: Optional[TimeStepSnapshot]) -> None:
         self.snapshot = snapshot
+        self._update_stamp_label()
         if self._fast_cache_valid and snapshot is not None:
             self._fast_update_snapshot(snapshot)
         else:
@@ -334,6 +371,7 @@ class NetworkCanvas(tk.Canvas):
             self._overload_minutes_map = dict(overload_minutes)
         self._total_duration_min = max(1.0, float(total_duration_min))
         self._fast_cache_valid = False
+        self._update_stamp_label()
         self.redraw()
 
     def _resolve_pipe_visual_state(
@@ -976,12 +1014,16 @@ class NetworkCanvas(tk.Canvas):
         if self.snapshot and pipe.pipe_id in self.snapshot.pipe_states:
             ps = self.snapshot.pipe_states[pipe.pipe_id]
             lines.append(
-                f"Caudal: {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
+                f"Caudal (t={self.snapshot.time_min:.0f}m): {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
             )
+        if self.snapshot and pipe.pipe_id in self._peak_util_map:
+            pk = self._peak_util_map[pipe.pipe_id]
+            lines.append(f"Pico hasta t = {self.snapshot.time_min:.0f} min: {pk:.1f}%")
         if pipe.pipe_id in self._overload_minutes_map:
             ov_min = self._overload_minutes_map[pipe.pipe_id]
             _, _, ov_desc = classify_overload_persistence(ov_min, self._total_duration_min)
-            lines.append(f"Estrés acumulado: {ov_min:.0f} min >100% ({ov_desc})")
+            t_lbl = f" (t ≤ {self.snapshot.time_min:.0f}m)" if self.snapshot else ""
+            lines.append(f"Sobrecarga acumulada{t_lbl}: {ov_min:.0f} min >100% ({ov_desc})")
         return "\n".join(lines)
 
     def _show_tooltip(self, x_root: int, y_root: int, text: str) -> None:
@@ -1013,7 +1055,10 @@ class NetworkCanvas(tk.Canvas):
 
     def _hide_tooltip(self) -> None:
         if self._tooltip_window is not None:
-            self._tooltip_window.destroy()
+            try:
+                self._tooltip_window.destroy()
+            except tk.TclError:
+                pass
             self._tooltip_window = None
 
     def _draw_drafting_grid(self) -> None:
