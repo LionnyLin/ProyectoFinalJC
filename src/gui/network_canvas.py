@@ -5,6 +5,7 @@ import math
 import tkinter as tk
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
+from src.algorithms.analysis import classify_overload_persistence, classify_utilization
 from src.algorithms.traversals import TraversalAnimFrame
 from src.data_structures import DirectedGraph, ManholeNode, PipeEdge
 from src.simulation.models import PipeIntervention, TimeStepSnapshot
@@ -67,13 +68,21 @@ class NetworkCanvas(tk.Canvas):
         self.show_pipe_labels: bool = True
         self.show_util_labels: bool = True
 
-        # Capas de cirugía cartográfica, cuenca aportante, animación BFS/DFS y pulsos
+        # Capas de cirugía cartográfica, cuenca aportante, guía de sustentación, mapa de estrés y pulsos
         self._interventions: Dict[str, PipeIntervention] = {}
         self._isolated_nodes: Set[str] = set()
         self._isolated_pipes: Set[str] = set()
         self._basin_active: bool = False
         self._basin_nodes: Set[str] = set()
         self._basin_pipes: Set[str] = set()
+        self._tour_active: bool = False
+        self._tour_nodes: Set[str] = set()
+        self._tour_pipes: Set[str] = set()
+        self._cam_anim_after: Optional[str] = None
+        self._map_mode: str = "instant"
+        self._peak_util_map: Dict[str, float] = {}
+        self._overload_minutes_map: Dict[str, float] = {}
+        self._total_duration_min: float = 90.0
         self._traversal_frame: Optional[TraversalAnimFrame] = None
 
         self._is_playing: bool = False
@@ -191,6 +200,7 @@ class NetworkCanvas(tk.Canvas):
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is self:
             self.stop_pulse_animation()
+            self._stop_camera_animation()
             if self._resize_after is not None:
                 try:
                     self.after_cancel(self._resize_after)
@@ -206,7 +216,11 @@ class NetworkCanvas(tk.Canvas):
         else:
             self._stamp_lbl.place_forget()
 
-        if event.width >= int(480 * min(1.25, self.dpi_scale)) and event.height >= min_stamp_h:
+        if (
+            not self._tour_active
+            and event.width >= int(480 * min(1.25, self.dpi_scale))
+            and event.height >= min_stamp_h
+        ):
             self._hint_bar.place(relx=0.0, rely=1.0, x=12, y=-12, anchor="sw")
         else:
             self._hint_bar.place_forget()
@@ -221,6 +235,7 @@ class NetworkCanvas(tk.Canvas):
 
     def set_graph(self, graph: DirectedGraph) -> None:
         self.stop_pulse_animation()
+        self._stop_camera_animation()
         self.graph = graph
         self.snapshot = None
         self.selected_pipe_id = None
@@ -233,6 +248,11 @@ class NetworkCanvas(tk.Canvas):
         self._basin_active = False
         self._basin_nodes.clear()
         self._basin_pipes.clear()
+        self._tour_active = False
+        self._tour_nodes.clear()
+        self._tour_pipes.clear()
+        self._peak_util_map.clear()
+        self._overload_minutes_map.clear()
         self._traversal_frame = None
         self._fast_cache_valid = False
         n_nodes, n_pipes, *_ = graph.summary()
@@ -273,6 +293,88 @@ class NetworkCanvas(tk.Canvas):
             self._basin_pipes = set(pipe_ids)
         self._fast_cache_valid = False
         self.redraw()
+
+    def set_tour_focus(
+        self,
+        node_ids: Optional[Set[str]],
+        pipe_ids: Optional[Set[str]],
+    ) -> None:
+        """Activa o desactiva el enfoque visual de la Guía de Sustentación."""
+        if node_ids is None or pipe_ids is None:
+            self._tour_active = False
+            self._tour_nodes.clear()
+            self._tour_pipes.clear()
+            w = self.winfo_width()
+            h = self.winfo_height()
+            min_h = int(340 * min(1.25, self.dpi_scale))
+            if w >= int(480 * min(1.25, self.dpi_scale)) and h >= min_h:
+                self._hint_bar.place(relx=0.0, rely=1.0, x=12, y=-12, anchor="sw")
+        else:
+            self._tour_active = True
+            self._tour_nodes = set(node_ids)
+            self._tour_pipes = set(pipe_ids)
+            self._hint_bar.place_forget()
+        self._fast_cache_valid = False
+        self.redraw()
+
+    def set_map_mode(
+        self,
+        mode: str,
+        peak_util: Optional[Dict[str, float]] = None,
+        overload_minutes: Optional[Dict[str, float]] = None,
+        total_duration_min: float = 90.0,
+    ) -> None:
+        """Alterna entre visualización Instantánea, Pico Máximo y Minutos en Sobrecarga."""
+        if mode not in ("instant", "peak", "overload_minutes"):
+            mode = "instant"
+        self._map_mode = mode
+        if peak_util is not None:
+            self._peak_util_map = dict(peak_util)
+        if overload_minutes is not None:
+            self._overload_minutes_map = dict(overload_minutes)
+        self._total_duration_min = max(1.0, float(total_duration_min))
+        self._fast_cache_valid = False
+        self.redraw()
+
+    def _resolve_pipe_visual_state(
+        self,
+        pipe_id: str,
+        ps,
+        is_closed: bool,
+    ) -> Tuple[str, int, bool, bool, float, str]:
+        """Retorna (color_hex, tier_idx, is_overloaded, is_critical, display_val, suffix_lbl) según modo activo."""
+        if self._map_mode == "overload_minutes":
+            ov_min = self._overload_minutes_map.get(pipe_id, 0.0)
+            tier, col, _ = classify_overload_persistence(ov_min, self._total_duration_min)
+            is_over = (tier >= 3) and not is_closed
+            is_crit = (tier >= 2) and not is_closed
+            lbl = f"{ov_min:.0f}m" if ov_min >= 0.5 else "0m"
+            return (theme.INK_PRIMARY if is_closed else col, tier, is_over, is_crit, ov_min, lbl)
+
+        if self._map_mode == "peak":
+            u = self._peak_util_map.get(pipe_id, ps.utilization_pct if ps is not None else 0.0)
+            cat = classify_utilization(u)
+            col = "#991b1b" if cat.is_overloaded else cat.color_hex
+            return (
+                theme.INK_PRIMARY if is_closed else col,
+                cat.tier_index,
+                cat.is_overloaded and not is_closed,
+                u >= 75.0 and not is_closed,
+                u,
+                f"{u:.0f}%",
+            )
+
+        if ps is None:
+            return (theme.PIPE_IDLE_COLOR, 0, False, False, 0.0, "")
+        col = "#991b1b" if ps.category.is_overloaded else ps.category.color_hex
+        return (
+            theme.INK_PRIMARY if is_closed else col,
+            ps.category.tier_index,
+            ps.category.is_overloaded and not is_closed,
+            ps.utilization_pct >= 75.0 and not is_closed,
+            ps.utilization_pct,
+            f"{ps.utilization_pct:.0f}%",
+        )
 
     def set_traversal_frame(self, frame: Optional[TraversalAnimFrame]) -> None:
         self._traversal_frame = frame
@@ -406,8 +508,9 @@ class NetworkCanvas(tk.Canvas):
             ps = snap.pipe_states.get(pid)
             if ps is None:
                 continue
-            color = theme.INK_PRIMARY if is_closed else ("#991b1b" if ps.category.is_overloaded else ps.category.color_hex)
-            is_over = ps.category.is_overloaded and not is_closed
+            color, tier_idx, is_over, _is_crit, _disp_val, _suf = self._resolve_pipe_visual_state(
+                pid, ps, is_closed
+            )
             w = base_width + (1.5 if is_over else 0.0)
             self.itemconfigure(line_id, fill=color, width=w)
             if glow_id is not None:
@@ -416,7 +519,7 @@ class NetworkCanvas(tk.Canvas):
             if self._is_playing and not is_closed and ps.flow_m3s > 1e-5 and ps.conveyed_flow_m3s > 1e-5 and pid in self._pulse_geom_refs:
                 seg_len = self._pulse_geom_refs[pid][4]
                 n_pulses = 3 if (seg_len > 115.0 or is_over) else 2
-                chev_col = theme.INK_PRIMARY if ps.category.tier_index in (0, 1) else theme.PAPER_BG
+                chev_col = theme.INK_PRIMARY if tier_idx in (0, 1) else theme.PAPER_BG
                 active_pulse_sig[pid] = (n_pulses, chev_col)
 
         # 2. Actualizar etiquetas en sitio sin re-calcular bbox salvo cambio de longitud
@@ -426,26 +529,38 @@ class NetworkCanvas(tk.Canvas):
             if ps is None:
                 new_label_refs[pid] = (rect_id, txt_id, prefix_parts, is_sel, is_hl, has_mark, is_closed, last_len)
                 continue
-            parts = list(prefix_parts)
-            if self.show_util_labels and not is_closed:
-                parts.append(f"{ps.utilization_pct:.0f}%")
-            text_lbl = " ".join(parts)
-            is_over = ps.category.is_overloaded and not is_closed
-            fg = (
-                theme.ACCENT_INK
-                if is_sel
-                else ("#991b1b" if is_over else (theme.ACCENT_TEXT_ON_LIGHT if is_hl else theme.INK_PRIMARY))
+            _col, _tier, is_over, _is_crit, ov_or_u, suf_lbl = self._resolve_pipe_visual_state(
+                pid, ps, is_closed
             )
-            bg = (
-                theme.ACCENT_PRIMARY
-                if is_sel
-                else ("#FEF2F2" if is_over else (theme.ACCENT_SOFT if is_hl else theme.PAPER_BG))
-            )
-            border = (
-                theme.INK_PRIMARY
-                if (is_sel or has_mark)
-                else ("#FCA5A5" if is_over else (theme.PIPE_HIGHLIGHT_PATH if is_hl else theme.PAPER_BORDER))
-            )
+            if self._map_mode == "overload_minutes" and not is_closed and ov_or_u >= 0.5:
+                ov_badge_lbl = f"{ov_or_u:.0f}m >100%"
+                if self.show_pipe_labels:
+                    text_lbl = f"{pid} · {ov_badge_lbl}"
+                else:
+                    text_lbl = ov_badge_lbl
+                fg = theme.SHELL_TEXT
+                bg = theme.SHELL_BG
+                border = "#ef4444"
+            else:
+                parts = list(prefix_parts)
+                if self.show_util_labels and not is_closed and suf_lbl:
+                    parts.append(suf_lbl)
+                text_lbl = " ".join(parts)
+                fg = (
+                    theme.ACCENT_INK
+                    if is_sel
+                    else ("#991b1b" if is_over else (theme.ACCENT_TEXT_ON_LIGHT if is_hl else theme.INK_PRIMARY))
+                )
+                bg = (
+                    theme.ACCENT_PRIMARY
+                    if is_sel
+                    else ("#FEF2F2" if is_over else (theme.ACCENT_SOFT if is_hl else theme.PAPER_BG))
+                )
+                border = (
+                    theme.INK_PRIMARY
+                    if (is_sel or has_mark)
+                    else ("#FCA5A5" if is_over else (theme.PIPE_HIGHLIGHT_PATH if is_hl else theme.PAPER_BORDER))
+                )
             self.itemconfigure(txt_id, text=text_lbl, fill=fg)
             if len(text_lbl) != last_len:
                 bbox = self.bbox(txt_id)
@@ -538,12 +653,132 @@ class NetworkCanvas(tk.Canvas):
         self._zoom_at(w / 2.0, h / 2.0, 1.0 / 1.18)
 
     def reset_view(self) -> None:
+        self._stop_camera_animation()
         self._zoom = 1.0
         self._pan_x = 0.0
         self._pan_y = 0.0
         self._update_zoom_label()
         self._fast_cache_valid = False
         self.redraw()
+
+    def _stop_camera_animation(self) -> None:
+        if self._cam_anim_after is not None:
+            try:
+                self.after_cancel(self._cam_anim_after)
+            except tk.TclError:
+                pass
+            self._cam_anim_after = None
+
+    def animate_reset_view(self, steps: int = 10, step_ms: int = 18) -> None:
+        """Devuelve la cámara al encuadre general de los 46 nodos de forma interpolada."""
+        self._animate_camera_to(1.0, 0.0, 0.0, steps=steps, step_ms=step_ms)
+
+    def animate_focus_region(
+        self,
+        node_ids: Set[str],
+        pipe_ids: Optional[Set[str]] = None,
+        left_reserve_px: float = 0.0,
+        steps: int = 12,
+        step_ms: int = 18,
+    ) -> None:
+        """Desplaza y acerca suavemente la cámara sobre los nodos del hallazgo dejando margen izquierdo."""
+        if self.graph is None:
+            return
+        pts: List[Tuple[float, float]] = []
+        for nid in node_ids:
+            node = self.graph.get_node(nid)
+            if node is not None:
+                pts.append((node.x, node.y))
+        for pid in (pipe_ids or ()):
+            edge = self.graph.get_pipe(pid)
+            if edge is not None:
+                n1 = self.graph.get_node(edge.from_node)
+                n2 = self.graph.get_node(edge.to_node)
+                if n1 is not None:
+                    pts.append((n1.x, n1.y))
+                if n2 is not None:
+                    pts.append((n2.x, n2.y))
+        if not pts:
+            return
+
+        w = max(320, self.winfo_width())
+        h = max(240, self.winfo_height())
+        pad_x, pad_y = self._compute_padding(w, h)
+        min_nx = min(p[0] for p in pts)
+        max_nx = max(p[0] for p in pts)
+        min_ny = min(p[1] for p in pts)
+        max_ny = max(p[1] for p in pts)
+        mid_nx = (min_nx + max_nx) / 2.0
+        mid_ny = (min_ny + max_ny) / 2.0
+
+        base_w = max(80.0, w - 2.0 * pad_x)
+        base_h = max(80.0, h - 2.0 * pad_y)
+        span_x = max(28.0, (max_nx - min_nx) * base_w)
+        span_y = max(28.0, (max_ny - min_ny) * base_h)
+
+        # Dejar libre el margen izquierdo donde vive la ficha flotante de hallazgo
+        safe_left = min(float(left_reserve_px), w * 0.42)
+        avail_w = max(180.0, w - safe_left - 44.0)
+        avail_h = max(160.0, h - 68.0)
+
+        zoom_x = (avail_w * 0.72) / span_x
+        zoom_y = (avail_h * 0.72) / span_y
+        target_zoom = max(1.05, min(2.55, min(zoom_x, zoom_y)))
+
+        target_cx = safe_left + avail_w * 0.50
+        target_cy = h * 0.48
+        cx, cy = w / 2.0, h / 2.0
+        base_mx = pad_x + mid_nx * base_w
+        base_my = pad_y + mid_ny * base_h
+
+        target_pan_x = (target_cx - cx) - (base_mx - cx) * target_zoom
+        target_pan_y = (target_cy - cy) - (base_my - cy) * target_zoom
+        self._animate_camera_to(target_zoom, target_pan_x, target_pan_y, steps=steps, step_ms=step_ms)
+
+    def _animate_camera_to(
+        self,
+        target_zoom: float,
+        target_pan_x: float,
+        target_pan_y: float,
+        steps: int = 12,
+        step_ms: int = 18,
+    ) -> None:
+        self._stop_camera_animation()
+        start_zoom = self._zoom
+        start_px = self._pan_x
+        start_py = self._pan_y
+        total_steps = max(1, int(steps))
+
+        if (
+            abs(target_zoom - start_zoom) < 1e-3
+            and abs(target_pan_x - start_px) < 1.0
+            and abs(target_pan_y - start_py) < 1.0
+        ):
+            self._zoom = target_zoom
+            self._pan_x = target_pan_x
+            self._pan_y = target_pan_y
+            self._update_zoom_label()
+            self._fast_cache_valid = False
+            self.redraw()
+            return
+
+        def _tick(step_idx: int) -> None:
+            self._cam_anim_after = None
+            t = step_idx / float(total_steps)
+            eased = 1.0 - (1.0 - t) * (1.0 - t)
+            self._zoom = start_zoom + (target_zoom - start_zoom) * eased
+            self._pan_x = start_px + (target_pan_x - start_px) * eased
+            self._pan_y = start_py + (target_pan_y - start_py) * eased
+            self._update_zoom_label()
+            self._fast_cache_valid = False
+            self.redraw()
+            if step_idx < total_steps:
+                try:
+                    self._cam_anim_after = self.after(step_ms, lambda: _tick(step_idx + 1))
+                except tk.TclError:
+                    self._cam_anim_after = None
+
+        _tick(1)
 
     def focus_node(self, node_id: str) -> None:
         """Centra el lienzo sobre el nodo indicado manteniendo el nivel de zoom actual."""
@@ -598,6 +833,7 @@ class NetworkCanvas(tk.Canvas):
         return sx, sy
 
     def _on_mouse_wheel(self, event: tk.Event) -> None:
+        self._stop_camera_animation()
         factor = 1.12 if event.delta > 0 else 1.0 / 1.12
         self._zoom_at(event.x, event.y, factor)
 
@@ -617,6 +853,7 @@ class NetworkCanvas(tk.Canvas):
         self.redraw()
 
     def _on_left_press(self, event: tk.Event) -> None:
+        self._stop_camera_animation()
         self._drag_start = (event.x, event.y)
         self._dragged = False
 
@@ -741,6 +978,10 @@ class NetworkCanvas(tk.Canvas):
             lines.append(
                 f"Caudal: {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
             )
+        if pipe.pipe_id in self._overload_minutes_map:
+            ov_min = self._overload_minutes_map[pipe.pipe_id]
+            _, _, ov_desc = classify_overload_persistence(ov_min, self._total_duration_min)
+            lines.append(f"Estrés acumulado: {ov_min:.0f} min >100% ({ov_desc})")
         return "\n".join(lines)
 
     def _show_tooltip(self, x_root: int, y_root: int, text: str) -> None:
@@ -909,24 +1150,22 @@ class NetworkCanvas(tk.Canvas):
                 and inv.diameter_in_override > pipe.diameter_in + 1e-6
             )
 
-            is_dimmed_basin = self._basin_active and (pipe.pipe_id not in self._basin_pipes)
+            is_dimmed_basin = (
+                (self._basin_active and (pipe.pipe_id not in self._basin_pipes))
+                or (self._tour_active and (pipe.pipe_id not in self._tour_pipes))
+            )
             is_isolated = pipe.pipe_id in self._isolated_pipes
             is_anim_backtrack = anim is not None and (pipe.pipe_id in anim.backtracked_edges)
             is_anim_active = anim is not None and (pipe.pipe_id in anim.active_edges)
 
-            color = theme.PIPE_IDLE_COLOR
-            util_pct = 0.0
+            ps = self.snapshot.pipe_states.get(pipe.pipe_id) if self.snapshot else None
             vel_ms = pipe.reference_velocity_ms
-            is_overloaded = False
-            is_critical = False
-            if self.snapshot and pipe.pipe_id in self.snapshot.pipe_states:
-                ps = self.snapshot.pipe_states[pipe.pipe_id]
-                color = "#991b1b" if ps.category.is_overloaded else ps.category.color_hex
-                util_pct = ps.utilization_pct
-                if ps.effective_velocity_ms is not None:
-                    vel_ms = ps.effective_velocity_ms
-                is_overloaded = ps.category.is_overloaded
-                is_critical = util_pct >= 75.0
+            if ps is not None and ps.effective_velocity_ms is not None:
+                vel_ms = ps.effective_velocity_ms
+            color, _tier, is_overloaded, is_critical, disp_val, suf_lbl = self._resolve_pipe_visual_state(
+                pipe.pipe_id, ps, is_closed
+            )
+            util_pct = disp_val
 
             base_width = 2.0 + (eff_diam_in - 8.0) * 0.24
             geom_width = base_width * min(1.45, max(0.78, math.sqrt(self._zoom) * scale_factor))
@@ -1019,10 +1258,23 @@ class NetworkCanvas(tk.Canvas):
             if anim is None and not is_closed and seg_len >= 20.0:
                 self._pulse_geom_refs[pipe.pipe_id] = (sx1, sy1, ux, uy, seg_len, geom_width, vel_ms)
 
-            # Cola de etiquetas de tuberías + marcas técnicas [OBST XX%] / [ØXX"]
+            # Cola de etiquetas de tuberías + marcas técnicas [OBST XX%] / [ØXX"] / [XXm >100%]
             has_mark = is_obstructed or is_enlarged
-            if (self.show_pipe_labels or self.show_util_labels or has_mark) and dist > 26:
-                show_this = (not dense_mode) or is_selected or is_highlighted or is_critical or has_mark
+            has_ov_badge = (
+                self._map_mode == "overload_minutes"
+                and not is_closed
+                and disp_val >= 0.5
+                and anim is None
+            )
+            if (self.show_pipe_labels or self.show_util_labels or has_mark or has_ov_badge) and dist > 26:
+                show_this = (
+                    (not dense_mode)
+                    or is_selected
+                    or is_highlighted
+                    or is_critical
+                    or has_mark
+                    or has_ov_badge
+                )
                 if show_this:
                     prefix_parts = []
                     if is_obstructed and inv is not None:
@@ -1031,11 +1283,18 @@ class NetworkCanvas(tk.Canvas):
                         prefix_parts.append(f"[Ø{eff_diam_in:.0f}\"]")
                     if self.show_pipe_labels:
                         prefix_parts.append(pipe.pipe_id)
-                    parts = list(prefix_parts)
-                    if self.show_util_labels and self.snapshot is not None and not is_closed:
-                        if not dense_mode or is_selected or is_critical or has_mark:
-                            parts.append(f"{util_pct:.0f}%")
-                    if parts:
+                    if has_ov_badge:
+                        ov_txt = f"{disp_val:.0f}m >100%"
+                        lbl_full = f"{pipe.pipe_id} · {ov_txt}" if self.show_pipe_labels else ov_txt
+                        if prefix_parts and not self.show_pipe_labels:
+                            lbl_full = " ".join(prefix_parts + [ov_txt])
+                    else:
+                        parts = list(prefix_parts)
+                        if self.show_util_labels and self.snapshot is not None and not is_closed and suf_lbl:
+                            if not dense_mode or is_selected or is_critical or has_mark:
+                                parts.append(suf_lbl)
+                        lbl_full = " ".join(parts)
+                    if lbl_full:
                         nx_perp, ny_perp = -uy, ux
                         is_vert = abs(ux) < 0.35
                         if is_vert:
@@ -1048,13 +1307,14 @@ class NetworkCanvas(tk.Canvas):
                             ly = my + ny_perp * 13.0
                         priority = (
                             (6 if has_mark else 0)
+                            + (5 if has_ov_badge else 0)
                             + (4 if is_selected else 0)
                             + (3 if is_highlighted else 0)
                             + (2 if is_overloaded else 0)
                             + (1 if is_critical else 0)
                         )
                         label_queue.append(
-                            (priority, util_pct, pipe.pipe_id, lx, ly, mx, is_vert, side, " ".join(parts), prefix_parts, is_selected, is_overloaded, is_highlighted, has_mark, is_closed)
+                            (priority, util_pct, pipe.pipe_id, lx, ly, mx, is_vert, side, lbl_full, prefix_parts, is_selected, is_overloaded, is_highlighted, has_mark, has_ov_badge, is_closed)
                         )
 
         placed_boxes = [
@@ -1073,26 +1333,31 @@ class NetworkCanvas(tk.Canvas):
 
         label_queue.sort(key=lambda item: (item[0], item[1]), reverse=True)
 
-        for priority, _u, pid, lx, ly, mx, is_vert, side, text_lbl, prefix_parts, is_sel, is_over, is_hl, has_mark, is_closed in label_queue:
-            fg = (
-                theme.ACCENT_INK
-                if is_sel
-                else ("#991b1b" if is_over else (theme.ACCENT_TEXT_ON_LIGHT if is_hl else theme.INK_PRIMARY))
-            )
-            bg = (
-                theme.ACCENT_PRIMARY
-                if is_sel
-                else ("#FEF2F2" if is_over else (theme.ACCENT_SOFT if is_hl else theme.PAPER_BG))
-            )
-            border = (
-                theme.INK_PRIMARY
-                if (is_sel or has_mark)
-                else ("#FCA5A5" if is_over else (theme.PIPE_HIGHLIGHT_PATH if is_hl else theme.PAPER_BORDER))
-            )
+        for priority, _u, pid, lx, ly, mx, is_vert, side, text_lbl, prefix_parts, is_sel, is_over, is_hl, has_mark, has_ov_badge, is_closed in label_queue:
+            if has_ov_badge and not is_sel:
+                fg = theme.SHELL_TEXT
+                bg = theme.SHELL_BG
+                border = "#ef4444"
+            else:
+                fg = (
+                    theme.ACCENT_INK
+                    if is_sel
+                    else ("#991b1b" if is_over else (theme.ACCENT_TEXT_ON_LIGHT if is_hl else theme.INK_PRIMARY))
+                )
+                bg = (
+                    theme.ACCENT_PRIMARY
+                    if is_sel
+                    else ("#FEF2F2" if is_over else (theme.ACCENT_SOFT if is_hl else theme.PAPER_BG))
+                )
+                border = (
+                    theme.INK_PRIMARY
+                    if (is_sel or has_mark)
+                    else ("#FCA5A5" if is_over else (theme.PIPE_HIGHLIGHT_PATH if is_hl else theme.PAPER_BORDER))
+                )
             font_spec = (
                 self.mono_font,
                 7 if (self._zoom < 1.15 or dense_mode) else 8,
-                "bold" if (is_over or is_sel or is_hl or has_mark) else "normal",
+                "bold" if (is_over or is_sel or is_hl or has_mark or has_ov_badge) else "normal",
             )
             txt_id = self.create_text(lx, ly, text=text_lbl, fill=fg, font=font_spec)
             bbox = self.bbox(txt_id)
@@ -1135,7 +1400,10 @@ class NetworkCanvas(tk.Canvas):
         for node in self.graph.nodes():
             x, y = positions[node.node_id]
             r = node_radius
-            is_dimmed_basin = self._basin_active and (node.node_id not in self._basin_nodes)
+            is_dimmed_basin = (
+                (self._basin_active and (node.node_id not in self._basin_nodes))
+                or (self._tour_active and (node.node_id not in self._tour_nodes))
+            )
             is_isolated = node.node_id in self._isolated_nodes
             is_anim_wave = anim is not None and (node.node_id in anim.active_nodes)
             is_anim_cursor = anim is not None and (node.node_id == anim.cursor_node)
