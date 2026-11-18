@@ -309,7 +309,7 @@ class ComparisonChartsPanel(tk.Frame):
             self.ax_ptar.plot(
                 ts,
                 qs,
-                label=f"E{s.scenario_id} {cond_es} ({s.intensity_mm_h:.0f})",
+                label=f"E{s.scenario_id} {cond_es}",
                 color=colors[idx % len(colors)],
                 linewidth=1.9,
             )
@@ -325,7 +325,7 @@ class ComparisonChartsPanel(tk.Frame):
         self.ax_ptar.set_ylabel("m³/s", color=theme.INK_SECONDARY, fontsize=7.5)
         self.ax_ptar.legend(
             loc="upper left",
-            fontsize=6.2,
+            fontsize=6.5,
             facecolor=theme.PAPER_BG,
             edgecolor=theme.PAPER_BORDER,
             labelcolor=theme.INK_PRIMARY,

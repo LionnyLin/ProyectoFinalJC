@@ -123,8 +123,8 @@ SCENARIO_ES_SHORT_MAP: Dict[str, str] = {
 }
 
 SPLIT_RULE_TO_ES: Dict[str, str] = {
-    "proportional": "Proporcional (Qmax)",
-    "equal": "Equitativa (50/50)",
+    "proportional": "Proporcional",
+    "equal": "Equitativa",
 }
 ES_TO_SPLIT_RULE: Dict[str, str] = {v: k for k, v in SPLIT_RULE_TO_ES.items()}
 
@@ -144,7 +144,7 @@ def translate_scenario_name(condition: str, compact: bool = False) -> str:
 def format_scenario_display(scenario_id: int, condition: str, intensity_mm_h: float) -> str:
     """Formatea la etiqueta visible del escenario en español."""
     es_name = translate_scenario_name(condition, compact=False)
-    return f"Escenario {scenario_id}: {es_name} ({intensity_mm_h:.0f} mm/h)"
+    return f"Esc. {scenario_id}: {es_name} ({intensity_mm_h:.0f} mm/h)"
 
 
 # Aliases de compatibilidad
