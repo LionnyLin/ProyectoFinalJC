@@ -57,13 +57,10 @@ class SewerSimulationEngine:
             )
         return config.intensity_mm_h
 
-    def compute_source_inflow_m3s(
+    def compute_source_inflows_by_source(
         self, config: SimulationConfig, intensity_mm_h: float
-    ) -> Tuple[float, float]:
-        """Calcula caudal pluvial total (Método Racional) y caudal total por nodo fuente.
-
-        Fórmula: Q = 0.00278 * C * I * A * ingress_factor + Q_sanitario
-        """
+    ) -> Tuple[float, Dict[str, float]]:
+        """Calcula caudal total y distribución por fuente (por capacidad instalada o uniforme 1/N)."""
         sources = self.graph.source_ids()
         n_sources = max(1, len(sources))
         q_rational_raw = (
@@ -73,9 +70,34 @@ class SewerSimulationEngine:
             * self.basin.area_ha
         )
         q_rain_effective = q_rational_raw * config.ingress_factor
-        q_per_source = (q_rain_effective / n_sources) + config.dry_weather_flow_per_source_m3s
-        q_total = q_per_source * n_sources
-        return q_total, q_per_source
+
+        if config.source_distribution == "equal":
+            weights = {sid: 1.0 / n_sources for sid in sources}
+        else:
+            raw_caps = {
+                sid: sum(e.q_max_m3s for e in self.graph.outgoing_pipes(sid))
+                for sid in sources
+            }
+            total_cap = sum(raw_caps.values())
+            if total_cap > 1e-12:
+                weights = {sid: raw_caps[sid] / total_cap for sid in sources}
+            else:
+                weights = {sid: 1.0 / n_sources for sid in sources}
+
+        per_source = {
+            sid: (q_rain_effective * weights[sid]) + config.dry_weather_flow_per_source_m3s
+            for sid in sources
+        }
+        q_total = sum(per_source.values())
+        return q_total, per_source
+
+    def compute_source_inflow_m3s(
+        self, config: SimulationConfig, intensity_mm_h: float
+    ) -> Tuple[float, float]:
+        """Calcula caudal pluvial total (Método Racional) y promedio por nodo fuente."""
+        q_total, per_source = self.compute_source_inflows_by_source(config, intensity_mm_h)
+        q_avg = q_total / max(1, len(per_source))
+        return q_total, q_avg
 
     def run(self, config: SimulationConfig) -> SimulationResult:
         """Ejecuta la simulación completa y almacena cada instante en `self.history`."""
@@ -88,15 +110,19 @@ class SewerSimulationEngine:
 
         # Estructuras propias para estado en tiempo real
         node_stored: HashTable[str, float] = HashTable()
+        node_flooded: HashTable[str, float] = HashTable()
         pipe_transit_vol: HashTable[str, float] = HashTable()
         for nid in self.graph.node_ids():
             node_stored.put(nid, 0.0)
+            node_flooded.put(nid, 0.0)
         for pid in self.graph.pipe_ids():
             pipe_transit_vol.put(pid, 0.0)
 
         event_queue: PriorityQueue[_TransitEvent] = PriorityQueue()
         source_set = set(self.graph.source_ids())
         sink_set = set(self.graph.sink_ids())
+        cap_manhole = max(0.0, float(config.max_manhole_storage_m3))
+        max_phys_util = max(100.0, float(config.max_physical_utilization_pct))
 
         interventions: Dict[str, PipeIntervention] = config.interventions or {}
         eff_params = {
@@ -114,13 +140,15 @@ class SewerSimulationEngine:
                 utilization_pct=0.0,
                 category=classify_utilization(0.0),
                 excess_flow_m3s=0.0,
+                demand_flow_m3s=0.0,
+                demand_ratio_pct=0.0,
                 effective_q_max_m3s=eff_params[p.pipe_id][0],
                 effective_velocity_ms=eff_params[p.pipe_id][1],
             )
             for p in self.graph.pipes()
         }
         init_node_states = {
-            nid: NodeStepState(nid, 0.0, 0.0, 0.0) for nid in self.graph.node_ids()
+            nid: NodeStepState(nid, 0.0, 0.0, 0.0, 0.0, 0.0) for nid in self.graph.node_ids()
         }
         self.history.append(
             TimeStepSnapshot(
@@ -134,6 +162,7 @@ class SewerSimulationEngine:
                 total_manhole_storage_m3=0.0,
                 total_pipe_transit_m3=0.0,
                 mass_balance_error_m3=0.0,
+                total_surface_flooding_m3=0.0,
                 pipe_states=init_pipe_states,
                 node_states=init_node_states,
             )
@@ -143,6 +172,8 @@ class SewerSimulationEngine:
         cum_sink_m3 = 0.0
         peak_util: Dict[str, float] = {p.pipe_id: 0.0 for p in self.graph.pipes()}
         peak_flow: Dict[str, float] = {p.pipe_id: 0.0 for p in self.graph.pipes()}
+        peak_demand_ratio: Dict[str, float] = {p.pipe_id: 0.0 for p in self.graph.pipes()}
+        peak_demand_flow: Dict[str, float] = {p.pipe_id: 0.0 for p in self.graph.pipes()}
         max_storage: Dict[str, float] = {nid: 0.0 for nid in self.graph.node_ids()}
         peak_sink_q = 0.0
         max_mass_err = 0.0
@@ -155,11 +186,12 @@ class SewerSimulationEngine:
             t_curr_min = step * dt_min
 
             intensity = self._effective_intensity(config, t_curr_min)
-            total_src_q, q_per_src = self.compute_source_inflow_m3s(config, intensity)
+            total_src_q, q_by_source = self.compute_source_inflows_by_source(config, intensity)
 
             node_arrivals: Dict[str, float] = {nid: 0.0 for nid in self.graph.node_ids()}
             node_inflow_step: Dict[str, float] = {nid: 0.0 for nid in self.graph.node_ids()}
             node_outflow_step: Dict[str, float] = {nid: 0.0 for nid in self.graph.node_ids()}
+            node_flood_rate: Dict[str, float] = {nid: 0.0 for nid in self.graph.node_ids()}
 
             # 1. Procesar eventos de llegada programados en la PriorityQueue hasta t_curr_s
             while not event_queue.is_empty():
@@ -173,9 +205,10 @@ class SewerSimulationEngine:
 
             # 2. Inyectar caudal en nodos fuente
             for sid in self.graph.source_ids():
-                vol_in = q_per_src * dt_s
+                q_src = q_by_source.get(sid, 0.0)
+                vol_in = q_src * dt_s
                 node_arrivals[sid] += vol_in
-                node_inflow_step[sid] += q_per_src
+                node_inflow_step[sid] += q_src
                 cum_inflow_m3 += vol_in
 
             pipe_states: Dict[str, PipeStepState] = {}
@@ -240,8 +273,7 @@ class SewerSimulationEngine:
                                 ),
                             )
 
-                    # Caudal efectivo en tubería: refleja la tasa instantánea de llegada + tránsito,
-                    # evitando inflar artificialmente el caudal por acumulación histórica de volumen.
+                    # Caudal de demanda vs caudal físico acotado en tubería (tope presurizado <= max_phys_util)
                     q_arrival_share = (node_arrivals[u] * w) / dt_s
                     q_conveyed = sent_vol / dt_s
                     vol_in_pipe = pipe_transit_vol[edge.pipe_id]
@@ -252,38 +284,55 @@ class SewerSimulationEngine:
                     )
                     if eff_q_max <= 1e-12:
                         if excess_vol > 1e-9 or q_arrival_share > 1e-9:
-                            q_effective = max(q_arrival_share, demand_vol / dt_s)
+                            q_demand = max(q_arrival_share, demand_vol / dt_s)
                             base_ref = max(edge.q_max_m3s, 1e-6)
-                            util_pct = max(105.0, (q_effective / base_ref) * 100.0)
+                            demand_ratio = max(105.0, (q_demand / base_ref) * 100.0)
+                            util_pct = max_phys_util
+                            q_physical = 0.0
                         else:
-                            q_effective = 0.0
+                            q_demand = 0.0
+                            demand_ratio = 0.0
                             util_pct = 0.0
+                            q_physical = 0.0
+                        excess_q = q_demand
                     else:
-                        if excess_vol > 1e-9:
-                            # Si hay sobrecarga retenida en el pozo, la tubería excede 100% mientras drena
-                            q_effective = max(q_arrival_share, eff_q_max * 1.05, q_in_transit)
+                        q_demand = max(q_arrival_share, q_conveyed, q_in_transit)
+                        if excess_vol > 1e-9 or q_demand > eff_q_max + 1e-9:
+                            q_demand = max(q_demand, eff_q_max * 1.05)
+                            demand_ratio = (q_demand / eff_q_max) * 100.0
+                            over_frac = max(0.05, (q_demand - eff_q_max) / eff_q_max)
+                            util_pct = 100.0 + (max_phys_util - 100.0) * (1.0 - math.exp(-1.6 * over_frac))
+                            q_physical = eff_q_max * (util_pct / 100.0)
                         else:
-                            q_effective = max(q_arrival_share, q_conveyed, q_in_transit)
-                        util_pct = (q_effective / eff_q_max) * 100.0
+                            q_physical = min(eff_q_max, q_demand)
+                            util_pct = (q_physical / eff_q_max) * 100.0
+                            demand_ratio = (q_demand / eff_q_max) * 100.0
+                        excess_q = max(0.0, q_demand - eff_q_max)
+
                     cat = classify_utilization(util_pct)
-                    excess_q = max(0.0, q_effective - eff_q_max)
 
                     pipe_states[edge.pipe_id] = PipeStepState(
                         pipe_id=edge.pipe_id,
-                        flow_m3s=q_effective,
+                        flow_m3s=q_physical,
                         conveyed_flow_m3s=q_conveyed,
                         volume_in_transit_m3=vol_in_pipe,
                         utilization_pct=util_pct,
                         category=cat,
                         excess_flow_m3s=excess_q,
+                        demand_flow_m3s=q_demand,
+                        demand_ratio_pct=demand_ratio,
                         effective_q_max_m3s=eff_q_max,
                         effective_velocity_ms=eff_vel_ms,
                     )
 
                     if util_pct > peak_util[edge.pipe_id]:
                         peak_util[edge.pipe_id] = util_pct
-                    if q_effective > peak_flow[edge.pipe_id]:
-                        peak_flow[edge.pipe_id] = q_effective
+                    if q_physical > peak_flow[edge.pipe_id]:
+                        peak_flow[edge.pipe_id] = q_physical
+                    if demand_ratio > peak_demand_ratio[edge.pipe_id]:
+                        peak_demand_ratio[edge.pipe_id] = demand_ratio
+                    if q_demand > peak_demand_flow[edge.pipe_id]:
+                        peak_demand_flow[edge.pipe_id] = q_demand
                     if cat.is_critical:
                         critical_ids.append(edge.pipe_id)
                         ever_critical.add(edge.pipe_id)
@@ -291,15 +340,22 @@ class SewerSimulationEngine:
                         overloaded_ids.append(edge.pipe_id)
                         ever_overloaded.add(edge.pipe_id)
 
-                node_stored.put(u, remaining_stored)
+                stored_u = min(remaining_stored, cap_manhole)
+                spill_u = max(0.0, remaining_stored - stored_u)
+                node_stored.put(u, stored_u)
+                if spill_u > 0.0:
+                    node_flooded.put(u, node_flooded[u] + spill_u)
+                    node_flood_rate[u] = spill_u / dt_s
                 node_outflow_step[u] = total_sent_u / dt_s
-                if remaining_stored > max_storage[u]:
-                    max_storage[u] = remaining_stored
+                if stored_u > max_storage[u]:
+                    max_storage[u] = stored_u
 
             total_manhole_storage = sum(node_stored[nid] for nid in self.graph.node_ids())
             total_pipe_transit = sum(pipe_transit_vol[pid] for pid in self.graph.pipe_ids())
+            total_surface_flooding = sum(node_flooded[nid] for nid in self.graph.node_ids())
             mass_err = abs(
-                cum_inflow_m3 - (cum_sink_m3 + total_manhole_storage + total_pipe_transit)
+                cum_inflow_m3
+                - (cum_sink_m3 + total_manhole_storage + total_pipe_transit + total_surface_flooding)
             )
             max_mass_err = max(max_mass_err, mass_err)
 
@@ -312,6 +368,8 @@ class SewerSimulationEngine:
                     inflow_m3s=node_inflow_step[nid],
                     outflow_m3s=node_outflow_step[nid],
                     stored_volume_m3=node_stored[nid],
+                    surface_flooding_m3=node_flooded[nid],
+                    flooding_rate_m3s=node_flood_rate[nid],
                 )
                 for nid in self.graph.node_ids()
             }
@@ -328,6 +386,7 @@ class SewerSimulationEngine:
                     total_manhole_storage_m3=total_manhole_storage,
                     total_pipe_transit_m3=total_pipe_transit,
                     mass_balance_error_m3=mass_err,
+                    total_surface_flooding_m3=total_surface_flooding,
                     pipe_states=pipe_states,
                     node_states=node_states,
                     critical_pipe_ids=critical_ids,
@@ -349,6 +408,7 @@ class SewerSimulationEngine:
 
         last_snap = snapshots_list[-1]
         residual = last_snap.total_manhole_storage_m3 + last_snap.total_pipe_transit_m3
+        max_flood_by_node = {nid: node_flooded[nid] for nid in self.graph.node_ids()}
 
         return SimulationResult(
             config=config,
@@ -365,4 +425,8 @@ class SewerSimulationEngine:
             ever_overloaded_pipes=sorted(ever_overloaded),
             execution_time_ms=elapsed_ms,
             pipe_overloaded_minutes=overloaded_minutes,
+            peak_pipe_demand_ratio=peak_demand_ratio,
+            peak_pipe_demand_flow=peak_demand_flow,
+            total_surface_flooding_m3=last_snap.total_surface_flooding_m3,
+            max_node_flooding_m3=max_flood_by_node,
         )

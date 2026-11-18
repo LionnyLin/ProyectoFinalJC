@@ -24,6 +24,8 @@ class ScenarioSummary:
     max_stored_surcharge_m3: float
     mass_balance_error_m3: float
     result: SimulationResult
+    max_demand_ratio_pct: float = 0.0
+    total_surface_flooding_m3: float = 0.0
 
 
 def compare_all_scenarios(
@@ -46,14 +48,18 @@ def compare_all_scenarios(
             dry_weather_flow_per_source_m3s=base_config.dry_weather_flow_per_source_m3s,
             split_rule=base_config.split_rule,
             hyetograph=base_config.hyetograph,
+            source_distribution=base_config.source_distribution,
+            max_manhole_storage_m3=base_config.max_manhole_storage_m3,
+            max_physical_utilization_pct=base_config.max_physical_utilization_pct,
             interventions=dict(base_config.interventions),
         )
         res = engine.run(cfg)
         most_crit = max(
             res.peak_pipe_utilization.items(),
-            key=lambda kv: kv[1],
+            key=lambda kv: (kv[1], res.peak_pipe_demand_ratio.get(kv[0], 0.0)),
             default=("N/A", 0.0),
         )
+        max_dem = max(res.peak_pipe_demand_ratio.values(), default=0.0)
         summaries.append(
             ScenarioSummary(
                 scenario_id=sc.scenario_id,
@@ -69,6 +75,8 @@ def compare_all_scenarios(
                 max_stored_surcharge_m3=sum(res.max_manhole_storage_m3.values()),
                 mass_balance_error_m3=res.max_mass_balance_error_m3,
                 result=res,
+                max_demand_ratio_pct=max_dem,
+                total_surface_flooding_m3=res.total_surface_flooding_m3,
             )
         )
 

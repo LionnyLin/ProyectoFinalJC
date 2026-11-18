@@ -75,6 +75,9 @@ class SimulationConfig:
     dry_weather_flow_per_source_m3s: float = 0.003  # Caudal sanitario base por fuente (m³/s)
     split_rule: str = "proportional"  # "proportional" (por Qmax) o "equal" (uniforme)
     hyetograph: str = "uniform"  # "uniform" (constante) o "triangular" (pico al 50%)
+    source_distribution: str = "capacity"  # "capacity" (ponderado por Qmax) o "equal" (1/N)
+    max_manhole_storage_m3: float = 4.0  # Capacidad física amortiguadora por pozo antes de rebose
+    max_physical_utilization_pct: float = 115.0  # Tope físico presurizado en tubo (>100% realista)
     interventions: Dict[str, PipeIntervention] = field(default_factory=dict)
 
 
@@ -83,12 +86,14 @@ class PipeStepState:
     """Estado de una tubería en un instante de tiempo t."""
 
     pipe_id: str
-    flow_m3s: float          # Caudal efectivo/demandado Q_i(t) (m³/s)
+    flow_m3s: float          # Caudal físico efectivo en la tubería (acotado a tope presurizado)
     conveyed_flow_m3s: float # Caudal físico transportado aguas abajo (<= Qmax)
     volume_in_transit_m3: float
-    utilization_pct: float   # O_i(t) = (Q_i(t) / Qmax_i) * 100
+    utilization_pct: float   # Utilización física O_i(t) acotada (<= max_physical_utilization_pct)
     category: UtilizationCategory
-    excess_flow_m3s: float   # Exceso por encima de Qmax (m³/s)
+    excess_flow_m3s: float   # Déficit/exceso de demanda por encima de Qmax (m³/s)
+    demand_flow_m3s: float = 0.0     # Caudal de demanda total intentando ingresar (m³/s)
+    demand_ratio_pct: float = 0.0    # Índice de demanda = (Q_demanda / Qmax) * 100 (%)
     effective_q_max_m3s: Optional[float] = None
     effective_velocity_ms: Optional[float] = None
 
@@ -100,7 +105,9 @@ class NodeStepState:
     node_id: str
     inflow_m3s: float
     outflow_m3s: float
-    stored_volume_m3: float  # Almacenamiento temporal por sobrecarga (m³)
+    stored_volume_m3: float  # Almacenamiento temporal dentro del pozo (<= max_manhole_storage_m3)
+    surface_flooding_m3: float = 0.0  # Rebose superficial acumulado en vía por pozo lleno (m³)
+    flooding_rate_m3s: float = 0.0    # Tasa instantánea de rebose superficial (m³/s)
 
 
 @dataclass
@@ -117,6 +124,7 @@ class TimeStepSnapshot:
     total_manhole_storage_m3: float
     total_pipe_transit_m3: float
     mass_balance_error_m3: float
+    total_surface_flooding_m3: float = 0.0
     pipe_states: Dict[str, PipeStepState] = field(default_factory=dict)
     node_states: Dict[str, NodeStepState] = field(default_factory=dict)
     critical_pipe_ids: List[str] = field(default_factory=list)   # >= 75%
@@ -141,3 +149,7 @@ class SimulationResult:
     ever_overloaded_pipes: List[str]
     execution_time_ms: float
     pipe_overloaded_minutes: Dict[str, float] = field(default_factory=dict)
+    peak_pipe_demand_ratio: Dict[str, float] = field(default_factory=dict)
+    peak_pipe_demand_flow: Dict[str, float] = field(default_factory=dict)
+    total_surface_flooding_m3: float = 0.0
+    max_node_flooding_m3: Dict[str, float] = field(default_factory=dict)

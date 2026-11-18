@@ -53,6 +53,7 @@ class CriticalPipeRecord:
     category: UtilizationCategory
     excess_flow_m3s: float
     note: str = ""
+    demand_ratio_pct: float = 0.0
 
 
 def rank_critical_pipes(
@@ -61,14 +62,17 @@ def rank_critical_pipes(
     pipe_utilizations_pct: Dict[str, float],
     min_utilization_pct: float = 0.0,
     pipe_qmax_overrides: Optional[Dict[str, float]] = None,
+    pipe_demand_ratios_pct: Optional[Dict[str, float]] = None,
+    pipe_excess_flows_m3s: Optional[Dict[str, float]] = None,
 ) -> List[CriticalPipeRecord]:
-    """Ordena tuberías de mayor a menor utilización usando una PriorityQueue propia."""
+    """Ordena tuberías de mayor a menor utilización (y demanda como desempate) usando PriorityQueue propia."""
     pq: PriorityQueue[str] = PriorityQueue()
     for pipe in graph.pipes():
         util = pipe_utilizations_pct.get(pipe.pipe_id, 0.0)
+        dem = pipe_demand_ratios_pct.get(pipe.pipe_id, util) if pipe_demand_ratios_pct else util
         if util >= min_utilization_pct:
-            # Min-heap: prioridad negativa para extraer mayor utilización primero.
-            pq.push(-util, pipe.pipe_id)
+            # Min-heap: prioridad negativa para extraer mayor utilización/demanda primero.
+            pq.push(-(util * 1000.0 + dem), pipe.pipe_id)
 
     ranked: List[CriticalPipeRecord] = []
     rank = 1
@@ -79,13 +83,18 @@ def rank_critical_pipes(
             continue
         flow = pipe_flows_m3s.get(pid, 0.0)
         util = pipe_utilizations_pct.get(pid, 0.0)
+        dem = pipe_demand_ratios_pct.get(pid, util) if pipe_demand_ratios_pct else util
         q_max = (
             pipe_qmax_overrides[pid]
             if pipe_qmax_overrides and pid in pipe_qmax_overrides
             else pipe.q_max_m3s
         )
         cat = classify_utilization(util)
-        excess = max(0.0, flow - q_max)
+        excess = (
+            pipe_excess_flows_m3s[pid]
+            if pipe_excess_flows_m3s and pid in pipe_excess_flows_m3s
+            else max(0.0, flow - q_max)
+        )
         ranked.append(
             CriticalPipeRecord(
                 rank=rank,
@@ -98,6 +107,7 @@ def rank_critical_pipes(
                 category=cat,
                 excess_flow_m3s=excess,
                 note=pipe.note,
+                demand_ratio_pct=dem,
             )
         )
         rank += 1
