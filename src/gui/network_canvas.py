@@ -518,8 +518,9 @@ class NetworkCanvas(tk.Canvas):
                 continue
             if ps.effective_velocity_ms is not None:
                 vel_ms = ps.effective_velocity_ms
-            is_overloaded = ps.category.is_overloaded
-            tier_idx = ps.category.tier_index
+            _col, tier_idx, is_overloaded, *_ = self._resolve_pipe_visual_state(
+                pid, ps, False
+            )
             usable = max(8.0, seg_len - 13.0)
             n_pulses = 3 if (seg_len > 115.0 or is_overloaded) else 2
             chev_col = theme.INK_PRIMARY if tier_idx in (0, 1) else theme.PAPER_BG
@@ -579,17 +580,22 @@ class NetworkCanvas(tk.Canvas):
                 chev_col = theme.INK_PRIMARY if tier_idx in (0, 1) else theme.PAPER_BG
                 active_pulse_sig[pid] = (n_pulses, chev_col)
 
-        # 2. Actualizar etiquetas en sitio sin re-calcular bbox salvo cambio de longitud
+        # 2. Actualizar etiquetas en sitio sin re-calcular bbox salvo cambio de longitud o peso tipográfico
         new_label_refs: Dict[str, tuple] = {}
-        for pid, (rect_id, txt_id, prefix_parts, is_sel, is_hl, has_mark, is_closed, last_len) in self._pipe_label_refs.items():
+        for pid, (rect_id, txt_id, prefix_parts, is_sel, is_hl, has_mark, is_closed, last_len, font_sz, last_bold) in self._pipe_label_refs.items():
             ps = snap.pipe_states.get(pid)
             if ps is None:
-                new_label_refs[pid] = (rect_id, txt_id, prefix_parts, is_sel, is_hl, has_mark, is_closed, last_len)
+                new_label_refs[pid] = (rect_id, txt_id, prefix_parts, is_sel, is_hl, has_mark, is_closed, last_len, font_sz, last_bold)
                 continue
             _col, _tier, is_over, _is_crit, ov_or_u, suf_lbl = self._resolve_pipe_visual_state(
                 pid, ps, is_closed
             )
-            if self._map_mode == "overload_minutes" and not is_closed and ov_or_u >= 0.5:
+            has_ov_badge = (
+                self._map_mode == "overload_minutes"
+                and not is_closed
+                and ov_or_u >= 0.5
+            )
+            if has_ov_badge:
                 ov_badge_lbl = f"{ov_or_u:.0f}m >100%"
                 if prefix_parts:
                     if self.show_pipe_labels and prefix_parts[-1] == pid:
@@ -626,14 +632,24 @@ class NetworkCanvas(tk.Canvas):
                     if (is_sel or has_mark)
                     else ("#FCA5A5" if is_over else (theme.PIPE_HIGHLIGHT_PATH if is_hl else theme.PAPER_BORDER))
                 )
-            self.itemconfigure(txt_id, text=text_lbl, fill=fg)
-            if len(text_lbl) != last_len:
+            new_bold = bool(is_over or is_sel or is_hl or has_mark or has_ov_badge)
+            if new_bold != last_bold:
+                self.itemconfigure(
+                    txt_id,
+                    text=text_lbl,
+                    fill=fg,
+                    font=(self.mono_font, font_sz, "bold" if new_bold else "normal"),
+                )
+            else:
+                self.itemconfigure(txt_id, text=text_lbl, fill=fg)
+            if len(text_lbl) != last_len or new_bold != last_bold:
                 bbox = self.bbox(txt_id)
                 if bbox is not None:
                     self.coords(rect_id, bbox[0] - 3, bbox[1] - 1, bbox[2] + 3, bbox[3] + 1)
                 last_len = len(text_lbl)
+                last_bold = new_bold
             self.itemconfigure(rect_id, fill=bg, outline=border)
-            new_label_refs[pid] = (rect_id, txt_id, prefix_parts, is_sel, is_hl, has_mark, is_closed, last_len)
+            new_label_refs[pid] = (rect_id, txt_id, prefix_parts, is_sel, is_hl, has_mark, is_closed, last_len, font_sz, last_bold)
         self._pipe_label_refs = new_label_refs
 
         # 3. Actualizar anillos topográficos de inundación en pozos
@@ -741,6 +757,7 @@ class NetworkCanvas(tk.Canvas):
 
     def reset_view(self) -> None:
         self._stop_camera_animation()
+        self._hide_tooltip()
         self._zoom = 1.0
         self._pan_x = 0.0
         self._pan_y = 0.0
@@ -928,6 +945,7 @@ class NetworkCanvas(tk.Canvas):
         new_zoom = max(0.55, min(4.5, self._zoom * factor))
         if abs(new_zoom - self._zoom) < 1e-6:
             return
+        self._hide_tooltip()
         w = max(200, self.winfo_width())
         h = max(200, self.winfo_height())
         cx, cy = w / 2.0, h / 2.0
@@ -1109,6 +1127,7 @@ class NetworkCanvas(tk.Canvas):
         self._tooltip_window = tw
 
     def _hide_tooltip(self) -> None:
+        self._last_hover_key = None
         if self._tooltip_window is not None:
             try:
                 self._tooltip_window.destroy()
@@ -1299,9 +1318,10 @@ class NetworkCanvas(tk.Canvas):
                     line_kw["dash"] = (5, 4)
                 line_id = self.create_line(sx1, sy1, sx2, sy2, **line_kw)
                 self._item_to_pipe[line_id] = pipe.pipe_id
-                if is_selected:
+                if is_selected or (is_focus_pipe and not is_dimmed_basin):
+                    halo_col = theme.PIPE_SELECTED_HALO if is_selected else theme.ACCENT_PRIMARY
                     halo_id = self.create_line(
-                        sx1, sy1, sx2, sy2, fill=theme.PIPE_SELECTED_HALO, width=geom_width + 5.0, capstyle=tk.ROUND
+                        sx1, sy1, sx2, sy2, fill=halo_col, width=geom_width + 5.0, capstyle=tk.ROUND
                     )
                     self.tag_lower(halo_id, line_id)
                     self._item_to_pipe[halo_id] = pipe.pipe_id
@@ -1436,9 +1456,13 @@ class NetworkCanvas(tk.Canvas):
                         prefix_parts.append(pipe.pipe_id)
                     if has_ov_badge:
                         ov_txt = f"{disp_val:.0f}m >100%"
-                        lbl_full = f"{pipe.pipe_id} · {ov_txt}" if self.show_pipe_labels else ov_txt
-                        if prefix_parts and not self.show_pipe_labels:
-                            lbl_full = " ".join(prefix_parts + [ov_txt])
+                        if prefix_parts:
+                            if self.show_pipe_labels and prefix_parts[-1] == pipe.pipe_id:
+                                lbl_full = " ".join(prefix_parts[:-1] + [f"{pipe.pipe_id} · {ov_txt}"])
+                            else:
+                                lbl_full = " ".join(prefix_parts + [ov_txt])
+                        else:
+                            lbl_full = f"{pipe.pipe_id} · {ov_txt}" if self.show_pipe_labels else ov_txt
                     else:
                         parts = list(prefix_parts)
                         if self.show_util_labels and self.snapshot is not None and not is_closed and suf_lbl:
@@ -1466,11 +1490,12 @@ class NetworkCanvas(tk.Canvas):
                             + (1 if is_critical else 0)
                         )
                         label_queue.append(
-                            (priority, util_pct, pipe.pipe_id, lx, ly, mx, is_vert, side, lbl_full, prefix_parts, is_selected, is_overloaded, is_focus_pipe, has_mark, has_ov_badge, is_closed)
+                            (priority, util_pct, pipe.pipe_id, lx, ly, mx, is_vert, side, lbl_full, prefix_parts, is_selected, is_overloaded, is_focus_pipe, has_mark, has_ov_badge, is_closed, nx_perp, ny_perp)
                         )
 
+        r_box = max(4.0, node_radius * 0.78)
         placed_boxes = [
-            (nx - node_radius - 2, ny - node_radius - 2, nx + node_radius + 2, ny + node_radius + 2)
+            (nx - r_box, ny - r_box, nx + r_box, ny + r_box)
             for nx, ny in positions.values()
         ]
         for node in self.graph.nodes():
@@ -1483,9 +1508,13 @@ class NetworkCanvas(tk.Canvas):
                 ty = (ny - node_radius - 12) if node.y < 0.2 else (ny + node_radius + 12)
                 placed_boxes.append((nx - 26, ty - 8, nx + 26, ty + 8))
 
-        label_queue.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        label_queue.sort(
+            key=lambda item: (item[0], item[1], self._peak_util_map.get(item[2], 0.0)),
+            reverse=True,
+        )
 
-        for priority, _u, pid, lx, ly, mx, is_vert, side, text_lbl, prefix_parts, is_sel, is_over, is_hl, has_mark, has_ov_badge, is_closed in label_queue:
+        font_sz = 7 if (self._zoom < 1.15 or dense_mode) else 8
+        for priority, _u, pid, lx, ly, mx, is_vert, side, text_lbl, prefix_parts, is_sel, is_over, is_hl, has_mark, has_ov_badge, is_closed, nx_perp, ny_perp in label_queue:
             if has_ov_badge and not is_sel:
                 fg = theme.SHELL_TEXT
                 bg = theme.SHELL_BG
@@ -1506,10 +1535,11 @@ class NetworkCanvas(tk.Canvas):
                     if (is_sel or has_mark)
                     else ("#FCA5A5" if is_over else (theme.PIPE_HIGHLIGHT_PATH if is_hl else theme.PAPER_BORDER))
                 )
+            is_bold = bool(is_over or is_sel or is_hl or has_mark or has_ov_badge)
             font_spec = (
                 self.mono_font,
-                7 if (self._zoom < 1.15 or dense_mode) else 8,
-                "bold" if (is_over or is_sel or is_hl or has_mark or has_ov_badge) else "normal",
+                font_sz,
+                "bold" if is_bold else "normal",
             )
             txt_id = self.create_text(lx, ly, text=text_lbl, fill=fg, font=font_spec)
             bbox = self.bbox(txt_id)
@@ -1532,6 +1562,18 @@ class NetworkCanvas(tk.Canvas):
                 not (bx1 < ox0 or bx0 > ox1 or by1 < oy0 or by0 > oy1)
                 for ox0, oy0, ox1, oy1 in placed_boxes
             )
+            if overlaps and not is_vert:
+                for nudge in (3.5, 6.0):
+                    ndx, ndy = nx_perp * nudge, ny_perp * nudge
+                    nbx0, nby0, nbx1, nby1 = bx0 + ndx, by0 + ndy, bx1 + ndx, by1 + ndy
+                    if not any(
+                        not (nbx1 < ox0 or nbx0 > ox1 or nby1 < oy0 or nby0 > oy1)
+                        for ox0, oy0, ox1, oy1 in placed_boxes
+                    ):
+                        self.move(txt_id, ndx, ndy)
+                        bx0, by0, bx1, by1 = nbx0, nby0, nbx1, nby1
+                        overlaps = False
+                        break
             if overlaps and not is_sel and not has_mark:
                 self.delete(txt_id)
                 continue
@@ -1546,7 +1588,7 @@ class NetworkCanvas(tk.Canvas):
             self.tag_lower(rect_id, txt_id)
             self._item_to_pipe[rect_id] = pid
             self._item_to_pipe[txt_id] = pid
-            self._pipe_label_refs[pid] = (rect_id, txt_id, prefix_parts, is_sel, is_hl, has_mark, is_closed, len(text_lbl))
+            self._pipe_label_refs[pid] = (rect_id, txt_id, prefix_parts, is_sel, is_hl, has_mark, is_closed, len(text_lbl), font_sz, is_bold)
 
         # 2. Vértices (alcantarillas fuente, pozos de inspección, sumidero PTAR)
         for node in self.graph.nodes():

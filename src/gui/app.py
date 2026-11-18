@@ -718,12 +718,18 @@ class BicentenarioSewerApp(tk.Tk):
             self.left_canvas.unbind_all("<Button-5>")
 
     def _on_left_wheel_linux(self, event: tk.Event, units: int) -> None:
-        widget = self.winfo_containing(event.x_root, event.y_root)
+        try:
+            widget = self.winfo_containing(event.x_root, event.y_root)
+        except (KeyError, tk.TclError):
+            return
         if widget is not None and self._is_descendant(widget, self.left_panel):
             self._scroll_left_canvas(units)
 
     def _on_left_wheel(self, event: tk.Event) -> None:
-        widget = self.winfo_containing(event.x_root, event.y_root)
+        try:
+            widget = self.winfo_containing(event.x_root, event.y_root)
+        except (KeyError, tk.TclError):
+            return
         if widget is not None and self._is_descendant(widget, self.left_panel):
             delta = getattr(event, "delta", 0)
             if delta == 0:
@@ -1084,6 +1090,7 @@ class BicentenarioSewerApp(tk.Tk):
             )
             sb.grid(row=row_i, column=1, sticky="e", pady=2)
             sb.bind("<Return>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
+            sb.bind("<FocusOut>", lambda _e: self._schedule_param_rerun())
         grid.columnconfigure(0, weight=1)
 
         preset_row = tk.Frame(sec_sim, bg=theme.PAPER_BG)
@@ -2981,6 +2988,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._schedule_next_frame()
 
     def _player_pause(self) -> None:
+        was_playing = self.is_playing
         self.is_playing = False
         if self._after_id is not None:
             try:
@@ -2992,6 +3000,23 @@ class BicentenarioSewerApp(tk.Tk):
             self.network_canvas.set_playing(False)
         if hasattr(self, "btn_play_pause"):
             self._update_play_button_label()
+        if was_playing and self.result is not None and self.result.snapshots:
+            active_tab = self._active_right_tab()
+            if active_tab == 2 and hasattr(self, "temporal_charts"):
+                snap = self.result.snapshots[self.current_step]
+                self.temporal_charts.update_plots(
+                    self.result,
+                    self._selected_pipe_id,
+                    snap.time_min,
+                    previous_result=self._previous_result,
+                    route_pipes=self._resolve_active_route(),
+                    current_step_index=self.current_step,
+                    diameter_overrides=self._diameter_overrides_map(),
+                    throttle_draw=False,
+                )
+            elif active_tab == 0 and self._insp_tab_dirty:
+                self._insp_tab_dirty = False
+                self._refresh_inspector()
 
     def _player_reset(self) -> None:
         self._player_pause()
@@ -3241,6 +3266,16 @@ class BicentenarioSewerApp(tk.Tk):
             self.var_bfs_start.set(self._selected_node_id)
             self._run_trace(direction)
 
+    def _deactivate_focus_filters_for_traversal(self) -> None:
+        """Limpia enfoque de guía o aislamiento de cuenca para que los recorridos/búsquedas sean visibles."""
+        if self._tour_active:
+            self._close_guided_tour(reset_view=False)
+        if self._basin_isolated:
+            self._basin_isolated = False
+            self.network_canvas.set_basin_focus(None, None)
+            if hasattr(self, "btn_isolate_basin"):
+                self._set_btn_variant(self.btn_isolate_basin, "light_secondary")
+
     def _action_search(self) -> None:
         if self.dataset is None:
             return
@@ -3253,6 +3288,7 @@ class BicentenarioSewerApp(tk.Tk):
             return
 
         self._stop_traversal_anim(clear_canvas=False)
+        self._deactivate_focus_filters_for_traversal()
         exact_pipe = self.dataset.graph.get_pipe(q.upper()) or self.dataset.graph.get_pipe(q)
         exact_node = self.dataset.graph.get_node(q.upper()) or self.dataset.graph.get_node(q)
         if exact_pipe is not None:
@@ -3287,6 +3323,7 @@ class BicentenarioSewerApp(tk.Tk):
         if self.dataset is None:
             return
         self._stop_traversal_anim(clear_canvas=True)
+        self._deactivate_focus_filters_for_traversal()
         self._last_traversal_alg = alg
         start = self.var_bfs_start.get().strip()
         target = self.var_bfs_target.get().strip() or None
@@ -3353,6 +3390,7 @@ class BicentenarioSewerApp(tk.Tk):
             return
 
         self._player_pause()
+        self._deactivate_focus_filters_for_traversal()
         start = self.var_bfs_start.get().strip()
         target = self.var_bfs_target.get().strip() or None
         alg = self._last_traversal_alg
@@ -3418,6 +3456,7 @@ class BicentenarioSewerApp(tk.Tk):
         if self.dataset is None:
             return
         self._stop_traversal_anim(clear_canvas=True)
+        self._deactivate_focus_filters_for_traversal()
         nid = self.var_bfs_start.get().strip()
         try:
             nodes, pipes = (
@@ -3445,6 +3484,19 @@ class BicentenarioSewerApp(tk.Tk):
         self.network_canvas.set_highlights(set(), set())
         self._render_structure_strip("Queue", [])
         self._set_traversal_text("")
+        self._charts_tab_dirty = True
+        if self._active_right_tab() == 2 and self.result is not None and self.result.snapshots:
+            self._charts_tab_dirty = False
+            snap = self.result.snapshots[self.current_step]
+            self.temporal_charts.update_plots(
+                self.result,
+                self._selected_pipe_id,
+                snap.time_min,
+                previous_result=self._previous_result,
+                route_pipes=self._resolve_active_route(),
+                current_step_index=self.current_step,
+                diameter_overrides=self._diameter_overrides_map(),
+            )
         self._refresh_inspector()
 
     def _set_traversal_text(self, text: str) -> None:
@@ -3829,12 +3881,14 @@ class BicentenarioSewerApp(tk.Tk):
             else None
         )
         split_rule = self.var_split_rule.get()
+        source_dist = self.var_source_dist.get()
         entity_kind = "pipe" if self._selected_pipe_id else "node"
         entity_id = self._selected_pipe_id or self._selected_node_id or ""
         attr_key = (
             id(g),
             id(snap),
             split_rule,
+            source_dist,
             entity_kind,
             entity_id,
             tuple(sorted(self._interventions.items(), key=lambda kv: kv[0])),
@@ -3844,7 +3898,11 @@ class BicentenarioSewerApp(tk.Tk):
         self._last_attr_key = attr_key
 
         attr = compute_source_attribution(
-            g, snapshot=snap, split_rule=split_rule, pipe_qmax_overrides=qmax_over
+            g,
+            snapshot=snap,
+            split_rule=split_rule,
+            pipe_qmax_overrides=qmax_over,
+            source_distribution=source_dist,
         )
         self._source_attribution = attr
         if entity_kind == "pipe":
