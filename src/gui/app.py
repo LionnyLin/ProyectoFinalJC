@@ -125,6 +125,8 @@ class BicentenarioSewerApp(tk.Tk):
         self._is_animating_traversal: bool = False
         self._map_mode: str = "instant"
         self._map_mode_buttons: Dict[str, tk.Button] = {}
+        self._prefix_peak_util: List[Dict[str, float]] = []
+        self._prefix_overload_min: List[Dict[str, float]] = []
         self._tour_active: bool = False
         self._tour_step: int = 0
         self._source_attribution: Optional[SourceAttributionResult] = None
@@ -632,14 +634,8 @@ class BicentenarioSewerApp(tk.Tk):
         self._left_window_id = self.left_canvas.create_window(
             (0, 0), window=self.left_frame, anchor="nw"
         )
-        self.left_frame.bind(
-            "<Configure>",
-            lambda _e: self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all")),
-        )
-        self.left_canvas.bind(
-            "<Configure>",
-            lambda e: self.left_canvas.itemconfigure(self._left_window_id, width=e.width),
-        )
+        self.left_frame.bind("<Configure>", self._update_left_scrollregion)
+        self.left_canvas.bind("<Configure>", self._update_left_scrollregion)
         self.left_canvas.configure(yscrollcommand=left_scroll.set)
         self.left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         left_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -664,20 +660,73 @@ class BicentenarioSewerApp(tk.Tk):
         self._update_toggle_styles()
         self.bind("<Configure>", self._on_window_configure)
 
+    def _update_left_scrollregion(self, event: Optional[tk.Event] = None) -> None:
+        if not hasattr(self, "left_canvas") or not self.left_canvas.winfo_exists():
+            return
+        try:
+            cw = (
+                event.width
+                if (event is not None and event.widget is self.left_canvas and event.width > 1)
+                else self.left_canvas.winfo_width()
+            )
+            cw = max(1, cw)
+            ch = max(1, self.left_canvas.winfo_height())
+            self.left_canvas.itemconfigure(self._left_window_id, width=cw)
+            req_h = max(1, self.left_frame.winfo_reqheight())
+            sr_h = max(ch, req_h)
+            self.left_canvas.configure(scrollregion=(0, 0, cw, sr_h))
+            if req_h <= ch:
+                self.left_canvas.yview_moveto(0.0)
+        except tk.TclError:
+            pass
+
+    def _scroll_left_canvas(self, units: int) -> None:
+        if units == 0 or not hasattr(self, "left_canvas") or not self.left_canvas.winfo_exists():
+            return
+        try:
+            req_h = self.left_frame.winfo_reqheight()
+            ch = self.left_canvas.winfo_height()
+            if req_h <= ch:
+                self.left_canvas.yview_moveto(0.0)
+                return
+            top, bottom = self.left_canvas.yview()
+            if units < 0 and top <= 0.0:
+                self.left_canvas.yview_moveto(0.0)
+                return
+            if units > 0 and bottom >= 1.0:
+                return
+            self.left_canvas.yview_scroll(units, "units")
+        except tk.TclError:
+            pass
+
     def _bind_left_mousewheel(self, active: bool) -> None:
+        if not hasattr(self, "left_canvas") or not self.left_canvas.winfo_exists():
+            return
         if active:
             self.left_canvas.bind_all("<MouseWheel>", self._on_left_wheel)
-            self.left_canvas.bind_all("<Button-4>", lambda _e: self.left_canvas.yview_scroll(-1, "units"))
-            self.left_canvas.bind_all("<Button-5>", lambda _e: self.left_canvas.yview_scroll(1, "units"))
+            self.left_canvas.bind_all("<Button-4>", lambda e: self._on_left_wheel_linux(e, -1))
+            self.left_canvas.bind_all("<Button-5>", lambda e: self._on_left_wheel_linux(e, 1))
         else:
             self.left_canvas.unbind_all("<MouseWheel>")
             self.left_canvas.unbind_all("<Button-4>")
             self.left_canvas.unbind_all("<Button-5>")
 
+    def _on_left_wheel_linux(self, event: tk.Event, units: int) -> None:
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        if widget is not None and self._is_descendant(widget, self.left_panel):
+            self._scroll_left_canvas(units)
+
     def _on_left_wheel(self, event: tk.Event) -> None:
         widget = self.winfo_containing(event.x_root, event.y_root)
         if widget is not None and self._is_descendant(widget, self.left_panel):
-            self.left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            delta = getattr(event, "delta", 0)
+            if delta == 0:
+                return
+            if abs(delta) >= 120:
+                steps = int(-1 * (delta / 120))
+            else:
+                steps = -1 if delta > 0 else 1
+            self._scroll_left_canvas(steps)
 
     @staticmethod
     def _is_descendant(widget: tk.Misc, ancestor: tk.Misc) -> bool:
@@ -765,7 +814,7 @@ class BicentenarioSewerApp(tk.Tk):
         # 1. Adaptación de la barra superior (garantiza visibilidad de Guía y acciones en todo ancho)
         tb_mode = "wide" if width >= 1220 else ("medium" if width >= 920 else "compact")
         wide_full_bar = width >= 1660
-        tour_lbl = "Recorrido Guiado (4 Hallazgos)" if width >= 1340 else "Guía 4"
+        tour_lbl = self._guided_tour_button_label(width)
         topbar_sig = (tb_mode, wide_full_bar, tour_lbl)
         if topbar_sig != getattr(self, "_topbar_layout_sig", None):
             self._topbar_layout_sig = topbar_sig
@@ -933,13 +982,15 @@ class BicentenarioSewerApp(tk.Tk):
         self._rail_sim_container.pack_forget()
         self._rail_trav_container.pack_forget()
         if tab_id == "trav":
-            self._rail_trav_container.pack(fill=tk.X, expand=True)
+            self._rail_trav_container.pack(fill=tk.X)
             self._set_btn_variant(self.btn_rail_sim, "light_secondary")
             self._set_btn_variant(self.btn_rail_trav, "primary")
         else:
-            self._rail_sim_container.pack(fill=tk.X, expand=True)
+            self._rail_sim_container.pack(fill=tk.X)
             self._set_btn_variant(self.btn_rail_sim, "primary")
             self._set_btn_variant(self.btn_rail_trav, "light_secondary")
+        self.left_frame.update_idletasks()
+        self._update_left_scrollregion()
         self.left_canvas.yview_moveto(0.0)
 
     def _build_left_controls(self, parent: tk.Frame) -> None:
@@ -1067,16 +1118,17 @@ class BicentenarioSewerApp(tk.Tk):
         self.combo_hyetograph.pack(side=tk.RIGHT)
         self.combo_hyetograph.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
 
-        self._make_btn(
+        self.btn_run_sim = self._make_btn(
             sec_sim,
             " Ejecutar simulación",
-            self.run_simulation,
+            self._action_execute_simulation,
             variant="primary",
             pady=6,
             font_size=9,
             image=self._icons["play_on_accent"],
             compound=tk.LEFT,
-        ).pack(fill=tk.X, pady=(8, 0))
+        )
+        self.btn_run_sim.pack(fill=tk.X, pady=(8, 0))
 
         # Lámina 2 (Tab Simulación): Escala oficial de utilización (Sección 7) / Estrés acumulado
         sec_leg = self._make_rail_section(
@@ -2316,6 +2368,7 @@ class BicentenarioSewerApp(tk.Tk):
             self.var_scenario.set(scen_labels[2])
         elif scen_labels:
             self.var_scenario.set(scen_labels[0])
+        self._update_guided_tour_button_label()
 
         nids = dataset.graph.node_ids()
         self.combo_bfs_start["values"] = nids
@@ -2420,22 +2473,35 @@ class BicentenarioSewerApp(tk.Tk):
                 return sc
         return self.dataset.scenarios[0]
 
+    @staticmethod
+    def _read_float_var(var: tk.DoubleVar, label: str) -> float:
+        try:
+            val = float(var.get())
+        except (tk.TclError, ValueError) as exc:
+            raise ValueError(f"{label} debe ser un número válido.") from exc
+        if not math.isfinite(val):
+            raise ValueError(f"{label} debe ser un número finito.")
+        return val
+
     def _build_sim_config(self) -> SimulationConfig:
         sc = self._selected_scenario_obj()
-        duration = float(self.var_duration.get())
-        storm_dur = float(self.var_storm_dur.get())
-        dt = float(self.var_dt.get())
-        ingress = float(self.var_ingress_pct.get())
-        dry_flow = float(self.var_dry_flow.get())
-        for val, label in (
-            (duration, "Duración simulación"),
-            (storm_dur, "Duración lluvia"),
-            (dt, "Paso temporal Δt"),
-            (ingress, "Ingreso pluvial (%)"),
-            (dry_flow, "Caudal sanitario"),
-        ):
-            if not math.isfinite(val):
-                raise ValueError(f"{label} debe ser un número finito.")
+        duration = self._read_float_var(self.var_duration, "Duración simulación")
+        storm_dur = self._read_float_var(self.var_storm_dur, "Duración lluvia")
+        dt = self._read_float_var(self.var_dt, "Paso temporal Δt")
+        ingress = self._read_float_var(self.var_ingress_pct, "Ingreso pluvial (%)")
+        dry_flow = self._read_float_var(self.var_dry_flow, "Caudal sanitario")
+
+        if duration <= 0.0 or duration > 1440.0:
+            raise ValueError("Duración simulación debe estar entre > 0 y 1440 min.")
+        if storm_dur < 0.0 or storm_dur > 1440.0:
+            raise ValueError("Duración lluvia debe estar entre 0 y 1440 min.")
+        if dt <= 0.0 or dt > 60.0:
+            raise ValueError("Paso temporal Δt debe estar entre > 0 y 60 min.")
+        if ingress <= 0.0 or ingress > 100.0:
+            raise ValueError("Ingreso pluvial (%) debe estar entre > 0 y 100 %.")
+        if dry_flow < 0.0 or dry_flow > 10.0:
+            raise ValueError("Caudal sanitario debe estar entre 0 y 10 m³/s.")
+
         return SimulationConfig(
             scenario_id=sc.scenario_id,
             scenario_name=sc.condition,
@@ -2462,6 +2528,10 @@ class BicentenarioSewerApp(tk.Tk):
         self._param_rerun_after = None
         if self.dataset is None or self.engine is None:
             return
+        try:
+            self._build_sim_config()
+        except ValueError:
+            return
         self._on_simulation_option_changed(mark_comp=True)
 
     def _on_simulation_option_changed(self, mark_comp: bool = True) -> None:
@@ -2469,15 +2539,26 @@ class BicentenarioSewerApp(tk.Tk):
             self._mark_comparisons_dirty()
         self.run_simulation(preserve_previous=False)
 
-    def run_simulation(self, preserve_previous: bool = False) -> None:
+    def _action_execute_simulation(self) -> None:
+        self.run_simulation(preserve_previous=False, auto_play=True)
+
+    def run_simulation(self, preserve_previous: bool = False, auto_play: bool = False) -> None:
         if self.dataset is None or self.engine is None:
             return
+        if self._param_rerun_after is not None:
+            try:
+                self.after_cancel(self._param_rerun_after)
+            except tk.TclError:
+                pass
+            self._param_rerun_after = None
         self._player_pause()
         try:
             cfg = self._build_sim_config()
         except Exception as exc:
             messagebox.showerror("Parámetros inválidos", f"Revise los parámetros numéricos: {exc}")
             return
+
+        prev_scenario_id = self.result.config.scenario_id if self.result is not None else None
 
         if preserve_previous and self.result is not None:
             self._previous_result = self.result
@@ -2487,13 +2568,18 @@ class BicentenarioSewerApp(tk.Tk):
             self._previous_result = None
 
         self.result = self.engine.run(cfg)
+        self._build_prefix_stress_maps(self.result)
         self._last_attr_key = None
         n_snaps = len(self.result.snapshots)
+        if auto_play and self._map_mode != "instant":
+            self._map_mode = "instant"
+            self._apply_map_mode_button_styles("instant")
+        peak0, ov0, dur0 = self._stress_maps_for_step(0)
         self.network_canvas.set_map_mode(
             self._map_mode,
-            peak_util=self.result.peak_pipe_utilization,
-            overload_minutes=self.result.pipe_overloaded_minutes,
-            total_duration_min=cfg.duration_min,
+            peak_util=peak0,
+            overload_minutes=ov0,
+            total_duration_min=dur0,
         )
         self._updating_slider = True
         try:
@@ -2503,15 +2589,66 @@ class BicentenarioSewerApp(tk.Tk):
                 self._slider_restore_pending = True
                 self.after_idle(self._restore_slider_command)
         self.lbl_t_end.configure(text=f"{cfg.duration_min:.0f}m")
+        self._update_guided_tour_button_label()
 
         # Iniciar siempre en el minuto 0 (comienzo de la simulación)
         self._set_step(0)
-        if self._tour_active:
-            self._go_tour_stop(self._tour_step, animate_cam=False)
+        if auto_play:
+            if self._tour_active:
+                self._close_guided_tour(reset_view=True)
+            if n_snaps > 1:
+                self._player_play()
+        elif self._tour_active:
+            scenario_changed = prev_scenario_id is not None and prev_scenario_id != cfg.scenario_id
+            self._go_tour_stop(0 if scenario_changed else self._tour_step, animate_cam=scenario_changed)
         self.status_var.set(
             f"{self._dataset_summary_text}  ·  Escenario {cfg.scenario_id} ({cfg.intensity_mm_h:.0f} mm/h) "
             f"en {self.result.execution_time_ms:.1f} ms ({n_snaps} instantes)"
         )
+
+    def _build_prefix_stress_maps(self, result: SimulationResult) -> None:
+        """Precalcula pico máximo y minutos de sobrecarga acumulados hasta cada paso t."""
+        pipe_ids = self.dataset.graph.pipe_ids() if self.dataset is not None else []
+        cur_peak: Dict[str, float] = {pid: 0.0 for pid in pipe_ids}
+        cur_ov: Dict[str, float] = {pid: 0.0 for pid in pipe_ids}
+        dt_min = float(result.config.dt_min)
+        dur_min = float(result.config.duration_min)
+        self._prefix_peak_util = []
+        self._prefix_overload_min = []
+        for snap in result.snapshots:
+            for pid, ps in snap.pipe_states.items():
+                if ps.utilization_pct > cur_peak.get(pid, 0.0):
+                    cur_peak[pid] = ps.utilization_pct
+            if snap.step_index > 0:
+                for pid in snap.overloaded_pipe_ids:
+                    cur_ov[pid] = min(dur_min, cur_ov.get(pid, 0.0) + dt_min)
+            self._prefix_peak_util.append(dict(cur_peak))
+            self._prefix_overload_min.append(dict(cur_ov))
+
+    def _stress_maps_for_step(
+        self, step_idx: int
+    ) -> Tuple[Dict[str, float], Dict[str, float], float]:
+        """Retorna (peak_util_hasta_t, overload_min_hasta_t, duracion_referencia) para un paso."""
+        if self.result is None or not self.result.snapshots:
+            return ({}, {}, 90.0)
+        idx = max(0, min(len(self.result.snapshots) - 1, step_idx))
+        snap = self.result.snapshots[idx]
+        peak = (
+            self._prefix_peak_util[idx]
+            if idx < len(self._prefix_peak_util)
+            else self.result.peak_pipe_utilization
+        )
+        ov = (
+            self._prefix_overload_min[idx]
+            if idx < len(self._prefix_overload_min)
+            else self.result.pipe_overloaded_minutes
+        )
+        dur_ref = (
+            max(float(self.result.config.dt_min), float(snap.time_min))
+            if snap.time_min > 0.0
+            else max(1.0, float(self.result.config.duration_min))
+        )
+        return (peak, ov, dur_ref)
 
     def _resolve_active_route(self) -> List[PipeEdge]:
         if self.dataset is None:
@@ -2566,6 +2703,12 @@ class BicentenarioSewerApp(tk.Tk):
             self._slider_restore_pending = True
             self.after_idle(self._restore_slider_command)
 
+        peak_step, ov_step, dur_step = self._stress_maps_for_step(step_idx)
+        self.network_canvas.set_stress_maps(
+            peak_util=peak_step,
+            overload_minutes=ov_step,
+            total_duration_min=dur_step,
+        )
         self.network_canvas.set_snapshot(snap)
         self._update_clock_label(snap)
 
@@ -2651,10 +2794,7 @@ class BicentenarioSewerApp(tk.Tk):
                 text=f"Balance masa OK · Err {snap.mass_balance_error_m3:.2e} m³"
             )
 
-    def _set_map_mode(self, mode: str) -> None:
-        if mode not in ("instant", "peak", "overload_minutes"):
-            return
-        self._map_mode = mode
+    def _apply_map_mode_button_styles(self, mode: str) -> None:
         for mid, btn in self._map_mode_buttons.items():
             is_act = mid == mode
             btn.configure(
@@ -2662,12 +2802,19 @@ class BicentenarioSewerApp(tk.Tk):
                 fg=theme.ACCENT_INK if is_act else theme.INK_PRIMARY,
                 font=(self.ui_font, 8, "bold" if is_act else "normal"),
             )
+
+    def _set_map_mode(self, mode: str) -> None:
+        if mode not in ("instant", "peak", "overload_minutes"):
+            return
+        self._map_mode = mode
+        self._apply_map_mode_button_styles(mode)
         if self.result is not None:
+            peak_step, ov_step, dur_step = self._stress_maps_for_step(self.current_step)
             self.network_canvas.set_map_mode(
                 mode,
-                peak_util=self.result.peak_pipe_utilization,
-                overload_minutes=self.result.pipe_overloaded_minutes,
-                total_duration_min=self.result.config.duration_min,
+                peak_util=peak_step,
+                overload_minutes=ov_step,
+                total_duration_min=dur_step,
             )
             self._update_legend_counts(self.result.snapshots[self.current_step])
         else:
@@ -2675,23 +2822,25 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _update_legend_counts(self, snap: TimeStepSnapshot) -> None:
         counts = [0, 0, 0, 0, 0]
+        peak_step, ov_step, dur_step = self._stress_maps_for_step(self.current_step)
         if self._map_mode == "overload_minutes" and self.result is not None:
             if self._legend_header_label is not None:
-                self._legend_header_label.configure(text="Tiempo acumulado en sobrecarga")
+                self._legend_header_label.configure(
+                    text=f"Sobrecarga acumulada · t ≤ {snap.time_min:.0f} min"
+                )
             for idx, (rng, _col, desc) in enumerate(OVERLOAD_PERSISTENCE_LEVELS):
                 if idx < len(self._legend_text_labels):
                     self._legend_text_labels[idx].configure(text=f"{rng} · {desc}")
-            dur = max(1.0, float(self.result.config.duration_min))
             for pid in snap.pipe_states:
-                ov_m = self.result.pipe_overloaded_minutes.get(pid, 0.0)
-                tier, _, _ = classify_overload_persistence(ov_m, dur)
+                ov_m = ov_step.get(pid, 0.0)
+                tier, _, _ = classify_overload_persistence(ov_m, dur_step)
                 counts[tier] += 1
         else:
             if self._legend_header_label is not None:
                 title = (
-                    "Escala oficial de utilización"
+                    f"Escala oficial · t = {snap.time_min:.0f} min"
                     if self._map_mode == "instant"
-                    else "Escala oficial · Pico máximo"
+                    else f"Pico máximo · hasta t = {snap.time_min:.0f} min"
                 )
                 self._legend_header_label.configure(text=title)
             short_desc = {"Cercana a capacidad máxima": "Cercana a cap. máx."}
@@ -2702,7 +2851,7 @@ class BicentenarioSewerApp(tk.Tk):
                     )
             if self._map_mode == "peak" and self.result is not None:
                 for pid in snap.pipe_states:
-                    u = self.result.peak_pipe_utilization.get(pid, 0.0)
+                    u = peak_step.get(pid, 0.0)
                     counts[classify_utilization(u).tier_index] += 1
             else:
                 for ps in snap.pipe_states.values():
@@ -2724,8 +2873,18 @@ class BicentenarioSewerApp(tk.Tk):
             self._player_play()
 
     def _player_play(self) -> None:
-        if self.result is None:
+        if self.result is None or len(self.result.snapshots) <= 1:
             return
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+        if self._tour_active:
+            self._close_guided_tour(reset_view=True)
+        if self._map_mode != "instant":
+            self._set_map_mode("instant")
         self._stop_traversal_anim(clear_canvas=False)
         if self.current_step >= len(self.result.snapshots) - 1:
             self._set_step(0)
@@ -2756,15 +2915,26 @@ class BicentenarioSewerApp(tk.Tk):
         self._set_step(self.current_step + delta)
 
     def _schedule_next_frame(self) -> None:
+        self._after_id = None
         if not self.is_playing or self.result is None:
+            return
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
             return
         if self.current_step >= len(self.result.snapshots) - 1:
             self._player_pause()
             return
         self._set_step(self.current_step + 1)
+        if not self.is_playing:
+            return
         speed_map = {"1x": 420, "2x": 210, "5x": 85, "10x": 40}
         delay = speed_map.get(self.var_speed.get(), 200)
-        self._after_id = self.after(delay, self._schedule_next_frame)
+        try:
+            self._after_id = self.after(delay, self._schedule_next_frame)
+        except tk.TclError:
+            self._after_id = None
 
     def _on_pipe_selected(self, pipe_id: str) -> None:
         self._selected_pipe_id = pipe_id
@@ -3624,6 +3794,32 @@ class BicentenarioSewerApp(tk.Tk):
                 )
             x_cur = x1
 
+    def _guided_tour_button_label(self, width: Optional[int] = None) -> str:
+        w = width if width is not None else max(self.winfo_width(), 1)
+        sc_id = None
+        scen_short = ""
+        if self.result is not None:
+            sc_id = self.result.config.scenario_id
+            scen_short = theme.translate_scenario_name(self.result.config.scenario_name, compact=True)
+        elif self.dataset is not None and self.dataset.scenarios:
+            sc = self._selected_scenario_obj()
+            sc_id = sc.scenario_id
+            scen_short = theme.translate_scenario_name(sc.condition, compact=True)
+
+        if sc_id is None:
+            return "Recorrido Guiado (4 Hallazgos)" if w >= 1340 else "Guía 4"
+        if w >= 1340:
+            return f"Recorrido Esc. {sc_id} · {scen_short} (4)"
+        return f"Guía Esc. {sc_id}"
+
+    def _update_guided_tour_button_label(self) -> None:
+        if hasattr(self, "btn_guided_tour") and self.btn_guided_tour.winfo_exists():
+            lbl = self._guided_tour_button_label()
+            self.btn_guided_tour.configure(text=lbl)
+            sig = getattr(self, "_topbar_layout_sig", None)
+            if isinstance(sig, tuple) and len(sig) == 3:
+                self._topbar_layout_sig = (sig[0], sig[1], lbl)
+
     def _build_tour_card(self) -> None:
         """Crea la ficha técnica flotante de la Guía de Sustentación sobre la esquina inferior izquierda."""
         self._tour_card = tk.Frame(
@@ -3637,7 +3833,7 @@ class BicentenarioSewerApp(tk.Tk):
         hdr.pack(fill=tk.X)
         self._lbl_tour_hdr = tk.Label(
             hdr,
-            text="HALLAZGO 1 / 4 · MIN 5",
+            text="ESC. 3 · HALLAZGO 1/4 · MIN 5",
             bg=theme.ACCENT_PRIMARY,
             fg=theme.ACCENT_INK,
             font=(self.mono_font, 8, "bold"),
@@ -3666,6 +3862,19 @@ class BicentenarioSewerApp(tk.Tk):
 
         body = tk.Frame(self._tour_card, bg=theme.PAPER_BG)
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=5)
+
+        self._lbl_tour_scenario = tk.Label(
+            body,
+            text="",
+            bg=theme.PAPER_BG,
+            fg=theme.ACCENT_TEXT_ON_LIGHT,
+            font=(self.mono_font, 7, "bold"),
+            anchor="w",
+            justify="left",
+            wraplength=280,
+        )
+        self._lbl_tour_scenario.pack(fill=tk.X, pady=(0, 2))
+
         self._lbl_tour_title = tk.Label(
             body,
             text="",
@@ -3674,7 +3883,7 @@ class BicentenarioSewerApp(tk.Tk):
             font=(self.display_font, 9, "bold"),
             anchor="w",
             justify="left",
-            wraplength=260,
+            wraplength=280,
         )
         self._lbl_tour_title.pack(fill=tk.X, pady=(0, 2))
 
@@ -3686,7 +3895,7 @@ class BicentenarioSewerApp(tk.Tk):
             font=(self.ui_font, 8),
             anchor="w",
             justify="left",
-            wraplength=260,
+            wraplength=280,
         )
         self._lbl_tour_desc.pack(fill=tk.X, pady=(0, 4))
 
@@ -3702,7 +3911,7 @@ class BicentenarioSewerApp(tk.Tk):
             pady=3,
             highlightthickness=1,
             highlightbackground=theme.PAPER_BORDER,
-            wraplength=252,
+            wraplength=272,
         )
         self._lbl_tour_metrics.pack(fill=tk.X)
 
@@ -3744,9 +3953,10 @@ class BicentenarioSewerApp(tk.Tk):
         cw = self.network_canvas.winfo_width()
         if cw <= 1:
             cw = 680
-        preferred = max(270, min(self._px(265), int(cw * 0.52)))
+        preferred = max(290, min(self._px(310), int(cw * 0.54)))
         card_w = max(200, min(cw - 20, preferred))
         wrap_w = max(175, card_w - 24)
+        self._lbl_tour_scenario.configure(wraplength=wrap_w)
         self._lbl_tour_title.configure(wraplength=wrap_w)
         self._lbl_tour_desc.configure(wraplength=wrap_w)
         self._lbl_tour_metrics.configure(wraplength=max(168, wrap_w - 10))
@@ -3768,109 +3978,396 @@ class BicentenarioSewerApp(tk.Tk):
             )
             return (best_i, self.result.snapshots[best_i])
 
-        # Parada 1 (Min 5): 8 alcantarillas fuente y sus tuberías de cabecera
+        def _endpoints(pipe_ids: List[str]) -> Set[str]:
+            nodes: Set[str] = set()
+            for pid in pipe_ids:
+                e = g.get_pipe(pid)
+                if e is not None:
+                    nodes.update((e.from_node, e.to_node))
+            return nodes
+
+        def _existing_pipes(*candidates: str) -> List[str]:
+            return [pid for pid in candidates if g.has_pipe(pid)]
+
+        def _max_util(snap: Optional[TimeStepSnapshot], pipe_ids: List[str]) -> float:
+            if snap is None:
+                return 0.0
+            return max((snap.pipe_states[p].utilization_pct for p in pipe_ids if p in snap.pipe_states), default=0.0)
+
+        def _pipe_qu(snap: Optional[TimeStepSnapshot], pid: str) -> Tuple[float, float]:
+            if snap is None or pid not in snap.pipe_states:
+                return (0.0, 0.0)
+            ps = snap.pipe_states[pid]
+            return (ps.flow_m3s, ps.utilization_pct)
+
+        def _sum_storage(snap: Optional[TimeStepSnapshot], node_ids: Tuple[str, ...]) -> float:
+            if snap is None:
+                return 0.0
+            return sum((snap.node_states[n].stored_volume_m3 for n in node_ids if n in snap.node_states), 0.0)
+
+        cfg = self.result.config if self.result else None
+        sc_id = cfg.scenario_id if cfg else self._selected_scenario_obj().scenario_id
+        intensity = cfg.intensity_mm_h if cfg else self._selected_scenario_obj().intensity_mm_h
+
         src_ids = g.source_ids()
         src_pipes = [e.pipe_id for s in src_ids for e in g.outgoing_pipes(s)]
-        idx1, s1 = _snap_for_min(5.0)
-        q_in1 = s1.total_source_inflow_m3s if s1 else 0.0
         t_vals = [e.transit_time_s / 60.0 for e in g.pipes()]
         t_min_r = min(t_vals) if t_vals else 0.81
         t_max_r = max(t_vals) if t_vals else 18.05
-
-        # Parada 2 (Min 25): estrangulamiento inicial en tuberías de 8" (P31, P39, P43)
-        p2_pipes = [pid for pid in ("P31", "P39", "P43") if g.has_pipe(pid)]
-        p2_nodes: Set[str] = set()
-        for pid in p2_pipes:
-            e = g.get_pipe(pid)
-            if e:
-                p2_nodes.update((e.from_node, e.to_node))
-        idx2, s2 = _snap_for_min(25.0)
-        u2_max = (
-            max((s2.pipe_states[p].utilization_pct for p in p2_pipes if p in s2.pipe_states), default=0.0)
-            if s2
-            else 0.0
-        )
-        v2_stor = (
-            sum((s2.node_states[n].stored_volume_m3 for n in ("17", "19", "20") if n in s2.node_states), 0.0)
-            if s2
-            else 0.0
-        )
-
-        # Parada 3 (Min 40): convergencia crítica en tramo P25 (23 -> J)
-        p3_pipes = ["P25"] if g.has_pipe("P25") else []
-        p3_nodes: Set[str] = set()
-        for pid in p3_pipes:
-            e = g.get_pipe(pid)
-            if e:
-                p3_nodes.update((e.from_node, e.to_node))
-        idx3, s3 = _snap_for_min(40.0)
-        q25 = s3.pipe_states["P25"].flow_m3s if (s3 and "P25" in s3.pipe_states) else 0.0
-        u25 = s3.pipe_states["P25"].utilization_pct if (s3 and "P25" in s3.pipe_states) else 0.0
-
-        # Parada 4 (Min 65): amortiguación y descarga en PTAR Punta Canoa (31, P29, P30)
-        p4_pipes = [pid for pid in ("P29", "P30") if g.has_pipe(pid)]
-        p4_nodes: Set[str] = {"31"}
-        for pid in p4_pipes:
-            e = g.get_pipe(pid)
-            if e:
-                p4_nodes.update((e.from_node, e.to_node))
-        idx4, s4 = _snap_for_min(65.0)
-        q_ptar = s4.total_sink_discharge_m3s if s4 else 0.0
-        u_final = (
-            max((s4.pipe_states[p].utilization_pct for p in p4_pipes if p in s4.pipe_states), default=0.0)
-            if s4
-            else 0.0
-        )
         err4 = self.result.max_mass_balance_error_m3 if self.result else 0.0
 
+        p_head8 = _existing_pipes("P31", "P39", "P43")
+        n_head8 = _endpoints(p_head8)
+        p_25 = _existing_pipes("P25")
+        n_25 = _endpoints(p_25)
+        p_ptar = _existing_pipes("P29", "P30")
+        n_ptar = ({"31"} if g.has_node("31") else set(g.sink_ids())) | _endpoints(p_ptar)
+
+        idx1, s1 = _snap_for_min(5.0)
+        q_in1 = s1.total_source_inflow_m3s if s1 else 0.0
+        stor1 = s1.total_manhole_storage_m3 if s1 else 0.0
+
+        idx2, s2 = _snap_for_min(25.0)
+        u2_max = _max_util(s2, p_head8)
+        v2_stor = _sum_storage(s2, ("17", "19", "20"))
+
+        idx4, s4 = _snap_for_min(65.0)
+        q_ptar4 = s4.total_sink_discharge_m3s if s4 else 0.0
+        u_ptar4 = _max_util(s4, p_ptar)
+        stor4 = s4.total_manhole_storage_m3 if s4 else 0.0
+
+        if sc_id == 1:
+            idx3, s3 = _snap_for_min(40.0)
+            q25, u25 = _pipe_qu(s3, "P25")
+            return [
+                {
+                    "title": "Flujo base sanitario en las 8 fuentes (0 mm/h)",
+                    "target_min": 5.0,
+                    "step_idx": idx1,
+                    "nodes": set(src_ids),
+                    "pipes": set(src_pipes),
+                    "desc": (
+                        "En tiempo seco (0 mm/h), solo ingresa el caudal sanitario base por los 8 nodos "
+                        "fuente (1, 6, 9, 17, 18, 19, 20 y 27) avanzando según el tránsito de Manning."
+                    ),
+                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
+                },
+                {
+                    "title": "Holgura hidráulica en cabeceras de 8\"",
+                    "target_min": 25.0,
+                    "step_idx": idx2,
+                    "nodes": n_head8,
+                    "pipes": set(p_head8),
+                    "desc": (
+                        "Las tuberías iniciales P31, P39 y P43 (8\") operan en banda verde (baja utilización), "
+                        "muy por debajo de Qmax y con almacenamiento nulo en los pozos."
+                    ),
+                    "metrics": f"Util. máx: {u2_max:.2f}%  ·  Represado (17,19,20): {v2_stor:.2f} m³",
+                },
+                {
+                    "title": "Convergencia sin congestión en tramo P25",
+                    "target_min": 40.0,
+                    "step_idx": idx3,
+                    "nodes": n_25,
+                    "pipes": set(p_25),
+                    "desc": (
+                        "Al confluir las subcuencas sobre el pozo 23 hacia J (P25, 12\"), el flujo sanitario "
+                        "mantiene una amplia reserva hidráulica sin cuellos de botella."
+                    ),
+                    "metrics": f"P25: Q = {q25:.5f} m³/s  ·  Utilización = {u25:.2f}%",
+                },
+                {
+                    "title": "Régimen permanente hacia PTAR Punta Canoa",
+                    "target_min": 65.0,
+                    "step_idx": idx4,
+                    "nodes": n_ptar,
+                    "pipes": set(p_ptar),
+                    "desc": (
+                        "Superado el tiempo máximo de recorrido de la red, los colectores de 20\" (P29 y P30) "
+                        "descargan en el Nodo sumidero 31 exactamente el caudal sanitario inyectado."
+                    ),
+                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  P29/P30: {u_ptar4:.2f}%  ·  Err = {err4:.1e} m³",
+                },
+            ]
+
+        if sc_id == 2:
+            idx3, s3 = _snap_for_min(50.0)
+            q25, u25 = _pipe_qu(s3, "P25")
+            return [
+                {
+                    "title": "Escorrentía ligera (10 mm/h) en las 8 fuentes",
+                    "target_min": 5.0,
+                    "step_idx": idx1,
+                    "nodes": set(src_ids),
+                    "pipes": set(src_pipes),
+                    "desc": (
+                        "La lluvia ligera activa el Método Racional (C=0.75, A=388 ha) más el caudal "
+                        "sanitario en las 8 cabeceras, elevando el caudal sin generar desbordes iniciales."
+                    ),
+                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Almacenado red: {stor1:.2f} m³",
+                },
+                {
+                    "title": "Cabeceras de 8\" en banda crítica (<100%)",
+                    "target_min": 25.0,
+                    "step_idx": idx2,
+                    "nodes": n_head8,
+                    "pipes": set(p_head8),
+                    "desc": (
+                        "P31, P39 y P43 (8\") alcanzan utilización cercana a su capacidad máxima (≥75%) "
+                        "sin superar el 100%, por lo que no hay represamiento en los pozos 17, 19 y 20."
+                    ),
+                    "metrics": f"Util. máx: {u2_max:.2f}%  ·  Represado (17,19,20): {v2_stor:.2f} m³",
+                },
+                {
+                    "title": "Máxima exigencia sin sobrecarga en P25",
+                    "target_min": 50.0,
+                    "step_idx": idx3,
+                    "nodes": n_25,
+                    "pipes": set(p_25),
+                    "desc": (
+                        "La suma de caudales lleva al colector P25 (23 → J, 12\") al pico de mayor demanda "
+                        "de toda la red en lluvia ligera, rozando el 100% sin exceder Qmax."
+                    ),
+                    "metrics": f"P25: Q = {q25:.5f} m³/s  ·  Utilización = {u25:.2f}%",
+                },
+                {
+                    "title": "Recesión limpia hacia PTAR Punta Canoa",
+                    "target_min": 65.0,
+                    "step_idx": idx4,
+                    "nodes": n_ptar,
+                    "pipes": set(p_ptar),
+                    "desc": (
+                        "Al terminar la lluvia sin volumen retenido aguas arriba, los troncales P29 y P30 "
+                        "(20\") conducen limpiamente la onda descendente hasta el Nodo 31."
+                    ),
+                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  P29/P30: {u_ptar4:.2f}%  ·  Err = {err4:.1e} m³",
+                },
+            ]
+
+        if sc_id == 4:
+            p2_pipes = _existing_pipes("P31", "P39", "P43", "P1", "P2")
+            n2_nodes = _endpoints(p2_pipes)
+            u_p12 = _max_util(s2, _existing_pipes("P1", "P2"))
+            p3_pipes = _existing_pipes("P23", "P25", "P28")
+            n3_nodes = _endpoints(p3_pipes)
+            idx3, s3 = _snap_for_min(40.0)
+            _, u25 = _pipe_qu(s3, "P25")
+            _, u23 = _pipe_qu(s3, "P23")
+            _, u28 = _pipe_qu(s3, "P28")
+            p4_pipes = _existing_pipes("P29", "P30", "P3")
+            n4_nodes = n_ptar | _endpoints(p4_pipes)
+            return [
+                {
+                    "title": "Sobrecarga inmediata en las 8 fuentes (60 mm/h)",
+                    "target_min": 5.0,
+                    "step_idx": idx1,
+                    "nodes": set(src_ids),
+                    "pipes": set(src_pipes),
+                    "desc": (
+                        "Con 60 mm/h, la escorrentía pluvial duplica el caudal de lluvia moderada y "
+                        "satura desde los primeros minutos los colectores de cabecera."
+                    ),
+                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Almacenado red: {stor1:.1f} m³",
+                },
+                {
+                    "title": "Colapso en 8\" y saturación de 10\" (P1, P2)",
+                    "target_min": 25.0,
+                    "step_idx": idx2,
+                    "nodes": n2_nodes,
+                    "pipes": set(p2_pipes),
+                    "desc": (
+                        "Las cabeceras de 8\" superan 5× su capacidad y los colectores de 10\" (P1, P2) "
+                        "también desbordan, acumulando fuerte almacenamiento en los pozos aguas arriba."
+                    ),
+                    "metrics": f"8\": {u2_max:.1f}%  ·  P1/P2: {u_p12:.1f}%  ·  Represado: {v2_stor:.1f} m³",
+                },
+                {
+                    "title": "Cuello en cascada: P23, P25 y P28 (16\")",
+                    "target_min": 40.0,
+                    "step_idx": idx3,
+                    "nodes": n3_nodes,
+                    "pipes": set(p3_pipes),
+                    "desc": (
+                        "La congestión avanza sobre los colectores de 16\" (P23 y P28) mientras el tramo "
+                        "P25 (12\") concentra la mayor restricción hidráulica del eje central."
+                    ),
+                    "metrics": f"P25: {u25:.1f}%  ·  P23: {u23:.1f}%  ·  P28: {u28:.1f}%",
+                },
+                {
+                    "title": "Tope de entrega en PTAR 31 y retención prolongada",
+                    "target_min": 65.0,
+                    "step_idx": idx4,
+                    "nodes": n4_nodes,
+                    "pipes": set(p4_pipes),
+                    "desc": (
+                        "Tras cesar la tormenta, los pozos mantienen miles de m³ retenidos mientras P3 y "
+                        "los troncales P29/P30 sostienen la descarga tope hacia el Nodo 31."
+                    ),
+                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Almacenado: {stor4:.1f} m³  ·  Err = {err4:.1e} m³",
+                },
+            ]
+
+        if sc_id == 5:
+            p2_pipes = _existing_pipes("P31", "P39", "P43", "P12", "P13")
+            n2_nodes = _endpoints(p2_pipes)
+            _, u_p13 = _pipe_qu(s2, "P13")
+            p3_pipes = _existing_pipes("P23", "P25", "P28", "P3")
+            n3_nodes = _endpoints(p3_pipes)
+            idx3, s3 = _snap_for_min(40.0)
+            _, u25 = _pipe_qu(s3, "P25")
+            _, u_p3 = _pipe_qu(s3, "P3")
+            stor3 = s3.total_manhole_storage_m3 if s3 else 0.0
+            p4_pipes = _existing_pipes("P29", "P30", "P3")
+            n4_nodes = n_ptar | _endpoints(p4_pipes)
+            return [
+                {
+                    "title": "Aporte extremo en las 8 fuentes (100 mm/h)",
+                    "target_min": 5.0,
+                    "step_idx": idx1,
+                    "nodes": set(src_ids),
+                    "pipes": set(src_pipes),
+                    "desc": (
+                        "El evento extremo dispara la escorrentía desde el inicio, saturando incluso "
+                        "colectores de 10\" (P1, P2, P36) y de 14\" (P13) en los primeros minutos."
+                    ),
+                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Almacenado red: {stor1:.1f} m³",
+                },
+                {
+                    "title": "Saturación masiva de cabeceras (8\", 10\" y 14\")",
+                    "target_min": 25.0,
+                    "step_idx": idx2,
+                    "nodes": n2_nodes,
+                    "pipes": set(p2_pipes),
+                    "desc": (
+                        "Los tramos de 8\" superan 8× Qmax y los ramales P12/P13 desde el nodo 9 entran "
+                        "en sobrecarga sostenida, disparando el volumen represado en los pozos."
+                    ),
+                    "metrics": f"8\": {u2_max:.1f}%  ·  P13(14\"): {u_p13:.1f}%  ·  Represado: {v2_stor:.1f} m³",
+                },
+                {
+                    "title": "Laminación crítica en P25, P23, P28 y P3",
+                    "target_min": 40.0,
+                    "step_idx": idx3,
+                    "nodes": n3_nodes,
+                    "pipes": set(p3_pipes),
+                    "desc": (
+                        "Los ejes colectores hacia PTAR 31 operan al límite físico de conducción, "
+                        "reteniendo gran parte de la tormenta como almacenamiento temporal en pozos."
+                    ),
+                    "metrics": f"P25: {u25:.1f}%  ·  P3: {u_p3:.1f}%  ·  Almacenado: {stor3:.1f} m³",
+                },
+                {
+                    "title": "Descarga limitada en PTAR 31 y drenaje diferido",
+                    "target_min": 65.0,
+                    "step_idx": idx4,
+                    "nodes": n4_nodes,
+                    "pipes": set(p4_pipes),
+                    "desc": (
+                        "Finalizada la lluvia, la PTAR 31 permanece en su caudal tope mientras la red "
+                        "conserva un volumen masivo represado que requiere evacuación diferida."
+                    ),
+                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Almacenado: {stor4:.1f} m³  ·  Err = {err4:.1e} m³",
+                },
+            ]
+
+        if sc_id == 3:
+            idx3, s3 = _snap_for_min(40.0)
+            q25, u25 = _pipe_qu(s3, "P25")
+            return [
+                {
+                    "title": "Inyección en las 8 alcantarillas fuente",
+                    "target_min": 5.0,
+                    "step_idx": idx1,
+                    "nodes": set(src_ids),
+                    "pipes": set(src_pipes),
+                    "desc": (
+                        "Los 8 nodos fuente (1, 6, 9, 17, 18, 19, 20 y 27) inyectan el caudal del Método "
+                        "Racional (C=0.75, A=388 ha) más el caudal sanitario base respetando el tránsito de Manning."
+                    ),
+                    "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
+                },
+                {
+                    "title": "Estrangulamiento inicial en tuberías de 8\"",
+                    "target_min": 25.0,
+                    "step_idx": idx2,
+                    "nodes": n_head8,
+                    "pipes": set(p_head8),
+                    "desc": (
+                        "Los tramos iniciales P31, P39 y P43 (8\") saturan su capacidad Qmax y activan "
+                        "almacenamiento temporal en los pozos 17, 19 y 20 sin pérdida de masa."
+                    ),
+                    "metrics": f"Util. máx: {u2_max:.2f}%  ·  Represado (17,19,20): {v2_stor:.2f} m³",
+                },
+                {
+                    "title": "Convergencia crítica en el tramo P25",
+                    "target_min": 40.0,
+                    "step_idx": idx3,
+                    "nodes": n_25,
+                    "pipes": set(p_25),
+                    "desc": (
+                        "La unión de varias subcuencas sobre el pozo 23 hacia J (P25) dispara el caudal "
+                        "muy por encima de la capacidad hidráulica del colector."
+                    ),
+                    "metrics": f"P25: Q = {q25:.5f} m³/s  ·  Utilización = {u25:.2f}%",
+                },
+                {
+                    "title": "Amortiguación y descarga en PTAR Punta Canoa",
+                    "target_min": 65.0,
+                    "step_idx": idx4,
+                    "nodes": n_ptar,
+                    "pipes": set(p_ptar),
+                    "desc": (
+                        "Los colectores troncales de 20\" (P29 y P30) reciben la onda laminada aguas arriba "
+                        "y estabilizan la entrega al Nodo sumidero 31."
+                    ),
+                    "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  P29/P30: {u_ptar4:.2f}%  ·  Err = {err4:.1e} m³",
+                },
+            ]
+
+        # Respaldo dinámico para escenarios personalizados de otros datasets
+        ranked = sorted(
+            (self.result.peak_pipe_utilization.items() if self.result else []),
+            key=lambda kv: -kv[1],
+        )
+        top_head = [pid for pid, _ in ranked[:3]] or p_head8
+        top_mid = [pid for pid, _ in ranked[3:6]] or p_25 or top_head
+        idx3, s3 = _snap_for_min(40.0)
         return [
             {
-                "title": "Inyección en las 8 alcantarillas fuente",
+                "title": f"Inyección inicial en fuentes ({intensity:.0f} mm/h)",
                 "target_min": 5.0,
                 "step_idx": idx1,
                 "nodes": set(src_ids),
                 "pipes": set(src_pipes),
-                "desc": (
-                    "Los 8 nodos fuente (1, 6, 9, 17, 18, 19, 20 y 27) inyectan el caudal del Método "
-                    "Racional (C=0.75, A=388 ha) más el caudal sanitario base respetando el tránsito de Manning."
-                ),
-                "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
+                "desc": "Ingreso inicial por las fuentes activas de la red según el escenario seleccionado.",
+                "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Almacenado: {stor1:.2f} m³",
             },
             {
-                "title": "Estrangulamiento inicial en tuberías de 8\"",
+                "title": "Tramos de mayor exigencia temprana",
                 "target_min": 25.0,
                 "step_idx": idx2,
-                "nodes": p2_nodes,
-                "pipes": set(p2_pipes),
-                "desc": (
-                    "Los tramos iniciales P31, P39 y P43 (8\") saturan su capacidad Qmax y activan "
-                    "almacenamiento temporal en los pozos 17, 19 y 20 sin pérdida de masa."
-                ),
-                "metrics": f"Util. máx: {u2_max:.2f}%  ·  Represado (17,19,20): {v2_stor:.2f} m³",
+                "nodes": _endpoints(top_head),
+                "pipes": set(top_head),
+                "desc": f"Evaluación de los tramos más exigidos ({', '.join(top_head)}) durante el desarrollo de la onda.",
+                "metrics": f"Util. máx: {_max_util(s2, top_head):.2f}%  ·  Almacenado: {s2.total_manhole_storage_m3 if s2 else 0.0:.2f} m³",
             },
             {
-                "title": "Convergencia crítica en el tramo P25",
+                "title": "Propagación y convergencia intermedia",
                 "target_min": 40.0,
                 "step_idx": idx3,
-                "nodes": p3_nodes,
-                "pipes": set(p3_pipes),
-                "desc": (
-                    "La unión de varias subcuencas sobre el pozo 23 hacia J (P25) dispara el caudal "
-                    "muy por encima de la capacidad hidráulica del colector."
-                ),
-                "metrics": f"P25: Q = {q25:.5f} m³/s  ·  Utilización = {u25:.2f}%",
+                "nodes": _endpoints(top_mid),
+                "pipes": set(top_mid),
+                "desc": f"Seguimiento de la convergencia hidráulica en {', '.join(top_mid)} cerca del pico de tormenta.",
+                "metrics": f"Util. máx: {_max_util(s3, top_mid):.2f}%  ·  Almacenado: {s3.total_manhole_storage_m3 if s3 else 0.0:.2f} m³",
             },
             {
-                "title": "Amortiguación y descarga en PTAR Punta Canoa",
+                "title": "Entrega final en sumidero PTAR",
                 "target_min": 65.0,
                 "step_idx": idx4,
-                "nodes": p4_nodes,
-                "pipes": set(p4_pipes),
-                "desc": (
-                    "Los colectores troncales de 20\" (P29 y P30) reciben la onda laminada aguas arriba "
-                    "y estabilizan la entrega al Nodo sumidero 31."
-                ),
-                "metrics": f"PTAR 31 = {q_ptar:.4f} m³/s  ·  P29/P30: {u_final:.2f}%  ·  Err = {err4:.1e} m³",
+                "nodes": n_ptar,
+                "pipes": set(p_ptar),
+                "desc": "Estabilización y descarga final hacia el sumidero de la red con auditoría de masa.",
+                "metrics": f"PTAR = {q_ptar4:.4f} m³/s  ·  Almacenado: {stor4:.2f} m³  ·  Err = {err4:.1e} m³",
             },
         ]
 
@@ -3891,6 +4388,8 @@ class BicentenarioSewerApp(tk.Tk):
             self._go_tour_stop(0, animate_cam=True)
 
     def _go_tour_stop(self, stop_idx: int, animate_cam: bool = True) -> None:
+        if self.result is None or not self.result.snapshots:
+            return
         stops = self._build_tour_stops()
         if not stops:
             return
@@ -3909,8 +4408,16 @@ class BicentenarioSewerApp(tk.Tk):
         focus_pipes: Set[str] = set(stop["pipes"])  # type: ignore[arg-type]
         self.network_canvas.set_tour_focus(focus_nodes, focus_pipes)
 
-        t_real = self.result.snapshots[self.current_step].time_min if self.result else float(stop["target_min"])  # type: ignore[arg-type]
-        self._lbl_tour_hdr.configure(text=f"HALLAZGO {stop_idx + 1} / {len(stops)} · MIN {t_real:.0f}")
+        cfg = self.result.config
+        scen_es = theme.translate_scenario_name(cfg.scenario_name, compact=False)
+        scen_short = theme.translate_scenario_name(cfg.scenario_name, compact=True)
+        t_real = self.result.snapshots[self.current_step].time_min
+        self._lbl_tour_hdr.configure(
+            text=f"ESC. {cfg.scenario_id} ({scen_short.upper()}) · HALLAZGO {stop_idx + 1}/{len(stops)} · MIN {t_real:.0f}"
+        )
+        self._lbl_tour_scenario.configure(
+            text=f"Escenario {cfg.scenario_id}: {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+        )
         self._lbl_tour_title.configure(text=str(stop["title"]))
         self._lbl_tour_desc.configure(text=str(stop["desc"]))
         self._lbl_tour_metrics.configure(text=str(stop["metrics"]))
@@ -3929,21 +4436,25 @@ class BicentenarioSewerApp(tk.Tk):
                 focus_pipes,
                 left_reserve_px=(card_w + 20) if cw >= 520 else 0,
             )
-        self.status_var.set(f"Guía de Sustentación · Parada {stop_idx + 1}/{len(stops)}: {stop['title']}")
+        self.status_var.set(
+            f"Guía Esc. {cfg.scenario_id} ({scen_es}) · Parada {stop_idx + 1}/{len(stops)}: {stop['title']}"
+        )
 
-    def _close_guided_tour(self) -> None:
+    def _close_guided_tour(self, reset_view: bool = True) -> None:
         if not self._tour_active:
             return
         self._tour_active = False
         self._tour_card.place_forget()
         self._set_btn_variant(self.btn_guided_tour, "dark_secondary")
         self.network_canvas.set_tour_focus(None, None)
-        self.network_canvas.animate_reset_view()
+        if reset_view:
+            self.network_canvas.animate_reset_view()
         self.status_var.set("Guía de Sustentación cerrada · Encuadre general restaurado.")
 
     def _on_close(self) -> None:
         self._player_pause()
         self._stop_traversal_anim(clear_canvas=False)
+        self._bind_left_mousewheel(False)
         if hasattr(self, "network_canvas"):
             self.network_canvas._stop_camera_animation()
         if self._param_rerun_after is not None:
