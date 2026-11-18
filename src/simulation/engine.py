@@ -11,10 +11,12 @@ from src.data_structures import DirectedGraph, HashTable, LinkedList, PriorityQu
 from src.io.data_loader import DrainageBasin
 from .models import (
     NodeStepState,
+    PipeIntervention,
     PipeStepState,
     SimulationConfig,
     SimulationResult,
     TimeStepSnapshot,
+    resolve_pipe_hydraulics,
 )
 
 
@@ -96,6 +98,12 @@ class SewerSimulationEngine:
         source_set = set(self.graph.source_ids())
         sink_set = set(self.graph.sink_ids())
 
+        interventions: Dict[str, PipeIntervention] = config.interventions or {}
+        eff_params = {
+            p.pipe_id: resolve_pipe_hydraulics(p, interventions.get(p.pipe_id))
+            for p in self.graph.pipes()
+        }
+
         # Registro inicial t = 0
         init_pipe_states = {
             p.pipe_id: PipeStepState(
@@ -106,6 +114,8 @@ class SewerSimulationEngine:
                 utilization_pct=0.0,
                 category=classify_utilization(0.0),
                 excess_flow_m3s=0.0,
+                effective_q_max_m3s=eff_params[p.pipe_id][0],
+                effective_velocity_ms=eff_params[p.pipe_id][1],
             )
             for p in self.graph.pipes()
         }
@@ -190,9 +200,11 @@ class SewerSimulationEngine:
                 if config.split_rule == "equal":
                     weights = [1.0 / len(outgoing)] * len(outgoing)
                 else:
-                    total_cap = sum(p.q_max_m3s for p in outgoing)
+                    total_cap = sum(eff_params[p.pipe_id][0] for p in outgoing)
                     weights = [
-                        (p.q_max_m3s / total_cap) if total_cap > 0 else (1.0 / len(outgoing))
+                        (eff_params[p.pipe_id][0] / total_cap)
+                        if total_cap > 0
+                        else (1.0 / len(outgoing))
                         for p in outgoing
                     ]
 
@@ -200,15 +212,16 @@ class SewerSimulationEngine:
                 total_sent_u = 0.0
 
                 for edge, w in zip(outgoing, weights):
+                    eff_q_max, eff_vel_ms, eff_transit_s, _eff_diam = eff_params[edge.pipe_id]
                     demand_vol = avail_vol * w
-                    cap_vol = edge.q_max_m3s * dt_s
+                    cap_vol = eff_q_max * dt_s
                     sent_vol = min(demand_vol, cap_vol)
                     excess_vol = max(0.0, demand_vol - sent_vol)
                     remaining_stored += excess_vol
                     total_sent_u += sent_vol
 
                     if sent_vol > 0.0:
-                        t_transit_s = edge.transit_time_s
+                        t_transit_s = eff_transit_s
                         arrival_s = t_prev_s + t_transit_s
                         if arrival_s <= t_curr_s + 1e-9:
                             # Llega dentro del mismo intervalo discreto
@@ -233,18 +246,27 @@ class SewerSimulationEngine:
                     q_conveyed = sent_vol / dt_s
                     vol_in_pipe = pipe_transit_vol[edge.pipe_id]
                     q_in_transit = (
-                        vol_in_pipe / edge.transit_time_s
-                        if edge.transit_time_s > dt_s
+                        vol_in_pipe / eff_transit_s
+                        if eff_transit_s > dt_s
                         else q_conveyed
                     )
-                    if excess_vol > 1e-9:
-                        # Si hay sobrecarga retenida en el pozo, la tubería excede 100% mientras drena
-                        q_effective = max(q_arrival_share, edge.q_max_m3s * 1.05, q_in_transit)
+                    if eff_q_max <= 1e-12:
+                        if excess_vol > 1e-9 or q_arrival_share > 1e-9:
+                            q_effective = max(q_arrival_share, demand_vol / dt_s)
+                            base_ref = max(edge.q_max_m3s, 1e-6)
+                            util_pct = max(105.0, (q_effective / base_ref) * 100.0)
+                        else:
+                            q_effective = 0.0
+                            util_pct = 0.0
                     else:
-                        q_effective = max(q_arrival_share, q_conveyed, q_in_transit)
-                    util_pct = (q_effective / edge.q_max_m3s) * 100.0 if edge.q_max_m3s > 0 else 0.0
+                        if excess_vol > 1e-9:
+                            # Si hay sobrecarga retenida en el pozo, la tubería excede 100% mientras drena
+                            q_effective = max(q_arrival_share, eff_q_max * 1.05, q_in_transit)
+                        else:
+                            q_effective = max(q_arrival_share, q_conveyed, q_in_transit)
+                        util_pct = (q_effective / eff_q_max) * 100.0
                     cat = classify_utilization(util_pct)
-                    excess_q = max(0.0, q_effective - edge.q_max_m3s)
+                    excess_q = max(0.0, q_effective - eff_q_max)
 
                     pipe_states[edge.pipe_id] = PipeStepState(
                         pipe_id=edge.pipe_id,
@@ -254,6 +276,8 @@ class SewerSimulationEngine:
                         utilization_pct=util_pct,
                         category=cat,
                         excess_flow_m3s=excess_q,
+                        effective_q_max_m3s=eff_q_max,
+                        effective_velocity_ms=eff_vel_ms,
                     )
 
                     if util_pct > peak_util[edge.pipe_id]:

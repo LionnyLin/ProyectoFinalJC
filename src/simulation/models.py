@@ -1,8 +1,64 @@
 """Modelos de datos para configuración, estado temporal y resultados de simulación."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+import math
+from typing import Dict, List, Optional, Tuple
 from src.algorithms.analysis import UtilizationCategory
+from src.data_structures import PipeEdge
+
+
+@dataclass(frozen=True)
+class PipeIntervention:
+    """Intervención operativa temporal sobre una tubería sin mutar el grafo base."""
+
+    pipe_id: str
+    obstruction_pct: float = 0.0
+    diameter_in_override: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.obstruction_pct) or not (0.0 <= self.obstruction_pct <= 100.0):
+            raise ValueError(
+                f"El porcentaje de obstrucción debe estar entre 0 y 100 (recibido: {self.obstruction_pct})."
+            )
+        if self.diameter_in_override is not None:
+            if not math.isfinite(self.diameter_in_override) or self.diameter_in_override <= 0.0:
+                raise ValueError(
+                    f"El diámetro intervenido debe ser mayor a 0 pulgadas (recibido: {self.diameter_in_override})."
+                )
+
+    @property
+    def is_closed(self) -> bool:
+        return self.obstruction_pct >= 100.0 - 1e-6
+
+    @property
+    def has_obstruction(self) -> bool:
+        return self.obstruction_pct > 1e-6
+
+
+def resolve_pipe_hydraulics(
+    edge: PipeEdge, intervention: Optional[PipeIntervention]
+) -> Tuple[float, float, float, float]:
+    """Calcula `(q_max_m3s, velocity_ms, transit_time_s, diameter_in)` efectivos para un tramo."""
+    if intervention is None:
+        return (
+            edge.q_max_m3s,
+            edge.reference_velocity_ms,
+            edge.transit_time_s,
+            edge.diameter_in,
+        )
+
+    eff_diam_in = (
+        intervention.diameter_in_override
+        if intervention.diameter_in_override is not None
+        else edge.diameter_in
+    )
+    scale_d = (eff_diam_in / edge.diameter_in) if edge.diameter_in > 0.0 else 1.0
+    q_diam = edge.q_max_m3s * (scale_d ** (8.0 / 3.0))
+    v_diam = edge.reference_velocity_ms * (scale_d ** (2.0 / 3.0))
+    open_fraction = max(0.0, 1.0 - intervention.obstruction_pct / 100.0)
+    eff_q_max = q_diam * open_fraction
+    eff_transit_s = (edge.length_m / v_diam) if v_diam > 0.0 else 0.0
+    return eff_q_max, v_diam, eff_transit_s, eff_diam_in
 
 
 @dataclass
@@ -19,6 +75,7 @@ class SimulationConfig:
     dry_weather_flow_per_source_m3s: float = 0.003  # Caudal sanitario base por fuente (m³/s)
     split_rule: str = "proportional"  # "proportional" (por Qmax) o "equal" (uniforme)
     hyetograph: str = "uniform"  # "uniform" (constante) o "triangular" (pico al 50%)
+    interventions: Dict[str, PipeIntervention] = field(default_factory=dict)
 
 
 @dataclass
@@ -32,6 +89,8 @@ class PipeStepState:
     utilization_pct: float   # O_i(t) = (Q_i(t) / Qmax_i) * 100
     category: UtilizationCategory
     excess_flow_m3s: float   # Exceso por encima de Qmax (m³/s)
+    effective_q_max_m3s: Optional[float] = None
+    effective_velocity_ms: Optional[float] = None
 
 
 @dataclass

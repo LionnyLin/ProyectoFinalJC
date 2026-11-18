@@ -46,6 +46,7 @@ def compare_all_scenarios(
             dry_weather_flow_per_source_m3s=base_config.dry_weather_flow_per_source_m3s,
             split_rule=base_config.split_rule,
             hyetograph=base_config.hyetograph,
+            interventions=dict(base_config.interventions),
         )
         res = engine.run(cfg)
         most_crit = max(

@@ -6,6 +6,7 @@ import unittest
 
 from src.io.data_loader import load_dataset
 from src.simulation import (
+    PipeIntervention,
     SewerSimulationEngine,
     SimulationConfig,
     compare_all_scenarios,
@@ -105,6 +106,40 @@ class TestSimulation(unittest.TestCase):
             out = generate_markdown_report(self.dataset, summaries[2].result, summaries, report_path)
             self.assertTrue(os.path.isfile(out))
             self.assertTrue(os.path.isfile(os.path.join(tmpdir, "reporte_tuberias.csv")))
+
+    def test_live_pipe_interventions_and_validation(self) -> None:
+        with self.assertRaises(ValueError):
+            PipeIntervention("P3", obstruction_pct=120.0)
+        with self.assertRaises(ValueError):
+            PipeIntervention("P3", diameter_in_override=0.0)
+
+        engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
+        base_cfg = SimulationConfig(
+            scenario_id=3,
+            scenario_name="Moderate rain",
+            intensity_mm_h=30.0,
+            duration_min=60.0,
+            storm_duration_min=45.0,
+        )
+        base_res = engine.run(base_cfg)
+
+        # Cierre al 100% de P3 (C -> 31) y ampliación de P31 (8" -> 16")
+        int_cfg = SimulationConfig(
+            scenario_id=3,
+            scenario_name="Moderate rain",
+            intensity_mm_h=30.0,
+            duration_min=60.0,
+            storm_duration_min=45.0,
+            interventions={
+                "P3": PipeIntervention("P3", obstruction_pct=100.0),
+                "P31": PipeIntervention("P31", obstruction_pct=0.0, diameter_in_override=16.0),
+            },
+        )
+        int_res = engine.run(int_cfg)
+        self.assertLess(int_res.max_mass_balance_error_m3, 1e-6)
+        self.assertGreater(int_res.max_manhole_storage_m3["C"], 0.0)
+        self.assertLess(int_res.peak_pipe_utilization["P31"], base_res.peak_pipe_utilization["P31"])
+        self.assertAlmostEqual(self.dataset.graph.get_pipe("P31").diameter_in, 8.0, places=6)
 
 
 if __name__ == "__main__":

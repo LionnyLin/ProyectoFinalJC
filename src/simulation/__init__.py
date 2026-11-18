@@ -2,10 +2,12 @@
 
 from .models import (
     SimulationConfig,
+    PipeIntervention,
     PipeStepState,
     NodeStepState,
     TimeStepSnapshot,
     SimulationResult,
+    resolve_pipe_hydraulics,
 )
 from .engine import SewerSimulationEngine
 from .comparison import ScenarioSummary, compare_all_scenarios
@@ -14,10 +16,12 @@ from .docx_exporter import generate_docx_report, generate_technical_document_doc
 
 __all__ = [
     "SimulationConfig",
+    "PipeIntervention",
     "PipeStepState",
     "NodeStepState",
     "TimeStepSnapshot",
     "SimulationResult",
+    "resolve_pipe_hydraulics",
     "SewerSimulationEngine",
     "ScenarioSummary",
     "compare_all_scenarios",
