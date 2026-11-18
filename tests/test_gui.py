@@ -5,6 +5,7 @@ import tkinter as tk
 import unittest
 
 from src.gui import BicentenarioSewerApp
+from src.gui import theme
 
 
 def _pump(app: tk.Tk, ms: int = 120) -> None:
@@ -95,6 +96,23 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         _pump(self.app, 200)
         self.assertEqual(len(self.app.comparisons), 5)
         self.assertEqual(len(self.app.tree_comp.get_children()), 5)
+
+    def test_palette_tokens_and_spanish_presentation(self) -> None:
+        self.assertEqual(theme.SHELL_BG.upper(), "#4A4A4A")
+        self.assertEqual(theme.DOCK_BG.upper(), "#CBCBCB")
+        self.assertEqual(theme.CANVAS_BG.upper(), "#FFFFE3")
+        self.assertEqual(theme.ACCENT_PRIMARY.upper(), "#6D8196")
+        self.assertEqual(self.app.topbar.cget("bg").upper(), "#4A4A4A")
+        self.assertEqual(self.app.left_panel.cget("bg").upper(), "#CBCBCB")
+        self.assertEqual(self.app.network_canvas.cget("bg").upper(), "#FFFFE3")
+
+        # Escenarios y selectores en español sin alterar valores internos del motor
+        self.assertIn("Lluvia moderada", self.app.var_scenario.get())
+        self.app.var_split_rule_es.set("Equitativa")
+        self.app.var_hyetograph_es.set("Triangular")
+        cfg = self.app._build_sim_config()
+        self.assertEqual(cfg.split_rule, "equal")
+        self.assertEqual(cfg.hyetograph, "triangular")
 
 
 if __name__ == "__main__":

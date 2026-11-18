@@ -940,7 +940,7 @@ class BicentenarioSewerApp(tk.Tk):
             textvariable=self.var_split_rule_es,
             values=list(theme.SPLIT_RULE_TO_ES.values()),
             state="readonly",
-            width=16,
+            width=14,
             style="Light.TCombobox",
         ).pack(side=tk.RIGHT)
 
@@ -958,7 +958,7 @@ class BicentenarioSewerApp(tk.Tk):
             textvariable=self.var_hyetograph_es,
             values=list(theme.HYETOGRAPH_TO_ES.values()),
             state="readonly",
-            width=16,
+            width=14,
             style="Light.TCombobox",
         ).pack(side=tk.RIGHT)
 
@@ -1130,20 +1130,6 @@ class BicentenarioSewerApp(tk.Tk):
         row_top = tk.Frame(kpi_header, bg=theme.PAPER_BG)
         row_top.pack(fill=tk.X)
 
-        clock_pill = tk.Frame(row_top, bg=theme.SHELL_BG)
-        clock_pill.pack(side=tk.LEFT, padx=8, pady=6)
-        self.lbl_clock = tk.Label(
-            clock_pill,
-            text="t = 0.0 min  ·  Escenario: -",
-            bg=theme.SHELL_BG,
-            fg=theme.SHELL_TEXT,
-            font=(self.mono_font, 9, "bold"),
-            anchor="w",
-            padx=10,
-            pady=3,
-        )
-        self.lbl_clock.pack(side=tk.LEFT)
-
         view_opts = tk.Frame(row_top, bg=theme.PAPER_BG)
         view_opts.pack(side=tk.RIGHT, padx=8)
         for label, var in [("% Util.", self.var_show_util_labels), ("IDs", self.var_show_pipe_labels)]:
@@ -1159,7 +1145,21 @@ class BicentenarioSewerApp(tk.Tk):
                 activeforeground=theme.ACCENT_TEXT_ON_LIGHT,
                 font=(self.ui_font, 8, "bold"),
                 cursor="hand2",
-            ).pack(side=tk.RIGHT, padx=(6, 0))
+            ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        clock_pill = tk.Frame(row_top, bg=theme.SHELL_BG)
+        clock_pill.pack(side=tk.LEFT, padx=8, pady=6)
+        self.lbl_clock = tk.Label(
+            clock_pill,
+            text="t = 0.0 min  ·  Escenario: -",
+            bg=theme.SHELL_BG,
+            fg=theme.SHELL_TEXT,
+            font=(self.mono_font, 9, "bold"),
+            anchor="w",
+            padx=9,
+            pady=3,
+        )
+        self.lbl_clock.pack(side=tk.LEFT)
 
         tk.Frame(kpi_header, bg=theme.DOCK_BORDER, height=1).pack(fill=tk.X)
 
@@ -1359,6 +1359,7 @@ class BicentenarioSewerApp(tk.Tk):
                     )
             self._update_play_button_label()
             self._update_mass_audit_label()
+            self._update_clock_label()
 
     def _update_play_button_label(self) -> None:
         icon = self._icons["pause_on_accent"] if self.is_playing else self._icons["play_on_accent"]
@@ -1497,6 +1498,7 @@ class BicentenarioSewerApp(tk.Tk):
         crit_table_wrap.pack(fill=tk.BOTH, expand=True)
 
         cols = ("rank", "pipe", "tramo", "q_curr", "q_max", "util", "estado")
+        self._crit_tree_compact: Optional[bool] = None
         self.tree_critical = ttk.Treeview(
             crit_table_wrap, columns=cols, show="headings", selectmode="browse"
         )
@@ -1596,15 +1598,54 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _resize_critical_columns(self, event: tk.Event) -> None:
         w = max(220, event.width - 4)
-        weights = [
-            ("rank", 0.07, 26),
-            ("pipe", 0.11, 40),
-            ("tramo", 0.15, 52),
-            ("q_curr", 0.17, 56),
-            ("q_max", 0.16, 54),
-            ("util", 0.13, 46),
-            ("estado", 0.21, 70),
-        ]
+        compact = w < 365
+        if compact != self._crit_tree_compact:
+            self._crit_tree_compact = compact
+            if compact:
+                headers = [
+                    ("rank", "#"),
+                    ("pipe", "Tub."),
+                    ("tramo", "Tramo"),
+                    ("q_curr", "Q"),
+                    ("q_max", "Qmax"),
+                    ("util", "%"),
+                    ("estado", "Estado"),
+                ]
+            else:
+                headers = [
+                    ("rank", "#"),
+                    ("pipe", "Tub."),
+                    ("tramo", "Tramo"),
+                    ("q_curr", "Q (m³/s)"),
+                    ("q_max", "Qmax"),
+                    ("util", "% Util"),
+                    ("estado", "Estado"),
+                ]
+            for cid, htext in headers:
+                self.tree_critical.heading(cid, text=htext)
+            if self.result is not None:
+                self._refresh_critical_table()
+
+        if compact:
+            weights = [
+                ("rank", 0.07, 22),
+                ("pipe", 0.11, 34),
+                ("tramo", 0.16, 48),
+                ("q_curr", 0.15, 45),
+                ("q_max", 0.15, 45),
+                ("util", 0.17, 48),
+                ("estado", 0.19, 54),
+            ]
+        else:
+            weights = [
+                ("rank", 0.07, 26),
+                ("pipe", 0.11, 40),
+                ("tramo", 0.15, 52),
+                ("q_curr", 0.17, 56),
+                ("q_max", 0.16, 54),
+                ("util", 0.13, 46),
+                ("estado", 0.21, 70),
+            ]
         for cid, ratio, min_w in weights:
             self.tree_critical.column(cid, width=max(min_w, int(w * ratio)))
 
@@ -1909,14 +1950,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._updating_slider = False
 
         self.network_canvas.set_snapshot(snap)
-        cfg = self.result.config
-        scen_es = theme.translate_scenario_name(cfg.scenario_name)
-        self.lbl_clock.configure(
-            text=(
-                f"t = {snap.time_min:.1f} / {cfg.duration_min:.0f} min  ·  "
-                f"{scen_es} ({snap.rain_intensity_mm_h:.0f} mm/h)"
-            )
-        )
+        self._update_clock_label(snap)
 
         max_u = max((ps.utilization_pct for ps in snap.pipe_states.values()), default=0.0)
         tier_idx = 0 if max_u <= 25 else (1 if max_u <= 50 else (2 if max_u <= 75 else (3 if max_u <= 100 else 4)))
@@ -1940,6 +1974,27 @@ class BicentenarioSewerApp(tk.Tk):
         self._refresh_critical_table()
         self._refresh_inspector()
         self.temporal_charts.update_plots(self.result, self._selected_pipe_id, snap.time_min)
+
+    def _update_clock_label(self, snap: Optional[TimeStepSnapshot] = None) -> None:
+        if self.result is None or not self.result.snapshots:
+            return
+        if snap is None:
+            snap = self.result.snapshots[self.current_step]
+        cfg = self.result.config
+        scen_es = theme.translate_scenario_name(
+            cfg.scenario_name, compact=bool(self._player_compact)
+        )
+        if self._player_compact:
+            self.lbl_clock.configure(
+                text=f"t={snap.time_min:.0f}/{cfg.duration_min:.0f}m · {scen_es} ({snap.rain_intensity_mm_h:.0f} mm/h)"
+            )
+        else:
+            self.lbl_clock.configure(
+                text=(
+                    f"t = {snap.time_min:.1f} / {cfg.duration_min:.0f} min  ·  "
+                    f"{scen_es} ({snap.rain_intensity_mm_h:.0f} mm/h)"
+                )
+            )
 
     def _update_mass_audit_label(self, snap: Optional[TimeStepSnapshot] = None) -> None:
         if snap is None and self.result and self.result.snapshots:
@@ -2166,7 +2221,16 @@ class BicentenarioSewerApp(tk.Tk):
             ranked = rank_critical_pipes(self.dataset.graph, flows, utils, min_utilization_pct=min_u)
             self.lbl_crit_count.configure(text=f"{len(ranked)} reg.")
 
+            short_estado = {
+                "Baja utilización": "Baja",
+                "Utilización moderada": "Moderada",
+                "Utilización alta": "Alta",
+                "Cercana a la capacidad máxima": "Cercana",
+                "Capacidad excedida": "Excedida",
+            }
+            compact = bool(self._crit_tree_compact)
             for idx, rec in enumerate(ranked):
+                estado_txt = short_estado.get(rec.category.label, rec.category.label) if compact else rec.category.label
                 self.tree_critical.insert(
                     "",
                     tk.END,
@@ -2179,7 +2243,7 @@ class BicentenarioSewerApp(tk.Tk):
                         f"{rec.flow_m3s:.4f}",
                         f"{rec.q_max_m3s:.4f}",
                         f"{rec.utilization_pct:.1f}%",
-                        rec.category.label,
+                        estado_txt,
                     ),
                 )
 
