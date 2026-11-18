@@ -1,0 +1,6 @@
+scenario_id,intensity_mm_h,condition
+1,0.0,Dry weather
+2,10.0,Light rain
+3,30.0,Moderate rain
+4,60.0,Heavy rain
+5,100.0,Extreme rain
