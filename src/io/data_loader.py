@@ -188,6 +188,11 @@ def _validate_graph_and_data(
         raise DataLoadError("Debe existir al menos un nodo fuente en Source(s).")
     if not graph.sink_ids():
         raise DataLoadError("Debe existir al menos un nodo sumidero en Sink(s).")
+    overlap = set(graph.source_ids()) & set(graph.sink_ids())
+    if overlap:
+        raise DataLoadError(
+            f"Nodos declarados simultáneamente como fuente y sumidero: {', '.join(sorted(overlap))}."
+        )
     if basin.runoff_coefficient_c <= 0.0 or basin.runoff_coefficient_c > 1.0:
         raise DataLoadError(
             f"Coeficiente de escorrentía C inválido: {basin.runoff_coefficient_c}."
@@ -197,8 +202,25 @@ def _validate_graph_and_data(
     if not scenarios:
         raise DataLoadError("No se encontraron escenarios de precipitación.")
 
+    seen_sids = set()
+    for sc in scenarios:
+        if sc.intensity_mm_h < 0.0:
+            raise DataLoadError(
+                f"El escenario {sc.scenario_id} tiene intensidad negativa ({sc.intensity_mm_h})."
+            )
+        if sc.scenario_id in seen_sids:
+            raise DataLoadError(f"Escenario duplicado con ID {sc.scenario_id}.")
+        seen_sids.add(sc.scenario_id)
+
     for pipe in graph.pipes():
-        if pipe.diameter_m <= 0 or pipe.q_max_m3s <= 0 or pipe.length_m <= 0:
+        if (
+            pipe.diameter_in <= 0
+            or pipe.diameter_m <= 0
+            or pipe.manning_n <= 0
+            or pipe.slope <= 0
+            or pipe.q_max_m3s <= 0
+            or pipe.length_m <= 0
+        ):
             raise DataLoadError(
                 f"La tubería {pipe.pipe_id} tiene parámetros geométricos/hidráulicos <= 0."
             )
@@ -223,101 +245,115 @@ def load_from_excel(
     except Exception as exc:
         raise DataLoadError(f"No se pudo abrir el archivo Excel '{xlsx_path}': {exc}") from exc
 
-    required_sheets = [
-        "Source(s)",
-        "Sink(s)",
-        "Pipe(s)",
-        "Drainage Basin",
-        "Precipitation Scenarios",
-    ]
-    for sheet in required_sheets:
-        if sheet not in wb.sheetnames:
-            raise DataLoadError(f"Falta la hoja obligatoria '{sheet}' en {xlsx_path}.")
+    try:
+        required_sheets = [
+            "Source(s)",
+            "Sink(s)",
+            "Pipe(s)",
+            "Drainage Basin",
+            "Precipitation Scenarios",
+        ]
+        for sheet in required_sheets:
+            if sheet not in wb.sheetnames:
+                raise DataLoadError(f"Falta la hoja obligatoria '{sheet}' en {xlsx_path}.")
 
-    sources: List[str] = []
-    ws_src = wb["Source(s)"]
-    for r in range(2, ws_src.max_row + 1):
-        val = ws_src.cell(r, 1).value
-        if val is not None and str(val).strip():
-            sources.append(str(val).strip())
+        sources: List[str] = []
+        ws_src = wb["Source(s)"]
+        for r in range(2, ws_src.max_row + 1):
+            val = ws_src.cell(r, 1).value
+            if val is not None and str(val).strip():
+                sources.append(str(val).strip())
 
-    sinks: List[str] = []
-    ws_snk = wb["Sink(s)"]
-    for r in range(2, ws_snk.max_row + 1):
-        val = ws_snk.cell(r, 1).value
-        if val is not None and str(val).strip():
-            sinks.append(str(val).strip())
+        sinks: List[str] = []
+        ws_snk = wb["Sink(s)"]
+        for r in range(2, ws_snk.max_row + 1):
+            val = ws_snk.cell(r, 1).value
+            if val is not None and str(val).strip():
+                sinks.append(str(val).strip())
 
-    graph = DirectedGraph()
-    for s in sources:
-        graph.add_node(ManholeNode(node_id=s, node_type="source"))
-    for k in sinks:
-        graph.add_node(ManholeNode(node_id=k, node_type="sink"))
+        overlap_src_snk = set(sources) & set(sinks)
+        if overlap_src_snk:
+            raise DataLoadError(
+                f"Nodos declarados simultáneamente como fuente y sumidero: {', '.join(sorted(overlap_src_snk))}."
+            )
 
-    ws_pipes = wb["Pipe(s)"]
-    for r in range(2, ws_pipes.max_row + 1):
-        from_val = ws_pipes.cell(r, 1).value
-        to_val = ws_pipes.cell(r, 2).value
-        pid_val = ws_pipes.cell(r, 9).value
-        # Saltar filas resumen finales del Excel (ej. conteos o URLs)
-        if pid_val is None or str(pid_val).strip() == "":
-            continue
-        if from_val is None or to_val is None:
-            raise DataLoadError(f"Conexión incompleta en Pipe(s) fila {r}.")
+        graph = DirectedGraph()
+        for s in sources:
+            graph.add_node(ManholeNode(node_id=s, node_type="source"))
+        for k in sinks:
+            graph.add_node(ManholeNode(node_id=k, node_type="sink"))
 
-        ctx = f"Pipe(s) fila {r}"
-        d_m = _parse_float(ws_pipes.cell(r, 4).value, "⌀ (m)", ctx)
-        raw_d_in = ws_pipes.cell(r, 3).value
-        d_in = (
-            _parse_float(raw_d_in, "⌀ (in)", ctx)
-            if raw_d_in is not None and not str(raw_d_in).startswith("=")
-            else round(d_m / 0.0254, 2)
-        )
-        manning_n = _parse_float(ws_pipes.cell(r, 5).value, "n", ctx)
-        slope = _parse_float(ws_pipes.cell(r, 6).value, "S", ctx)
-        raw_q = ws_pipes.cell(r, 7).value
-        if raw_q is not None and not str(raw_q).startswith("="):
-            q_max = _parse_float(raw_q, "Q", ctx)
-        else:
-            # Fallback solo si el archivo Excel no tiene valores cacheados de fórmula
-            area = math.pi * (d_m ** 2) / 4.0
-            q_max = (1.0 / manning_n) * area * ((d_m / 4.0) ** (2.0 / 3.0)) * (slope ** 0.5)
-        length_m = _parse_float(ws_pipes.cell(r, 10).value, "Lenght (m)", ctx)
-        note = str(ws_pipes.cell(r, 11).value or "").strip()
+        ws_pipes = wb["Pipe(s)"]
+        for r in range(2, ws_pipes.max_row + 1):
+            from_val = ws_pipes.cell(r, 1).value
+            to_val = ws_pipes.cell(r, 2).value
+            pid_val = ws_pipes.cell(r, 9).value
+            # Saltar filas resumen finales del Excel (ej. conteos o URLs)
+            if pid_val is None or str(pid_val).strip() == "":
+                continue
+            if from_val is None or to_val is None:
+                raise DataLoadError(f"Conexión incompleta en Pipe(s) fila {r}.")
 
-        pipe = PipeEdge(
-            pipe_id=str(pid_val).strip(),
-            from_node=str(from_val).strip(),
-            to_node=str(to_val).strip(),
-            diameter_in=d_in,
-            diameter_m=d_m,
-            manning_n=manning_n,
-            slope=slope,
-            q_max_m3s=q_max,
-            length_m=length_m,
-            note=note,
-        )
-        try:
-            graph.add_pipe(pipe)
-        except ValueError as exc:
-            raise DataLoadError(str(exc)) from exc
+            ctx = f"Pipe(s) fila {r}"
+            d_m = _parse_float(ws_pipes.cell(r, 4).value, "⌀ (m)", ctx)
+            raw_d_in = ws_pipes.cell(r, 3).value
+            d_in = round(
+                _parse_float(raw_d_in, "⌀ (in)", ctx)
+                if raw_d_in is not None and not str(raw_d_in).startswith("=")
+                else (d_m / 0.0254),
+                4,
+            )
+            manning_n = _parse_float(ws_pipes.cell(r, 5).value, "n", ctx)
+            slope = _parse_float(ws_pipes.cell(r, 6).value, "S", ctx)
+            raw_q = ws_pipes.cell(r, 7).value
+            if raw_q is not None and not str(raw_q).startswith("="):
+                q_max = _parse_float(raw_q, "Q", ctx)
+            else:
+                # Fallback solo si el archivo Excel no tiene valores cacheados de fórmula
+                if d_m <= 0.0 or manning_n <= 0.0 or slope <= 0.0:
+                    raise DataLoadError(
+                        f"Parámetros geométricos/hidráulicos <= 0 en {ctx}."
+                    )
+                area = math.pi * (d_m ** 2) / 4.0
+                q_max = (1.0 / manning_n) * area * ((d_m / 4.0) ** (2.0 / 3.0)) * (slope ** 0.5)
+            length_m = _parse_float(ws_pipes.cell(r, 10).value, "Lenght (m)", ctx)
+            note = str(ws_pipes.cell(r, 11).value or "").strip()
 
-    ws_basin = wb["Drainage Basin"]
-    c_val = _parse_float(ws_basin.cell(2, 1).value, "C", "Drainage Basin fila 2")
-    a_val = _parse_float(ws_basin.cell(2, 2).value, "A", "Drainage Basin fila 2")
-    basin = DrainageBasin(runoff_coefficient_c=c_val, area_ha=a_val)
+            pipe = PipeEdge(
+                pipe_id=str(pid_val).strip(),
+                from_node=str(from_val).strip(),
+                to_node=str(to_val).strip(),
+                diameter_in=d_in,
+                diameter_m=d_m,
+                manning_n=manning_n,
+                slope=slope,
+                q_max_m3s=q_max,
+                length_m=length_m,
+                note=note,
+            )
+            try:
+                graph.add_pipe(pipe)
+            except ValueError as exc:
+                raise DataLoadError(str(exc)) from exc
 
-    ws_scen = wb["Precipitation Scenarios"]
-    scenarios: List[PrecipitationScenario] = []
-    for r in range(2, ws_scen.max_row + 1):
-        sid_raw = ws_scen.cell(r, 1).value
-        if sid_raw is None:
-            continue
-        ctx = f"Precipitation Scenarios fila {r}"
-        sid = int(_parse_float(sid_raw, "Scenario", ctx))
-        intensity = _parse_float(ws_scen.cell(r, 2).value, "Intensity", ctx)
-        condition = str(ws_scen.cell(r, 3).value or f"Escenario {sid}").strip()
-        scenarios.append(PrecipitationScenario(sid, intensity, condition))
+        ws_basin = wb["Drainage Basin"]
+        c_val = _parse_float(ws_basin.cell(2, 1).value, "C", "Drainage Basin fila 2")
+        a_val = _parse_float(ws_basin.cell(2, 2).value, "A", "Drainage Basin fila 2")
+        basin = DrainageBasin(runoff_coefficient_c=c_val, area_ha=a_val)
+
+        ws_scen = wb["Precipitation Scenarios"]
+        scenarios: List[PrecipitationScenario] = []
+        for r in range(2, ws_scen.max_row + 1):
+            sid_raw = ws_scen.cell(r, 1).value
+            if sid_raw is None:
+                continue
+            ctx = f"Precipitation Scenarios fila {r}"
+            sid = int(_parse_float(sid_raw, "Scenario", ctx))
+            intensity = _parse_float(ws_scen.cell(r, 2).value, "Intensity", ctx)
+            condition = str(ws_scen.cell(r, 3).value or f"Escenario {sid}").strip()
+            scenarios.append(PrecipitationScenario(sid, intensity, condition))
+    finally:
+        wb.close()
 
     coords = dict(DEFAULT_NODE_COORDS)
     if coords_csv_path:
@@ -352,16 +388,22 @@ def load_from_csv_dir(csv_dir: str) -> NetworkDataset:
 
     graph = DirectedGraph()
 
+    source_ids_seen = set()
     with open(os.path.join(csv_dir, "sources.csv"), "r", encoding="utf-8-sig", newline="") as f:
         for row in csv.DictReader(f):
             nid = (row.get("node_id") or "").strip()
             if nid:
+                source_ids_seen.add(nid)
                 graph.add_node(ManholeNode(node_id=nid, node_type="source"))
 
     with open(os.path.join(csv_dir, "sinks.csv"), "r", encoding="utf-8-sig", newline="") as f:
         for row in csv.DictReader(f):
             nid = (row.get("node_id") or "").strip()
             if nid:
+                if nid in source_ids_seen:
+                    raise DataLoadError(
+                        f"El nodo '{nid}' aparece simultáneamente en sources.csv y sinks.csv."
+                    )
                 graph.add_node(ManholeNode(node_id=nid, node_type="sink"))
 
     with open(os.path.join(csv_dir, "pipes.csv"), "r", encoding="utf-8-sig", newline="") as f:
@@ -463,7 +505,7 @@ def export_to_csv_dir(dataset: NetworkDataset, out_dir: str) -> None:
         ])
         for p in dataset.graph.pipes():
             w.writerow([
-                p.pipe_id, p.from_node, p.to_node, p.diameter_in, p.diameter_m,
+                p.pipe_id, p.from_node, p.to_node, round(p.diameter_in, 4), p.diameter_m,
                 p.manning_n, p.slope, round(p.q_max_m3s, 8), p.length_m, p.note,
             ])
 

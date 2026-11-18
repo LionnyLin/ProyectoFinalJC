@@ -71,8 +71,8 @@ def rank_critical_pipes(
         util = pipe_utilizations_pct.get(pipe.pipe_id, 0.0)
         dem = pipe_demand_ratios_pct.get(pipe.pipe_id, util) if pipe_demand_ratios_pct else util
         if util >= min_utilization_pct:
-            # Min-heap: prioridad negativa para extraer mayor utilización/demanda primero.
-            pq.push(-(util * 1000.0 + dem), pipe.pipe_id)
+            # Min-heap: prioridad negativa por (utilización, demanda) para extraer mayor exigencia primero.
+            pq.push((-util, -dem), pipe.pipe_id)
 
     ranked: List[CriticalPipeRecord] = []
     rank = 1

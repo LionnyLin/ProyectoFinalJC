@@ -281,7 +281,7 @@ def bfs_anim_frames(
 
             if target_id is not None and current == target_id:
                 reached = True
-                continue
+                break
 
             if not reached:
                 for edge in graph.outgoing_pipes(current):
@@ -345,6 +345,8 @@ def bfs_anim_frames(
         fr.total_steps = total
 
     levels_dict = {nid: levels_table[nid] for nid in visited_order if levels_table.contains(nid)}
+    for k, v in levels_table.items():
+        levels_dict.setdefault(k, v)
     res = TraversalResult(
         algorithm="BFS",
         start_node=start_id,
