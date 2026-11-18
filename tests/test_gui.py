@@ -110,9 +110,12 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertIn("Lluvia moderada", self.app.var_scenario.get())
         self.app.var_split_rule_es.set("Equitativa")
         self.app.var_hyetograph_es.set("Triangular")
+        self.app.var_source_dist_es.set("Uniforme (1/8)")
         cfg = self.app._build_sim_config()
         self.assertEqual(cfg.split_rule, "equal")
         self.assertEqual(cfg.hyetograph, "triangular")
+        self.assertEqual(cfg.source_distribution, "equal")
+        self.app.var_source_dist_es.set("Por capacidad")
 
     def test_cartographic_surgery_basin_focus_and_traversal_anim(self) -> None:
         # 0. La simulación inicia siempre en el minuto 0

@@ -166,6 +166,44 @@ class TestSimulation(unittest.TestCase):
         self.assertGreater(mod.pipe_overloaded_minutes["P31"], 20.0)
         self.assertLessEqual(mod.pipe_overloaded_minutes["P31"], 90.0)
 
+    def test_physical_utilization_cap_demand_separation_and_surface_flooding(self) -> None:
+        engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
+        # Escenario extremo: utilización física acotada <= 115%, demanda > 200%, pozos <= 4 m³ y rebose > 0
+        cfg_cap = SimulationConfig(
+            scenario_id=5,
+            scenario_name="Extreme rain",
+            intensity_mm_h=100.0,
+            duration_min=90.0,
+            storm_duration_min=60.0,
+            source_distribution="capacity",
+            max_manhole_storage_m3=4.0,
+            max_physical_utilization_pct=115.0,
+        )
+        res_cap = engine.run(cfg_cap)
+        self.assertLess(res_cap.max_mass_balance_error_m3, 1e-6)
+        self.assertLessEqual(max(res_cap.peak_pipe_utilization.values()), 115.0 + 1e-9)
+        self.assertGreater(max(res_cap.peak_pipe_demand_ratio.values()), 300.0)
+        self.assertGreater(res_cap.total_surface_flooding_m3, 0.0)
+        for v_st in res_cap.max_manhole_storage_m3.values():
+            self.assertLessEqual(v_st, 4.0 + 1e-9)
+
+        # Comparación con reparto uniforme 1/8
+        cfg_eq = SimulationConfig(
+            scenario_id=5,
+            scenario_name="Extreme rain",
+            intensity_mm_h=100.0,
+            duration_min=90.0,
+            storm_duration_min=60.0,
+            source_distribution="equal",
+        )
+        res_eq = engine.run(cfg_eq)
+        self.assertLess(res_eq.max_mass_balance_error_m3, 1e-6)
+        self.assertLessEqual(max(res_eq.peak_pipe_utilization.values()), 115.0 + 1e-9)
+        self.assertGreater(
+            res_eq.peak_pipe_demand_ratio["P31"],
+            res_cap.peak_pipe_demand_ratio["P31"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
