@@ -202,6 +202,53 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertEqual(tmp_photo.width(), tmp_w.winfo_width())
         self.assertEqual(tmp_photo.height(), tmp_w.winfo_height())
 
+    def test_guided_tour_source_attribution_and_stress_map_mode(self) -> None:
+        # 1. Guía de sustentación: botón visible, 4 hallazgos + enfoque + cierre
+        self.assertTrue(bool(self.app.btn_guided_tour.winfo_ismapped()))
+        self.app.toggle_guided_tour()
+        _pump(self.app, 280)
+        self.assertTrue(self.app._tour_active)
+        self.assertTrue(bool(self.app._tour_card.winfo_ismapped()))
+        self.assertAlmostEqual(self.app.result.snapshots[self.app.current_step].time_min, 5.0)
+
+        for target_min in (25.0, 40.0, 65.0):
+            self.app._go_tour_stop(self.app._tour_step + 1)
+            _pump(self.app, 260)
+            self.assertAlmostEqual(
+                self.app.result.snapshots[self.app.current_step].time_min, target_min
+            )
+
+        self.app._close_guided_tour()
+        _pump(self.app, 240)
+        self.assertFalse(self.app._tour_active)
+        self.assertFalse(bool(self.app._tour_card.winfo_ismapped()))
+
+        # 2. Trazabilidad por fuente aportante en el inspector
+        self.app.notebook.select(0)
+        self.app.network_canvas.select_pipe("P31")
+        self.app._on_pipe_selected("P31")
+        _pump(self.app, 80)
+        self.assertTrue(bool(self.app.source_attribution_card.winfo_ismapped()))
+        self.assertIn("F17: 100.0%", self.app.lbl_source_breakdown.cget("text"))
+
+        self.app.network_canvas.select_pipe("P25")
+        self.app._on_pipe_selected("P25")
+        _pump(self.app, 80)
+        self.assertGreater(len(self.app._current_source_shares), 1)
+
+        # 3. Modo Mapa de Estrés Acumulado (Instantáneo | Pico Máximo | Minutos en Sobrecarga)
+        self.app._set_map_mode("peak")
+        _pump(self.app, 80)
+        self.assertEqual(self.app.network_canvas._map_mode, "peak")
+
+        self.app._set_map_mode("overload_minutes")
+        _pump(self.app, 80)
+        self.assertEqual(self.app.network_canvas._map_mode, "overload_minutes")
+        self.assertIn("sobrecarga", self.app._legend_header_label.cget("text").lower())
+
+        self.app._set_map_mode("instant")
+        _pump(self.app, 60)
+
 
 if __name__ == "__main__":
     unittest.main()

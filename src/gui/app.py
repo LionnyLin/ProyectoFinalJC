@@ -4,13 +4,18 @@ import math
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from src.algorithms import (
+    OVERLOAD_PERSISTENCE_LEVELS,
+    SourceAttributionResult,
     TraversalAnimFrame,
     bfs,
     bfs_anim_frames,
     build_route_to_sink,
+    classify_overload_persistence,
+    classify_utilization,
+    compute_source_attribution,
     dfs,
     dfs_anim_frames,
     find_isolated_from_sinks,
@@ -107,7 +112,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._crit_tab_dirty: bool = False
         self._charts_tab_dirty: bool = False
 
-        # Estado de Cirugía Cartográfica, Cuenca Aportante y Animación BFS/DFS
+        # Estado de Cirugía Cartográfica, Cuenca Aportante, Animación BFS/DFS, Mapa de Estrés y Guía
         self._interventions: Dict[str, PipeIntervention] = {}
         self._isolated_nodes: Set[str] = set()
         self._isolated_pipes: Set[str] = set()
@@ -118,6 +123,12 @@ class BicentenarioSewerApp(tk.Tk):
         self._anim_idx: int = 0
         self._anim_after_id: Optional[str] = None
         self._is_animating_traversal: bool = False
+        self._map_mode: str = "instant"
+        self._map_mode_buttons: Dict[str, tk.Button] = {}
+        self._tour_active: bool = False
+        self._tour_step: int = 0
+        self._source_attribution: Optional[SourceAttributionResult] = None
+        self._last_attr_key: Optional[tuple] = None
 
         # Estado responsivo y de paneles
         self._show_left: bool = True
@@ -175,6 +186,8 @@ class BicentenarioSewerApp(tk.Tk):
             v.trace_add("write", lambda *_a: self._mark_comparisons_dirty())
 
         self._legend_count_labels: List[tk.Label] = []
+        self._legend_text_labels: List[tk.Label] = []
+        self._legend_header_label: Optional[tk.Label] = None
 
         self._configure_styles()
         self._build_layout()
@@ -498,6 +511,15 @@ class BicentenarioSewerApp(tk.Tk):
         self.btn_load_excel = self._make_btn(
             self.actions_bar, "Cargar Excel", self._action_load_excel, variant="dark_secondary", padx=9, pady=4, font_size=8
         )
+        self.btn_guided_tour = self._make_btn(
+            self.actions_bar,
+            "Recorrido Guiado (4 Hallazgos)",
+            self.toggle_guided_tour,
+            variant="dark_secondary",
+            padx=9,
+            pady=4,
+            font_size=8,
+        )
 
         # Menú compacto para ventanas medianas/estrechas
         self.menu_btn_file = tk.Menubutton(
@@ -707,6 +729,8 @@ class BicentenarioSewerApp(tk.Tk):
         return "break"
 
     def _shortcut_escape(self, _event: tk.Event) -> None:
+        if self._tour_active:
+            self._close_guided_tour()
         self._clear_highlights()
         self._selected_pipe_id = None
         self._selected_node_id = None
@@ -738,28 +762,41 @@ class BicentenarioSewerApp(tk.Tk):
         tier_changed = new_tier != self._layout_tier
         self._layout_tier = new_tier
 
-        # 1. Adaptación de la barra superior
+        # 1. Adaptación de la barra superior (garantiza visibilidad de Guía y acciones en todo ancho)
         tb_mode = "wide" if width >= 1220 else ("medium" if width >= 920 else "compact")
-        if tb_mode != self._topbar_mode:
+        wide_full_bar = width >= 1660
+        tour_lbl = "Recorrido Guiado (4 Hallazgos)" if width >= 1340 else "Guía 4"
+        topbar_sig = (tb_mode, wide_full_bar, tour_lbl)
+        if topbar_sig != getattr(self, "_topbar_layout_sig", None):
+            self._topbar_layout_sig = topbar_sig
             self._topbar_mode = tb_mode
             for child in self.actions_bar.pack_slaves():
                 child.pack_forget()
+            self.btn_guided_tour.configure(text=tour_lbl)
+
             if tb_mode == "wide":
-                self.lbl_app_subtitle.pack(anchor="w")
+                if not self.lbl_app_subtitle.winfo_ismapped():
+                    self.lbl_app_subtitle.pack(anchor="w")
                 self.lbl_app_title.configure(text="Simulador Hidráulico · Ciudad Bicentenario")
                 self.btn_report.configure(text="Generar Reporte")
                 self.btn_report.pack(side=tk.RIGHT, padx=(4, 0))
-                self.btn_assumptions.pack(side=tk.RIGHT, padx=4)
-                self.btn_export_csv.pack(side=tk.RIGHT, padx=4)
-                self.btn_load_csv.pack(side=tk.RIGHT, padx=4)
-                self.btn_load_excel.pack(side=tk.RIGHT, padx=4)
+                if wide_full_bar:
+                    self.btn_assumptions.pack(side=tk.RIGHT, padx=4)
+                    self.btn_export_csv.pack(side=tk.RIGHT, padx=4)
+                    self.btn_load_csv.pack(side=tk.RIGHT, padx=4)
+                    self.btn_load_excel.pack(side=tk.RIGHT, padx=4)
+                else:
+                    self.menu_btn_file.configure(text="Archivo y Modelo ")
+                    self.menu_btn_file.pack(side=tk.RIGHT, padx=4)
+                self.btn_guided_tour.pack(side=tk.RIGHT, padx=(0, 6))
             elif tb_mode == "medium":
-                self.lbl_app_subtitle.pack(anchor="w")
-                self.lbl_app_title.configure(text="Simulador Hidráulico · Ciudad Bicentenario")
+                self.lbl_app_subtitle.pack_forget()
+                self.lbl_app_title.configure(text="Ciudad Bicentenario")
                 self.btn_report.configure(text="Generar Reporte")
                 self.menu_btn_file.configure(text="Archivo y Modelo ")
                 self.btn_report.pack(side=tk.RIGHT, padx=(6, 0))
                 self.menu_btn_file.pack(side=tk.RIGHT, padx=4)
+                self.btn_guided_tour.pack(side=tk.RIGHT, padx=(0, 4))
             else:
                 self.lbl_app_subtitle.pack_forget()
                 self.lbl_app_title.configure(text="Ciudad Bicentenario")
@@ -767,6 +804,7 @@ class BicentenarioSewerApp(tk.Tk):
                 self.menu_btn_file.configure(text="Archivo ")
                 self.btn_report.pack(side=tk.RIGHT, padx=(6, 0))
                 self.menu_btn_file.pack(side=tk.RIGHT, padx=4)
+                self.btn_guided_tour.pack(side=tk.RIGHT, padx=(0, 4))
 
         # 2. Atajos de teclado en barra de estado solo si caben
         if width >= 980:
@@ -872,7 +910,7 @@ class BicentenarioSewerApp(tk.Tk):
         hdr_bg = theme.SHELL_BG if dark_header else theme.ACCENT_PRIMARY
         hdr = tk.Frame(sheet, bg=hdr_bg)
         hdr.pack(fill=tk.X)
-        tk.Label(
+        hdr_lbl = tk.Label(
             hdr,
             text=title,
             bg=hdr_bg,
@@ -881,11 +919,13 @@ class BicentenarioSewerApp(tk.Tk):
             anchor="w",
             padx=10,
             pady=5,
-        ).pack(fill=tk.X)
+        )
+        hdr_lbl.pack(fill=tk.X)
         tk.Frame(sheet, bg=theme.ACCENT_PRIMARY if dark_header else theme.DOCK_BORDER, height=2).pack(fill=tk.X)
 
         body = tk.Frame(sheet, bg=theme.PAPER_BG)
         body.pack(fill=tk.X, padx=10, pady=8)
+        body._header_lbl = hdr_lbl  # type: ignore[attr-defined]
         return body
 
     def _switch_rail_tab(self, tab_id: str) -> None:
@@ -1038,11 +1078,13 @@ class BicentenarioSewerApp(tk.Tk):
             compound=tk.LEFT,
         ).pack(fill=tk.X, pady=(8, 0))
 
-        # Lámina 2 (Tab Simulación): Escala oficial de utilización (Sección 7)
+        # Lámina 2 (Tab Simulación): Escala oficial de utilización (Sección 7) / Estrés acumulado
         sec_leg = self._make_rail_section(
             self._rail_sim_container, "Escala oficial de utilización", dark_header=False
         )
+        self._legend_header_label = getattr(sec_leg, "_header_lbl", None)
         self._legend_count_labels.clear()
+        self._legend_text_labels.clear()
         short_desc = {
             "Cercana a capacidad máxima": "Cercana a cap. máx.",
         }
@@ -1069,15 +1111,17 @@ class BicentenarioSewerApp(tk.Tk):
                 anchor="center",
             )
             cnt_lbl.pack(side=tk.RIGHT, padx=(6, 0))
-            tk.Label(
+            txt_lbl = tk.Label(
                 row,
                 text=f"{rng} · {short_desc.get(desc, desc)}",
                 bg=theme.PAPER_BG,
                 fg=theme.INK_PRIMARY,
                 font=(self.ui_font, 8),
                 anchor="w",
-            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            )
+            txt_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
             self._legend_count_labels.append(cnt_lbl)
+            self._legend_text_labels.append(txt_lbl)
 
         # Lámina 3 (Tab Recorridos): Consultas y recorridos BFS / DFS / Trazado
         sec_alg = self._make_rail_section(
@@ -1503,6 +1547,56 @@ class BicentenarioSewerApp(tk.Tk):
 
         self.center_panel.bind("<Configure>", self._on_center_configure)
 
+        # Cabecera del lienzo: selector segmentado plano para Modo de Estrés / Lectura
+        map_mode_bar = tk.Frame(
+            parent,
+            bg=theme.DOCK_BG,
+            highlightthickness=1,
+            highlightbackground=theme.DOCK_BORDER,
+        )
+        map_mode_bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(6, 0))
+        self._lbl_map_mode = tk.Label(
+            map_mode_bar,
+            text="Lectura cartográfica:",
+            bg=theme.DOCK_BG,
+            fg=theme.INK_PRIMARY,
+            font=(self.ui_font, 8, "bold"),
+            padx=8,
+            pady=4,
+        )
+        self._lbl_map_mode.pack(side=tk.LEFT)
+
+        self._seg_wrap = tk.Frame(map_mode_bar, bg=theme.DOCK_BORDER)
+        self._seg_wrap.pack(side=tk.LEFT, padx=(4, 8), pady=3)
+        self._map_mode_compact: Optional[str] = None
+        self._map_mode_buttons.clear()
+        for idx, (mode_id, mode_lbl) in enumerate(
+            [
+                ("instant", "Instantáneo O(t)"),
+                ("peak", "Pico Máximo"),
+                ("overload_minutes", "Minutos en Sobrecarga"),
+            ]
+        ):
+            is_act = mode_id == self._map_mode
+            btn = tk.Button(
+                self._seg_wrap,
+                text=mode_lbl,
+                command=lambda m=mode_id: self._set_map_mode(m),
+                bg=theme.ACCENT_PRIMARY if is_act else theme.DOCK_BG,
+                fg=theme.ACCENT_INK if is_act else theme.INK_PRIMARY,
+                activebackground=theme.ACCENT_HOVER,
+                activeforeground=theme.ACCENT_INK,
+                relief="flat",
+                bd=0,
+                padx=9,
+                pady=2,
+                font=(self.ui_font, 8, "bold" if is_act else "normal"),
+                cursor="hand2",
+                highlightthickness=0,
+            )
+            btn.pack(side=tk.LEFT, padx=(1 if idx > 0 else 1, 1), pady=1)
+            self._map_mode_buttons[mode_id] = btn
+
         # Lienzo interactivo del grafo sobre papel vitela (#FFFFE3)
         self.network_canvas = NetworkCanvas(
             parent,
@@ -1512,7 +1606,8 @@ class BicentenarioSewerApp(tk.Tk):
             on_select_pipe=self._on_pipe_selected,
             on_select_node=self._on_node_selected,
         )
-        self.network_canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.network_canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        self._build_tour_card()
 
     def _on_speed_change(self, _event: tk.Event) -> None:
         if self.is_playing:
@@ -1541,6 +1636,42 @@ class BicentenarioSewerApp(tk.Tk):
             self._update_play_button_label()
             self._update_mass_audit_label()
             self._update_clock_label()
+
+        # Adaptación responsiva del selector segmentado de modo cartográfico
+        mm_tier = "full" if event.width >= 660 else ("mid" if event.width >= 480 else "short")
+        if mm_tier != getattr(self, "_map_mode_compact", None) and hasattr(self, "_lbl_map_mode"):
+            self._map_mode_compact = mm_tier
+            if mm_tier == "full":
+                if not self._lbl_map_mode.winfo_ismapped():
+                    self._lbl_map_mode.pack(side=tk.LEFT, before=self._seg_wrap)
+                labels = {
+                    "instant": "Instantáneo O(t)",
+                    "peak": "Pico Máximo",
+                    "overload_minutes": "Minutos en Sobrecarga",
+                }
+                padx_val = 9
+            elif mm_tier == "mid":
+                self._lbl_map_mode.pack_forget()
+                labels = {
+                    "instant": "Instantáneo O(t)",
+                    "peak": "Pico Máximo",
+                    "overload_minutes": "Min. Sobrecarga",
+                }
+                padx_val = 8
+            else:
+                self._lbl_map_mode.pack_forget()
+                labels = {
+                    "instant": "O(t)",
+                    "peak": "Pico",
+                    "overload_minutes": "Min >100%",
+                }
+                padx_val = 6
+            for mid, lbl_txt in labels.items():
+                if mid in self._map_mode_buttons:
+                    self._map_mode_buttons[mid].configure(text=lbl_txt, padx=padx_val)
+
+        if self._tour_active:
+            self._fit_tour_card_geometry()
 
     def _update_play_button_label(self) -> None:
         icon = self._icons["pause_on_accent"] if self.is_playing else self._icons["play_on_accent"]
@@ -1732,6 +1863,52 @@ class BicentenarioSewerApp(tk.Tk):
             pady=3,
             font_size=8,
         ).pack(side=tk.LEFT)
+
+        # Sección de Trazabilidad por Fuente Aportante (barra apilada monocromática)
+        self.source_attribution_card = tk.Frame(tab_info, bg=theme.PAPER_SUBTLE)
+        self._source_attribution_sep = tk.Frame(tab_info, bg=theme.DOCK_BORDER, height=1)
+
+        src_hdr = tk.Frame(self.source_attribution_card, bg=theme.PAPER_SUBTLE)
+        src_hdr.pack(fill=tk.X, padx=8, pady=(6, 3))
+        tk.Label(
+            src_hdr,
+            text="Composición por Fuente Aportante",
+            bg=theme.PAPER_SUBTLE,
+            fg=theme.ACCENT_TEXT_ON_LIGHT,
+            font=(self.display_font, 8, "bold"),
+        ).pack(side=tk.LEFT)
+        self.lbl_source_entity = tk.Label(
+            src_hdr,
+            text="",
+            bg=theme.PAPER_SUBTLE,
+            fg=theme.INK_MUTED,
+            font=(self.mono_font, 7, "bold"),
+        )
+        self.lbl_source_entity.pack(side=tk.RIGHT)
+
+        self.canvas_source_bar = tk.Canvas(
+            self.source_attribution_card,
+            height=self._px(18),
+            bg=theme.PAPER_BG,
+            highlightthickness=1,
+            highlightbackground=theme.DOCK_BORDER,
+            bd=0,
+        )
+        self.canvas_source_bar.pack(fill=tk.X, padx=8, pady=(0, 3))
+        self.canvas_source_bar.bind("<Configure>", lambda _e: self._redraw_source_bar_canvas())
+
+        self.lbl_source_breakdown = tk.Label(
+            self.source_attribution_card,
+            text="",
+            bg=theme.PAPER_SUBTLE,
+            fg=theme.INK_PRIMARY,
+            font=(self.mono_font, 8),
+            justify="left",
+            anchor="w",
+            wraplength=self._px(330),
+        )
+        self.lbl_source_breakdown.pack(fill=tk.X, padx=8, pady=(0, 6))
+        self._current_source_shares: List[tuple] = []
 
         self._inspector_wrap = tk.Frame(tab_info, bg=theme.PAPER_BG)
         self._inspector_wrap.pack(fill=tk.BOTH, expand=True)
@@ -2110,6 +2287,7 @@ class BicentenarioSewerApp(tk.Tk):
 
         self._player_pause()
         self._stop_traversal_anim(clear_canvas=False)
+        self._close_guided_tour()
         self.dataset = dataset
         self.engine = SewerSimulationEngine(dataset.graph, dataset.basin)
         self.result = None
@@ -2309,7 +2487,14 @@ class BicentenarioSewerApp(tk.Tk):
             self._previous_result = None
 
         self.result = self.engine.run(cfg)
+        self._last_attr_key = None
         n_snaps = len(self.result.snapshots)
+        self.network_canvas.set_map_mode(
+            self._map_mode,
+            peak_util=self.result.peak_pipe_utilization,
+            overload_minutes=self.result.pipe_overloaded_minutes,
+            total_duration_min=cfg.duration_min,
+        )
         self._updating_slider = True
         try:
             self.timeline_slider.configure(command="", to=max(0, n_snaps - 1))
@@ -2321,6 +2506,8 @@ class BicentenarioSewerApp(tk.Tk):
 
         # Iniciar siempre en el minuto 0 (comienzo de la simulación)
         self._set_step(0)
+        if self._tour_active:
+            self._go_tour_stop(self._tour_step, animate_cam=False)
         self.status_var.set(
             f"{self._dataset_summary_text}  ·  Escenario {cfg.scenario_id} ({cfg.intensity_mm_h:.0f} mm/h) "
             f"en {self.result.execution_time_ms:.1f} ms ({n_snaps} instantes)"
@@ -2464,10 +2651,62 @@ class BicentenarioSewerApp(tk.Tk):
                 text=f"Balance masa OK · Err {snap.mass_balance_error_m3:.2e} m³"
             )
 
+    def _set_map_mode(self, mode: str) -> None:
+        if mode not in ("instant", "peak", "overload_minutes"):
+            return
+        self._map_mode = mode
+        for mid, btn in self._map_mode_buttons.items():
+            is_act = mid == mode
+            btn.configure(
+                bg=theme.ACCENT_PRIMARY if is_act else theme.DOCK_BG,
+                fg=theme.ACCENT_INK if is_act else theme.INK_PRIMARY,
+                font=(self.ui_font, 8, "bold" if is_act else "normal"),
+            )
+        if self.result is not None:
+            self.network_canvas.set_map_mode(
+                mode,
+                peak_util=self.result.peak_pipe_utilization,
+                overload_minutes=self.result.pipe_overloaded_minutes,
+                total_duration_min=self.result.config.duration_min,
+            )
+            self._update_legend_counts(self.result.snapshots[self.current_step])
+        else:
+            self.network_canvas.set_map_mode(mode)
+
     def _update_legend_counts(self, snap: TimeStepSnapshot) -> None:
         counts = [0, 0, 0, 0, 0]
-        for ps in snap.pipe_states.values():
-            counts[ps.category.tier_index] += 1
+        if self._map_mode == "overload_minutes" and self.result is not None:
+            if self._legend_header_label is not None:
+                self._legend_header_label.configure(text="Tiempo acumulado en sobrecarga")
+            for idx, (rng, _col, desc) in enumerate(OVERLOAD_PERSISTENCE_LEVELS):
+                if idx < len(self._legend_text_labels):
+                    self._legend_text_labels[idx].configure(text=f"{rng} · {desc}")
+            dur = max(1.0, float(self.result.config.duration_min))
+            for pid in snap.pipe_states:
+                ov_m = self.result.pipe_overloaded_minutes.get(pid, 0.0)
+                tier, _, _ = classify_overload_persistence(ov_m, dur)
+                counts[tier] += 1
+        else:
+            if self._legend_header_label is not None:
+                title = (
+                    "Escala oficial de utilización"
+                    if self._map_mode == "instant"
+                    else "Escala oficial · Pico máximo"
+                )
+                self._legend_header_label.configure(text=title)
+            short_desc = {"Cercana a capacidad máxima": "Cercana a cap. máx."}
+            for idx, (rng, _col, desc) in enumerate(theme.COLOR_SCALE_LEGEND):
+                if idx < len(self._legend_text_labels):
+                    self._legend_text_labels[idx].configure(
+                        text=f"{rng} · {short_desc.get(desc, desc)}"
+                    )
+            if self._map_mode == "peak" and self.result is not None:
+                for pid in snap.pipe_states:
+                    u = self.result.peak_pipe_utilization.get(pid, 0.0)
+                    counts[classify_utilization(u).tier_index] += 1
+            else:
+                for ps in snap.pipe_states.values():
+                    counts[ps.category.tier_index] += 1
         for lbl, c in zip(self._legend_count_labels, counts):
             lbl.configure(text=str(c))
 
@@ -2575,6 +2814,8 @@ class BicentenarioSewerApp(tk.Tk):
         if self.dataset is None or (not self._selected_pipe_id and not self._selected_node_id):
             messagebox.showinfo("Sin selección", "Seleccione primero un nodo o tubería del grafo.")
             return
+        if self._tour_active:
+            self._close_guided_tour()
         self._basin_isolated = not self._basin_isolated
         self._apply_basin_isolation()
         self._refresh_inspector()
@@ -3070,6 +3311,8 @@ class BicentenarioSewerApp(tk.Tk):
                 self._inspector_actions_sep.pack_forget()
                 self.pipe_intervention_card.pack_forget()
                 self._pipe_intervention_sep.pack_forget()
+                self.source_attribution_card.pack_forget()
+                self._source_attribution_sep.pack_forget()
 
                 if sel_kind != "none":
                     self.inspector_actions.pack(fill=tk.X, before=self._inspector_wrap)
@@ -3082,6 +3325,9 @@ class BicentenarioSewerApp(tk.Tk):
                 if sel_kind == "pipe":
                     self.pipe_intervention_card.pack(fill=tk.X, before=self._inspector_wrap)
                     self._pipe_intervention_sep.pack(fill=tk.X, before=self._inspector_wrap)
+                if sel_kind != "none":
+                    self.source_attribution_card.pack(fill=tk.X, before=self._inspector_wrap)
+                    self._source_attribution_sep.pack(fill=tk.X, before=self._inspector_wrap)
 
             if sel_kind != "none" and (sel_kind != prev_sel or bool(self._basin_isolated) != prev_iso):
                 self._set_btn_variant(
@@ -3102,6 +3348,8 @@ class BicentenarioSewerApp(tk.Tk):
             self.lbl_active_interventions.configure(
                 text=f"{n_int} activa(s)" if n_int else ""
             )
+
+        self._refresh_source_attribution_panel()
 
         self.txt_inspector.configure(state=tk.NORMAL)
         self.txt_inspector.delete("1.0", tk.END)
@@ -3156,6 +3404,12 @@ class BicentenarioSewerApp(tk.Tk):
                 if self.result:
                     add_line(
                         f"Utilización pico: {self.result.peak_pipe_utilization.get(p.pipe_id, 0.0):.2f} %"
+                    )
+                    ov_m = self.result.pipe_overloaded_minutes.get(p.pipe_id, 0.0)
+                    _, _, ov_desc = classify_overload_persistence(ov_m, self.result.config.duration_min)
+                    add_line(
+                        f"Estrés >100%    : {ov_m:.0f} min ({ov_desc})",
+                        "alert" if ov_m > 0.0 else None,
                     )
             elif self._selected_node_id and g.has_node(self._selected_node_id):
                 n = g.get_node(self._selected_node_id)
@@ -3268,9 +3522,430 @@ class BicentenarioSewerApp(tk.Tk):
                 self.run_simulation()
                 return
 
+    def _refresh_source_attribution_panel(self) -> None:
+        if self.dataset is None or (not self._selected_pipe_id and not self._selected_node_id):
+            self._current_source_shares = []
+            return
+
+        g = self.dataset.graph
+        snap = self.result.snapshots[self.current_step] if self.result else None
+        qmax_over = (
+            {
+                pid: ps.effective_q_max_m3s
+                for pid, ps in snap.pipe_states.items()
+                if ps.effective_q_max_m3s is not None
+            }
+            if snap is not None
+            else None
+        )
+        split_rule = self.var_split_rule.get()
+        entity_kind = "pipe" if self._selected_pipe_id else "node"
+        entity_id = self._selected_pipe_id or self._selected_node_id or ""
+        attr_key = (
+            id(g),
+            id(snap),
+            split_rule,
+            entity_kind,
+            entity_id,
+            tuple(sorted(self._interventions.items(), key=lambda kv: kv[0])),
+        )
+        if attr_key == self._last_attr_key:
+            return
+        self._last_attr_key = attr_key
+
+        attr = compute_source_attribution(
+            g, snapshot=snap, split_rule=split_rule, pipe_qmax_overrides=qmax_over
+        )
+        self._source_attribution = attr
+        if entity_kind == "pipe":
+            shares = attr.pipe_shares.get(entity_id, [])
+            ent_lbl = f"Tramo {entity_id}"
+        else:
+            shares = attr.node_shares.get(entity_id, [])
+            ent_lbl = f"PTAR {entity_id}" if entity_id == "31" else f"Pozo {entity_id}"
+        self.lbl_source_entity.configure(text=ent_lbl)
+        self._current_source_shares = list(shares)
+
+        if not shares:
+            self.lbl_source_breakdown.configure(text="Sin aporte de fuentes hacia esta entidad.")
+        else:
+            split_es = "Proporcional" if split_rule == "proportional" else "Equitativa"
+            parts = [f"F{src}: {frac * 100.0:.1f}%" for src, frac in shares]
+            self.lbl_source_breakdown.configure(
+                text=" · ".join(parts) + f"\nBifurcación: {split_es}"
+            )
+        self._redraw_source_bar_canvas()
+
+    def _redraw_source_bar_canvas(self) -> None:
+        c = self.canvas_source_bar
+        c.delete("all")
+        w = max(120, c.winfo_width() if c.winfo_width() > 10 else self._px(320))
+        h = max(14, c.winfo_height() if c.winfo_height() > 8 else self._px(18))
+        shares = self._current_source_shares
+        if not shares:
+            c.create_text(
+                w / 2.0,
+                h / 2.0,
+                text="Sin mezcla activa",
+                fill=theme.INK_MUTED,
+                font=(self.mono_font, 7),
+            )
+            return
+
+        # Paleta estrictamente monocromática (grafito, azul pizarra y plata mineral)
+        mono_tones = [
+            "#4A4A4A",
+            "#6D8196",
+            "#5A6570",
+            "#9BA5B0",
+            "#CBCBCB",
+            "#7D8E9F",
+            "#3A3A3A",
+            "#B3B8BE",
+        ]
+        x_cur = 0.0
+        for idx, (src_id, frac) in enumerate(shares):
+            seg_w = (w - x_cur) if idx == len(shares) - 1 else (w * frac)
+            if seg_w < 1.0:
+                continue
+            tone = mono_tones[idx % len(mono_tones)]
+            x1 = x_cur + seg_w
+            c.create_rectangle(x_cur, 0, x1, h, fill=tone, outline="")
+            if idx < len(shares) - 1:
+                c.create_line(x1, 0, x1, h, fill=theme.PAPER_BG, width=1.5)
+            if seg_w >= 34:
+                txt_col = theme.INK_PRIMARY if tone in ("#CBCBCB", "#B3B8BE") else theme.PAPER_BG
+                c.create_text(
+                    (x_cur + x1) / 2.0,
+                    h / 2.0,
+                    text=f"F{src_id} {frac * 100.0:.0f}%",
+                    fill=txt_col,
+                    font=(self.mono_font, 7, "bold"),
+                )
+            x_cur = x1
+
+    def _build_tour_card(self) -> None:
+        """Crea la ficha técnica flotante de la Guía de Sustentación sobre la esquina inferior izquierda."""
+        self._tour_card = tk.Frame(
+            self.network_canvas,
+            bg=theme.PAPER_BG,
+            highlightthickness=1,
+            highlightbackground=theme.DOCK_BORDER,
+        )
+
+        hdr = tk.Frame(self._tour_card, bg=theme.ACCENT_PRIMARY)
+        hdr.pack(fill=tk.X)
+        self._lbl_tour_hdr = tk.Label(
+            hdr,
+            text="HALLAZGO 1 / 4 · MIN 5",
+            bg=theme.ACCENT_PRIMARY,
+            fg=theme.ACCENT_INK,
+            font=(self.mono_font, 8, "bold"),
+            padx=9,
+            pady=4,
+            anchor="w",
+        )
+        self._lbl_tour_hdr.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        btn_x = tk.Button(
+            hdr,
+            text="×",
+            command=self._close_guided_tour,
+            bg=theme.ACCENT_PRIMARY,
+            fg=theme.ACCENT_INK,
+            activebackground=theme.ACCENT_HOVER,
+            activeforeground=theme.ACCENT_INK,
+            relief="flat",
+            bd=0,
+            padx=8,
+            pady=2,
+            font=(self.ui_font, 10, "bold"),
+            cursor="hand2",
+        )
+        btn_x.pack(side=tk.RIGHT)
+
+        body = tk.Frame(self._tour_card, bg=theme.PAPER_BG)
+        body.pack(fill=tk.BOTH, expand=True, padx=8, pady=5)
+        self._lbl_tour_title = tk.Label(
+            body,
+            text="",
+            bg=theme.PAPER_BG,
+            fg=theme.INK_PRIMARY,
+            font=(self.display_font, 9, "bold"),
+            anchor="w",
+            justify="left",
+            wraplength=260,
+        )
+        self._lbl_tour_title.pack(fill=tk.X, pady=(0, 2))
+
+        self._lbl_tour_desc = tk.Label(
+            body,
+            text="",
+            bg=theme.PAPER_BG,
+            fg=theme.INK_PRIMARY,
+            font=(self.ui_font, 8),
+            anchor="w",
+            justify="left",
+            wraplength=260,
+        )
+        self._lbl_tour_desc.pack(fill=tk.X, pady=(0, 4))
+
+        self._lbl_tour_metrics = tk.Label(
+            body,
+            text="",
+            bg=theme.PAPER_SUBTLE,
+            fg=theme.INK_PRIMARY,
+            font=(self.mono_font, 8, "bold"),
+            anchor="w",
+            justify="left",
+            padx=6,
+            pady=3,
+            highlightthickness=1,
+            highlightbackground=theme.PAPER_BORDER,
+            wraplength=252,
+        )
+        self._lbl_tour_metrics.pack(fill=tk.X)
+
+        tk.Frame(self._tour_card, bg=theme.PAPER_BORDER, height=1).pack(fill=tk.X)
+        ftr = tk.Frame(self._tour_card, bg=theme.PAPER_SUBTLE)
+        ftr.pack(fill=tk.X, padx=8, pady=4)
+        self._btn_tour_prev = self._make_btn(
+            ftr,
+            "Anterior",
+            lambda: self._go_tour_stop(self._tour_step - 1),
+            variant="light_secondary",
+            padx=7,
+            pady=2,
+            font_size=8,
+        )
+        self._btn_tour_prev.pack(side=tk.LEFT)
+        self._btn_tour_next = self._make_btn(
+            ftr,
+            "Siguiente",
+            lambda: self._go_tour_stop(self._tour_step + 1),
+            variant="primary",
+            padx=8,
+            pady=2,
+            font_size=8,
+        )
+        self._btn_tour_next.pack(side=tk.LEFT, padx=(5, 0))
+        self._make_btn(
+            ftr,
+            "Cerrar",
+            self._close_guided_tour,
+            variant="dock_secondary",
+            padx=7,
+            pady=2,
+            font_size=8,
+        ).pack(side=tk.RIGHT)
+
+    def _fit_tour_card_geometry(self) -> int:
+        """Ajusta el ancho de la ficha flotante según el lienzo disponible y retorna el ancho efectivo."""
+        cw = self.network_canvas.winfo_width()
+        if cw <= 1:
+            cw = 680
+        preferred = max(270, min(self._px(265), int(cw * 0.52)))
+        card_w = max(200, min(cw - 20, preferred))
+        wrap_w = max(175, card_w - 24)
+        self._lbl_tour_title.configure(wraplength=wrap_w)
+        self._lbl_tour_desc.configure(wraplength=wrap_w)
+        self._lbl_tour_metrics.configure(wraplength=max(168, wrap_w - 10))
+        if self._tour_card.winfo_manager():
+            self._tour_card.place_configure(width=card_w)
+        return card_w
+
+    def _build_tour_stops(self) -> List[Dict[str, object]]:
+        if self.dataset is None:
+            return []
+        g = self.dataset.graph
+
+        def _snap_for_min(target_m: float) -> Tuple[int, Optional[TimeStepSnapshot]]:
+            if not self.result or not self.result.snapshots:
+                return (0, None)
+            best_i = min(
+                range(len(self.result.snapshots)),
+                key=lambda i: abs(self.result.snapshots[i].time_min - target_m),
+            )
+            return (best_i, self.result.snapshots[best_i])
+
+        # Parada 1 (Min 5): 8 alcantarillas fuente y sus tuberías de cabecera
+        src_ids = g.source_ids()
+        src_pipes = [e.pipe_id for s in src_ids for e in g.outgoing_pipes(s)]
+        idx1, s1 = _snap_for_min(5.0)
+        q_in1 = s1.total_source_inflow_m3s if s1 else 0.0
+        t_vals = [e.transit_time_s / 60.0 for e in g.pipes()]
+        t_min_r = min(t_vals) if t_vals else 0.81
+        t_max_r = max(t_vals) if t_vals else 18.05
+
+        # Parada 2 (Min 25): estrangulamiento inicial en tuberías de 8" (P31, P39, P43)
+        p2_pipes = [pid for pid in ("P31", "P39", "P43") if g.has_pipe(pid)]
+        p2_nodes: Set[str] = set()
+        for pid in p2_pipes:
+            e = g.get_pipe(pid)
+            if e:
+                p2_nodes.update((e.from_node, e.to_node))
+        idx2, s2 = _snap_for_min(25.0)
+        u2_max = (
+            max((s2.pipe_states[p].utilization_pct for p in p2_pipes if p in s2.pipe_states), default=0.0)
+            if s2
+            else 0.0
+        )
+        v2_stor = (
+            sum((s2.node_states[n].stored_volume_m3 for n in ("17", "19", "20") if n in s2.node_states), 0.0)
+            if s2
+            else 0.0
+        )
+
+        # Parada 3 (Min 40): convergencia crítica en tramo P25 (23 -> J)
+        p3_pipes = ["P25"] if g.has_pipe("P25") else []
+        p3_nodes: Set[str] = set()
+        for pid in p3_pipes:
+            e = g.get_pipe(pid)
+            if e:
+                p3_nodes.update((e.from_node, e.to_node))
+        idx3, s3 = _snap_for_min(40.0)
+        q25 = s3.pipe_states["P25"].flow_m3s if (s3 and "P25" in s3.pipe_states) else 0.0
+        u25 = s3.pipe_states["P25"].utilization_pct if (s3 and "P25" in s3.pipe_states) else 0.0
+
+        # Parada 4 (Min 65): amortiguación y descarga en PTAR Punta Canoa (31, P29, P30)
+        p4_pipes = [pid for pid in ("P29", "P30") if g.has_pipe(pid)]
+        p4_nodes: Set[str] = {"31"}
+        for pid in p4_pipes:
+            e = g.get_pipe(pid)
+            if e:
+                p4_nodes.update((e.from_node, e.to_node))
+        idx4, s4 = _snap_for_min(65.0)
+        q_ptar = s4.total_sink_discharge_m3s if s4 else 0.0
+        u_final = (
+            max((s4.pipe_states[p].utilization_pct for p in p4_pipes if p in s4.pipe_states), default=0.0)
+            if s4
+            else 0.0
+        )
+        err4 = self.result.max_mass_balance_error_m3 if self.result else 0.0
+
+        return [
+            {
+                "title": "Inyección en las 8 alcantarillas fuente",
+                "target_min": 5.0,
+                "step_idx": idx1,
+                "nodes": set(src_ids),
+                "pipes": set(src_pipes),
+                "desc": (
+                    "Los 8 nodos fuente (1, 6, 9, 17, 18, 19, 20 y 27) inyectan el caudal del Método "
+                    "Racional (C=0.75, A=388 ha) más el caudal sanitario base respetando el tránsito de Manning."
+                ),
+                "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
+            },
+            {
+                "title": "Estrangulamiento inicial en tuberías de 8\"",
+                "target_min": 25.0,
+                "step_idx": idx2,
+                "nodes": p2_nodes,
+                "pipes": set(p2_pipes),
+                "desc": (
+                    "Los tramos iniciales P31, P39 y P43 (8\") saturan su capacidad Qmax y activan "
+                    "almacenamiento temporal en los pozos 17, 19 y 20 sin pérdida de masa."
+                ),
+                "metrics": f"Util. máx: {u2_max:.2f}%  ·  Represado (17,19,20): {v2_stor:.2f} m³",
+            },
+            {
+                "title": "Convergencia crítica en el tramo P25",
+                "target_min": 40.0,
+                "step_idx": idx3,
+                "nodes": p3_nodes,
+                "pipes": set(p3_pipes),
+                "desc": (
+                    "La unión de varias subcuencas sobre el pozo 23 hacia J (P25) dispara el caudal "
+                    "muy por encima de la capacidad hidráulica del colector."
+                ),
+                "metrics": f"P25: Q = {q25:.5f} m³/s  ·  Utilización = {u25:.2f}%",
+            },
+            {
+                "title": "Amortiguación y descarga en PTAR Punta Canoa",
+                "target_min": 65.0,
+                "step_idx": idx4,
+                "nodes": p4_nodes,
+                "pipes": set(p4_pipes),
+                "desc": (
+                    "Los colectores troncales de 20\" (P29 y P30) reciben la onda laminada aguas arriba "
+                    "y estabilizan la entrega al Nodo sumidero 31."
+                ),
+                "metrics": f"PTAR 31 = {q_ptar:.4f} m³/s  ·  P29/P30: {u_final:.2f}%  ·  Err = {err4:.1e} m³",
+            },
+        ]
+
+    def toggle_guided_tour(self) -> None:
+        if self.dataset is None or self.result is None:
+            return
+        if self._tour_active:
+            self._close_guided_tour()
+        else:
+            if self._basin_isolated:
+                self._basin_isolated = False
+                self._apply_basin_isolation()
+                self._refresh_inspector()
+            if self._map_mode != "instant":
+                self._set_map_mode("instant")
+            self._tour_active = True
+            self._set_btn_variant(self.btn_guided_tour, "dark_primary")
+            self._go_tour_stop(0, animate_cam=True)
+
+    def _go_tour_stop(self, stop_idx: int, animate_cam: bool = True) -> None:
+        stops = self._build_tour_stops()
+        if not stops:
+            return
+        if stop_idx >= len(stops):
+            self._close_guided_tour()
+            return
+        stop_idx = max(0, stop_idx)
+        self._tour_step = stop_idx
+        stop = stops[stop_idx]
+
+        self._player_pause()
+        self._stop_traversal_anim(clear_canvas=False)
+        self._set_step(int(stop["step_idx"]))  # type: ignore[arg-type]
+
+        focus_nodes: Set[str] = set(stop["nodes"])  # type: ignore[arg-type]
+        focus_pipes: Set[str] = set(stop["pipes"])  # type: ignore[arg-type]
+        self.network_canvas.set_tour_focus(focus_nodes, focus_pipes)
+
+        t_real = self.result.snapshots[self.current_step].time_min if self.result else float(stop["target_min"])  # type: ignore[arg-type]
+        self._lbl_tour_hdr.configure(text=f"HALLAZGO {stop_idx + 1} / {len(stops)} · MIN {t_real:.0f}")
+        self._lbl_tour_title.configure(text=str(stop["title"]))
+        self._lbl_tour_desc.configure(text=str(stop["desc"]))
+        self._lbl_tour_metrics.configure(text=str(stop["metrics"]))
+        self._btn_tour_prev.configure(state=tk.NORMAL if stop_idx > 0 else tk.DISABLED)
+        self._btn_tour_next.configure(
+            text="Finalizar" if stop_idx == len(stops) - 1 else "Siguiente hallazgo"
+        )
+        card_w = self._fit_tour_card_geometry()
+        self._tour_card.place(relx=0.0, rely=1.0, x=12, y=-12, width=card_w, anchor="sw")
+        self._tour_card.lift()
+
+        if animate_cam:
+            cw = self.network_canvas.winfo_width()
+            self.network_canvas.animate_focus_region(
+                focus_nodes,
+                focus_pipes,
+                left_reserve_px=(card_w + 20) if cw >= 520 else 0,
+            )
+        self.status_var.set(f"Guía de Sustentación · Parada {stop_idx + 1}/{len(stops)}: {stop['title']}")
+
+    def _close_guided_tour(self) -> None:
+        if not self._tour_active:
+            return
+        self._tour_active = False
+        self._tour_card.place_forget()
+        self._set_btn_variant(self.btn_guided_tour, "dark_secondary")
+        self.network_canvas.set_tour_focus(None, None)
+        self.network_canvas.animate_reset_view()
+        self.status_var.set("Guía de Sustentación cerrada · Encuadre general restaurado.")
+
     def _on_close(self) -> None:
         self._player_pause()
         self._stop_traversal_anim(clear_canvas=False)
+        if hasattr(self, "network_canvas"):
+            self.network_canvas._stop_camera_animation()
         if self._param_rerun_after is not None:
             try:
                 self.after_cancel(self._param_rerun_after)
