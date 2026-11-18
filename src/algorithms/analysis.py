@@ -1,7 +1,7 @@
 """Clasificación de utilización e identificación de tuberías críticas."""
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from src.data_structures import DirectedGraph, PriorityQueue
 
 
@@ -59,6 +59,7 @@ def rank_critical_pipes(
     pipe_flows_m3s: Dict[str, float],
     pipe_utilizations_pct: Dict[str, float],
     min_utilization_pct: float = 0.0,
+    pipe_qmax_overrides: Optional[Dict[str, float]] = None,
 ) -> List[CriticalPipeRecord]:
     """Ordena tuberías de mayor a menor utilización usando una PriorityQueue propia."""
     pq: PriorityQueue[str] = PriorityQueue()
@@ -77,8 +78,13 @@ def rank_critical_pipes(
             continue
         flow = pipe_flows_m3s.get(pid, 0.0)
         util = pipe_utilizations_pct.get(pid, 0.0)
+        q_max = (
+            pipe_qmax_overrides[pid]
+            if pipe_qmax_overrides and pid in pipe_qmax_overrides
+            else pipe.q_max_m3s
+        )
         cat = classify_utilization(util)
-        excess = max(0.0, flow - pipe.q_max_m3s)
+        excess = max(0.0, flow - q_max)
         ranked.append(
             CriticalPipeRecord(
                 rank=rank,
@@ -86,7 +92,7 @@ def rank_critical_pipes(
                 from_node=pipe.from_node,
                 to_node=pipe.to_node,
                 flow_m3s=flow,
-                q_max_m3s=pipe.q_max_m3s,
+                q_max_m3s=q_max,
                 utilization_pct=util,
                 category=cat,
                 excess_flow_m3s=excess,
