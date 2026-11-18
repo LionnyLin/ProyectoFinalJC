@@ -18,6 +18,21 @@ Aplicación de escritorio en Python para la representación, simulación tempora
 
 *(Nota: la exportación a Word `.docx` con ecuaciones OMML nativas funciona 100 % en Python puro sin requerir Pandoc instalado en el equipo de sustentación).*
 
+## Preparación rápida (un comando)
+
+En Windows, crea el entorno virtual `.venv`, instala las dependencias de `requirements.txt` y valida el ambiente ejecutando:
+```bat
+setup.bat
+```
+Opciones útiles:
+- `setup.bat --run`: Prepara el ambiente e inicia la interfaz gráfica inmediatamente.
+- `setup.bat --test`: Prepara el ambiente y ejecuta la suite de pruebas unitarias.
+
+Una vez preparado, también puedes ejecutar el programa con:
+```bat
+.venv\Scripts\python.exe main.py
+```
+
 ## Ejecución
 
 ### Interfaz Gráfica (GUI)
@@ -45,12 +60,13 @@ python -m unittest discover -s tests -v
 ## Estructura del Proyecto
 
 - `main.py`: Punto de entrada (GUI y modos CLI `--report`, `--report-docx`, `--technical-docx`).
+- `setup.bat`: Script de Windows para crear `.venv`, instalar dependencias y ejecutar/probar en un comando.
 - `requirements.txt`: Dependencias portables para ejecución en otro equipo.
 - `data/`: Dataset oficial `DataSetBicentenario.xlsx` y su versión en `csv/`.
 - `src/data_structures/`: Estructuras de datos obligatorias propias.
 - `src/algorithms/`: BFS, DFS, consultas y análisis de criticidad.
 - `src/io/`: Cargadores y validadores Excel/CSV.
 - `src/simulation/`: Motor de simulación, comparación, figuras `3.5 × 2.8 in` y exportador Word `.docx` (OMML `8.5 pt`) sin Pandoc.
-- `src/gui/`: Interfaz gráfica adaptable Tkinter + Matplotlib en español con sistema visual **Lámina Cartográfica de Archivo Hidráulico** (Grafito `#4A4A4A`, Plata `#CBCBCB`, Vitela `#FFFFE3` y Azul Pizarra `#6D8196`).
+- `src/gui/`: Interfaz gráfica adaptable Tkinter + Matplotlib en español con sistema visual **Lámina Cartográfica de Archivo Hidráulico** (Grafito `#4A4A4A`, Plata `#CBCBCB`, Marfil `#FDF8F5` y Azul Pizarra `#6D8196`).
 - `docs/`: Documento técnico en Word (`DOCUMENTO_TECNICO.docx`), Markdown y reportes de escenarios.
 - `tests/`: Suite de pruebas unitarias.
