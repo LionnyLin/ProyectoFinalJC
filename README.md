@@ -51,6 +51,6 @@ python -m unittest discover -s tests -v
 - `src/algorithms/`: BFS, DFS, consultas y análisis de criticidad.
 - `src/io/`: Cargadores y validadores Excel/CSV.
 - `src/simulation/`: Motor de simulación, comparación, figuras `3.5 × 2.8 in` y exportador Word `.docx` (OMML `8.5 pt`) sin Pandoc.
-- `src/gui/`: Interfaz gráfica Tkinter + Matplotlib con paleta **Plum (`#3B153A`)** y **Xanthous (`#F0C987`)**.
+- `src/gui/`: Interfaz gráfica adaptable Tkinter + Matplotlib con sistema visual **Atlas Urbano de Infraestructura** (Obsidiana `#131820`, Papel técnico `#F7F8FA` y Cobalto `#0369A1`).
 - `docs/`: Documento técnico en Word (`DOCUMENTO_TECNICO.docx`), Markdown y reportes de escenarios.
 - `tests/`: Suite de pruebas unitarias.
