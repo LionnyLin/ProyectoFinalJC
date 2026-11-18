@@ -164,9 +164,22 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.app._action_toggle_basin_isolation()
         self.assertFalse(self.app.network_canvas._basin_active)
 
+        self.app._set_step(45)
+        self.app.var_bfs_start.set("10")
+        self.app.var_bfs_target.set("31")
         self.app._last_traversal_alg = "BFS"
         self.app._action_toggle_traversal_anim()
         _pump(self.app, 120)
+        # El frame final de ruta debe conservar el color hidráulico de la tubería
+        final_fr = self.app._anim_frames[-1]
+        self.app.network_canvas.set_traversal_frame(final_fr)
+        _pump(self.app, 40)
+        for pid in ("P35", "P51"):
+            line_id = self.app.network_canvas._pipe_draw_refs[pid][0]
+            self.assertNotEqual(
+                self.app.network_canvas.itemcget(line_id, "fill"),
+                theme.ACCENT_PRIMARY,
+            )
         self.app._stop_traversal_anim(clear_canvas=True)
         self.app._last_traversal_alg = "DFS"
         self.app._action_toggle_traversal_anim()

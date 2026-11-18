@@ -12,6 +12,19 @@ from src.simulation.models import PipeIntervention, TimeStepSnapshot
 from . import theme
 
 
+def _blend_hex(hex_fg: str, hex_bg: str, t: float) -> str:
+    """Interpola linealmente entre dos colores hexadecimales (#RRGGBB)."""
+    fg = hex_fg.lstrip("#")
+    bg = hex_bg.lstrip("#")
+    if len(fg) != 6 or len(bg) != 6:
+        return hex_fg
+    t = max(0.0, min(1.0, t))
+    r = int(round(int(fg[0:2], 16) * (1.0 - t) + int(bg[0:2], 16) * t))
+    g = int(round(int(fg[2:4], 16) * (1.0 - t) + int(bg[2:4], 16) * t))
+    b = int(round(int(fg[4:6], 16) * (1.0 - t) + int(bg[4:6], 16) * t))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 @dataclass
 class _PulseMeta:
     """Metadatos geométricos de un marcador direccional animado por velocidad de Manning."""
@@ -297,7 +310,12 @@ class NetworkCanvas(tk.Canvas):
     def set_snapshot(self, snapshot: Optional[TimeStepSnapshot]) -> None:
         self.snapshot = snapshot
         self._update_stamp_label()
-        if self._fast_cache_valid and snapshot is not None:
+        has_traversal = bool(
+            self._traversal_frame is not None
+            or self.highlight_pipe_ids
+            or self.highlight_node_ids
+        )
+        if self._fast_cache_valid and snapshot is not None and not has_traversal:
             self._fast_update_snapshot(snapshot)
         else:
             self.redraw()
@@ -665,7 +683,7 @@ class NetworkCanvas(tk.Canvas):
         if surcharge_vol <= 1e-3:
             return False
         n_rings = 1 if surcharge_vol < 5.0 else (2 if surcharge_vol < 60.0 else 3)
-        max_extra = min(22.0, 3.2 + 4.4 * math.log10(1.0 + surcharge_vol)) * sf * sqrt_z
+        max_extra = min(14.5, 2.6 + 3.4 * math.log10(1.0 + surcharge_vol)) * sf * sqrt_z
         for k in range(n_rings, 0, -1):
             ring_r = r + (max_extra * k / n_rings)
             is_inner_intense = k == 1 and surcharge_vol >= 25.0
@@ -1182,12 +1200,17 @@ class NetworkCanvas(tk.Canvas):
                     min_edge_dist = min(min_edge_dist, d)
 
         dpi_r_boost = min(1.30, self.dpi_scale)
-        base_radius = 11.0 * scale_factor * math.sqrt(self._zoom) * dpi_r_boost
-        max_safe_r = max(5.2, min_edge_dist * 0.28) if min_edge_dist < 900.0 else 18.0
-        node_radius = max(5.2, min(18.0, base_radius, max_safe_r))
+        base_radius = 10.4 * scale_factor * math.sqrt(self._zoom) * dpi_r_boost
+        max_safe_r = max(5.2, min_edge_dist * 0.24) if min_edge_dist < 900.0 else 16.5
+        node_radius = max(5.2, min(16.5, base_radius, max_safe_r))
         dense_mode = (w < 500 or self._zoom < 0.78)
 
         anim = self._traversal_frame
+        has_traversal_focus = (
+            anim is not None
+            or bool(self.highlight_pipe_ids)
+            or bool(self.highlight_node_ids)
+        )
         label_queue = []
 
         # Identificar nodos frontera del corte topológico (aguas arriba de tramos cerrados 100%)
@@ -1239,6 +1262,11 @@ class NetworkCanvas(tk.Canvas):
             is_isolated = pipe.pipe_id in self._isolated_pipes
             is_anim_backtrack = anim is not None and (pipe.pipe_id in anim.backtracked_edges)
             is_anim_active = anim is not None and (pipe.pipe_id in anim.active_edges)
+            is_anim_visited = (
+                anim is not None
+                and (pipe.pipe_id in anim.visited_edges)
+                and not is_anim_active
+            )
 
             ps = self.snapshot.pipe_states.get(pipe.pipe_id) if self.snapshot else None
             vel_ms = pipe.reference_velocity_ms
@@ -1254,6 +1282,10 @@ class NetworkCanvas(tk.Canvas):
             width = geom_width + (1.5 if (is_overloaded and not is_closed and anim is None) else 0.0)
             is_selected = pipe.pipe_id == self.selected_pipe_id
             is_highlighted = pipe.pipe_id in self.highlight_pipe_ids
+            is_focus_pipe = is_anim_active if anim is not None else is_highlighted
+            is_dimmed_context = has_traversal_focus and not (
+                is_focus_pipe or is_anim_visited or is_selected
+            )
 
             if is_dimmed_basin or is_isolated or is_anim_backtrack:
                 line_kw = {
@@ -1282,29 +1314,57 @@ class NetworkCanvas(tk.Canvas):
                     fill=theme.PIPE_OVERLOAD_HALO,
                     width=width + 4.0,
                     capstyle=tk.ROUND,
-                    state=tk.NORMAL if is_overloaded else tk.HIDDEN,
+                    state=tk.NORMAL if (is_overloaded and not is_dimmed_context) else tk.HIDDEN,
                 )
                 self._item_to_pipe[glow_id] = pipe.pipe_id
 
-            if is_selected or is_highlighted or is_anim_active:
-                halo_color = (
-                    theme.PIPE_SELECTED_HALO
-                    if is_selected
-                    else (theme.ACCENT_PRIMARY if is_anim_active else theme.PIPE_HIGHLIGHT_HALO)
-                )
-                halo_width = geom_width + (6.0 if is_selected else 7.0)
-                halo_id = self.create_line(
-                    sx1, sy1, sx2, sy2,
-                    fill=halo_color,
-                    width=halo_width,
-                    capstyle=tk.ROUND,
-                )
-                self._item_to_pipe[halo_id] = pipe.pipe_id
+            seg_len = math.hypot(sx2 - sx1, sy2 - sy1)
+            draw_width = width
+            draw_arrow = (8, 10, 3.8)
+            if is_dimmed_context:
+                draw_width = max(1.3, geom_width * 0.72)
+                draw_arrow = (6, 8, 2.8)
+            elif is_anim_visited and not is_focus_pipe and not is_selected:
+                draw_width = max(1.8, geom_width * 0.92)
+                draw_arrow = (7, 9, 3.2)
+            elif is_focus_pipe or is_selected:
+                draw_width = max(2.6, width + (0.6 if is_focus_pipe else 0.0))
+                draw_arrow = (9, 11, 4.2) if is_focus_pipe else (8, 10, 3.8)
+
+            if (is_selected or is_focus_pipe or is_anim_visited) and seg_len > 6.0:
+                trim_tip = min(seg_len * 0.45, 7.5)
+                hx2 = sx2 - ux * trim_tip
+                hy2 = sy2 - uy * trim_tip
+                if is_selected or is_focus_pipe:
+                    halo_color = theme.PIPE_SELECTED_HALO if is_selected else theme.ACCENT_PRIMARY
+                    halo_width = draw_width + (8.0 if (is_selected and not is_focus_pipe) else 8.8)
+                    halo_id = self.create_line(
+                        sx1, sy1, hx2, hy2,
+                        fill=halo_color,
+                        width=halo_width,
+                        capstyle=tk.BUTT,
+                    )
+                    self._item_to_pipe[halo_id] = pipe.pipe_id
+                    cushion_id = self.create_line(
+                        sx1, sy1, hx2, hy2,
+                        fill=theme.CANVAS_BG,
+                        width=draw_width + 3.4,
+                        capstyle=tk.BUTT,
+                    )
+                    self._item_to_pipe[cushion_id] = pipe.pipe_id
+                else:
+                    halo_id = self.create_line(
+                        sx1, sy1, hx2, hy2,
+                        fill="#B8C2CC",
+                        width=draw_width + 3.8,
+                        capstyle=tk.BUTT,
+                    )
+                    self._item_to_pipe[halo_id] = pipe.pipe_id
 
             # Doble línea paralela en azul pizarra (#6D8196) al ampliar diámetro
             if is_enlarged and dist > 16.0:
                 nx_p, ny_p = -uy, ux
-                offset = geom_width / 2.0 + 2.8
+                offset = draw_width / 2.0 + (4.6 if (is_selected or is_focus_pipe) else 2.8)
                 for sign in (-1.0, 1.0):
                     par_id = self.create_line(
                         sx1 + nx_p * offset * sign,
@@ -1316,13 +1376,19 @@ class NetworkCanvas(tk.Canvas):
                     )
                     self._item_to_pipe[par_id] = pipe.pipe_id
 
-            line_fill = theme.ACCENT_PRIMARY if is_anim_active else (theme.INK_PRIMARY if is_closed else color)
+            base_line_fill = theme.INK_PRIMARY if is_closed else color
+            if is_dimmed_context:
+                line_fill = _blend_hex(base_line_fill, theme.CANVAS_BG, 0.68)
+            elif is_anim_visited and not is_focus_pipe and not is_selected:
+                line_fill = _blend_hex(base_line_fill, theme.CANVAS_BG, 0.30)
+            else:
+                line_fill = base_line_fill
             line_dash = (3, 3) if is_closed else ()
             line_kw = {
                 "fill": line_fill,
-                "width": width,
+                "width": draw_width,
                 "arrow": tk.LAST,
-                "arrowshape": (8, 10, 3.8),
+                "arrowshape": draw_arrow,
                 "capstyle": tk.ROUND,
             }
             if line_dash:
@@ -1336,7 +1402,6 @@ class NetworkCanvas(tk.Canvas):
             if is_obstructed and dist > 14.0:
                 self._draw_obstruction_bars(pipe.pipe_id, mx, my, ux, uy, geom_width, is_closed)
 
-            seg_len = math.hypot(sx2 - sx1, sy2 - sy1)
             if anim is None and not is_closed and seg_len >= 20.0:
                 self._pulse_geom_refs[pipe.pipe_id] = (sx1, sy1, ux, uy, seg_len, geom_width, vel_ms)
 
@@ -1347,16 +1412,20 @@ class NetworkCanvas(tk.Canvas):
                 and not is_closed
                 and disp_val >= 0.5
                 and anim is None
+                and not is_dimmed_context
             )
             if (self.show_pipe_labels or self.show_util_labels or has_mark or has_ov_badge) and dist > 26:
-                show_this = (
-                    (not dense_mode)
-                    or is_selected
-                    or is_highlighted
-                    or is_critical
-                    or has_mark
-                    or has_ov_badge
-                )
+                if has_traversal_focus:
+                    show_this = is_selected or is_focus_pipe or has_mark
+                else:
+                    show_this = (
+                        (not dense_mode)
+                        or is_selected
+                        or is_highlighted
+                        or is_critical
+                        or has_mark
+                        or has_ov_badge
+                    )
                 if show_this:
                     prefix_parts = []
                     if is_obstructed and inv is not None:
@@ -1373,7 +1442,7 @@ class NetworkCanvas(tk.Canvas):
                     else:
                         parts = list(prefix_parts)
                         if self.show_util_labels and self.snapshot is not None and not is_closed and suf_lbl:
-                            if not dense_mode or is_selected or is_critical or has_mark:
+                            if not dense_mode or is_selected or is_focus_pipe or is_critical or has_mark:
                                 parts.append(suf_lbl)
                         lbl_full = " ".join(parts)
                     if lbl_full:
@@ -1385,18 +1454,19 @@ class NetworkCanvas(tk.Canvas):
                             ly = my
                         else:
                             side = 1.0
-                            lx = mx + nx_perp * 13.0
-                            ly = my + ny_perp * 13.0
+                            perp_off = 17.0 if (is_focus_pipe or is_selected) else 13.0
+                            lx = mx + nx_perp * perp_off
+                            ly = my + ny_perp * perp_off
                         priority = (
                             (6 if has_mark else 0)
                             + (5 if has_ov_badge else 0)
                             + (4 if is_selected else 0)
-                            + (3 if is_highlighted else 0)
+                            + (4 if is_focus_pipe else 0)
                             + (2 if is_overloaded else 0)
                             + (1 if is_critical else 0)
                         )
                         label_queue.append(
-                            (priority, util_pct, pipe.pipe_id, lx, ly, mx, is_vert, side, lbl_full, prefix_parts, is_selected, is_overloaded, is_highlighted, has_mark, has_ov_badge, is_closed)
+                            (priority, util_pct, pipe.pipe_id, lx, ly, mx, is_vert, side, lbl_full, prefix_parts, is_selected, is_overloaded, is_focus_pipe, has_mark, has_ov_badge, is_closed)
                         )
 
         placed_boxes = [
@@ -1487,6 +1557,7 @@ class NetworkCanvas(tk.Canvas):
                 or (self._tour_active and (node.node_id not in self._tour_nodes))
             )
             is_isolated = node.node_id in self._isolated_nodes
+            is_hl_node = node.node_id in self.highlight_node_ids
             is_anim_wave = anim is not None and (node.node_id in anim.active_nodes)
             is_anim_cursor = anim is not None and (node.node_id == anim.cursor_node)
             is_anim_visited = anim is not None and (node.node_id in anim.visited_nodes)
@@ -1527,8 +1598,22 @@ class NetworkCanvas(tk.Canvas):
                     fill = theme.ACCENT_SOFT
                     outline = theme.ACCENT_PRIMARY
                     txt_fill = theme.INK_PRIMARY
+                elif node.node_id != self.selected_node_id:
+                    fill = theme.PAPER_SUBTLE
+                    outline = theme.DOCK_BG
+                    txt_fill = theme.INK_MUTED
+            elif has_traversal_focus:
+                if is_hl_node:
+                    if node.node_type == "manhole":
+                        fill = theme.ACCENT_PRIMARY
+                        outline = theme.INK_PRIMARY
+                        txt_fill = theme.ACCENT_INK
+                elif node.node_id != self.selected_node_id:
+                    fill = theme.PAPER_SUBTLE
+                    outline = theme.DOCK_BG
+                    txt_fill = theme.INK_MUTED
 
-            if not is_dimmed_basin and anim is None:
+            if not is_dimmed_basin and anim is None and (not has_traversal_focus or is_hl_node or node.node_id == self.selected_node_id):
                 self._node_ring_refs.append((node.node_id, x, y, r))
 
             surcharge_vol = 0.0
@@ -1536,7 +1621,7 @@ class NetworkCanvas(tk.Canvas):
                 ns = self.snapshot.node_states[node.node_id]
                 surcharge_vol = ns.stored_volume_m3 + ns.surface_flooding_m3
 
-            if not is_dimmed_basin and anim is None:
+            if not is_dimmed_basin and anim is None and (not has_traversal_focus or is_hl_node or node.node_id == self.selected_node_id):
                 self._draw_flood_rings(
                     node.node_id, x, y, r, surcharge_vol, scale_factor, math.sqrt(self._zoom)
                 )
@@ -1552,7 +1637,7 @@ class NetworkCanvas(tk.Canvas):
                 self._item_to_node[radar_ring] = node.node_id
             elif (
                 node.node_id == self.selected_node_id
-                or node.node_id in self.highlight_node_ids
+                or (anim is None and node.node_id in self.highlight_node_ids)
             ) and not is_dimmed_basin:
                 sel_col = (
                     theme.ACCENT_PRIMARY
