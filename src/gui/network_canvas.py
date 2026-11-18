@@ -1,4 +1,4 @@
-"""Lienzo interactivo para visualizar el grafo dirigido de la red de alcantarillado."""
+"""Lienzo cartográfico interactivo para el grafo dirigido de la red de alcantarillado."""
 
 import math
 import tkinter as tk
@@ -10,24 +10,27 @@ from . import theme
 
 
 class NetworkCanvas(tk.Canvas):
-    """Canvas interactivo con retícula técnica, zoom, paneo, tooltips y escala de colores."""
+    """Canvas interactivo con retícula técnica, zoom/paneo, controles flotantes y tooltips."""
 
     def __init__(
         self,
         master: tk.Misc,
         ui_font: str = "Segoe UI",
+        mono_font: str = "Consolas",
         on_select_pipe: Optional[Callable[[str], None]] = None,
         on_select_node: Optional[Callable[[str], None]] = None,
         **kwargs,
     ) -> None:
         super().__init__(
             master,
-            bg=theme.PLUM_DEEP,
+            bg=theme.CANVAS_BG,
             highlightthickness=1,
-            highlightbackground=theme.PLUM_BORDER,
+            highlightbackground=theme.CANVAS_BORDER,
+            bd=0,
             **kwargs,
         )
         self.ui_font = ui_font
+        self.mono_font = mono_font
         self.graph: Optional[DirectedGraph] = None
         self.snapshot: Optional[TimeStepSnapshot] = None
         self.on_select_pipe = on_select_pipe
@@ -45,21 +48,98 @@ class NetworkCanvas(tk.Canvas):
         self._pan_y: float = 0.0
         self._drag_start: Optional[Tuple[int, int]] = None
         self._dragged: bool = False
+        self._resize_after: Optional[str] = None
 
         self._item_to_pipe: Dict[int, str] = {}
         self._item_to_node: Dict[int, str] = {}
         self._tooltip_window: Optional[tk.Toplevel] = None
         self._last_hover_key: Optional[str] = None
 
-        self.bind("<Configure>", lambda _e: self.redraw())
+        self._build_overlays()
+
+        self.bind("<Configure>", self._on_configure)
         self.bind("<MouseWheel>", self._on_mouse_wheel)
         self.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, 1.12))
         self.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, 1 / 1.12))
         self.bind("<ButtonPress-1>", self._on_left_press)
         self.bind("<B1-Motion>", self._on_left_drag)
         self.bind("<ButtonRelease-1>", self._on_left_release)
+        self.bind("<Double-Button-1>", self._on_double_click)
         self.bind("<Motion>", self._on_mouse_move)
         self.bind("<Leave>", lambda _e: self._hide_tooltip())
+
+    def _build_overlays(self) -> None:
+        """Crea controles flotantes de zoom/vista y guía mínima de interacción."""
+        self._zoom_bar = tk.Frame(
+            self,
+            bg=theme.CANVAS_FLOAT_BG,
+            highlightthickness=1,
+            highlightbackground=theme.CANVAS_FLOAT_BORDER,
+        )
+        self._zoom_bar.place(relx=1.0, rely=0.0, x=-12, y=12, anchor="ne")
+
+        def _make_mini_btn(txt: str, cmd: Callable[[], None]) -> tk.Button:
+            b = tk.Button(
+                self._zoom_bar,
+                text=txt,
+                command=cmd,
+                bg=theme.CANVAS_FLOAT_BG,
+                fg=theme.INK_PRIMARY,
+                activebackground=theme.PAPER_HOVER,
+                activeforeground=theme.INK_PRIMARY,
+                relief="flat",
+                bd=0,
+                padx=8,
+                pady=4,
+                font=(self.ui_font, 8, "bold"),
+                cursor="hand2",
+            )
+            b.bind("<Enter>", lambda _e: b.configure(bg=theme.PAPER_HOVER))
+            b.bind("<Leave>", lambda _e: b.configure(bg=theme.CANVAS_FLOAT_BG))
+            return b
+
+        _make_mini_btn("−", self.zoom_out).pack(side=tk.LEFT)
+        tk.Frame(self._zoom_bar, bg=theme.PAPER_BORDER, width=1).pack(side=tk.LEFT, fill=tk.Y, pady=4)
+        self._lbl_zoom = tk.Label(
+            self._zoom_bar,
+            text="100%",
+            bg=theme.CANVAS_FLOAT_BG,
+            fg=theme.INK_SECONDARY,
+            font=(self.mono_font, 8),
+            width=5,
+        )
+        self._lbl_zoom.pack(side=tk.LEFT, padx=2)
+        tk.Frame(self._zoom_bar, bg=theme.PAPER_BORDER, width=1).pack(side=tk.LEFT, fill=tk.Y, pady=4)
+        _make_mini_btn("+", self.zoom_in).pack(side=tk.LEFT)
+        tk.Frame(self._zoom_bar, bg=theme.PAPER_BORDER, width=1).pack(side=tk.LEFT, fill=tk.Y, pady=4)
+        _make_mini_btn("Ajustar", self.reset_view).pack(side=tk.LEFT)
+
+        self._hint_bar = tk.Label(
+            self,
+            text="Arrastrar: mover  ·  Rueda: zoom  ·  Clic: inspeccionar  ·  Doble clic: ajustar",
+            bg=theme.CANVAS_FLOAT_BG,
+            fg=theme.INK_MUTED,
+            highlightthickness=1,
+            highlightbackground=theme.CANVAS_FLOAT_BORDER,
+            padx=9,
+            pady=4,
+            font=(self.ui_font, 8),
+        )
+        self._hint_bar.place(relx=0.0, rely=1.0, x=12, y=-12, anchor="sw")
+
+    def _on_configure(self, event: tk.Event) -> None:
+        if event.width >= 520 and event.height >= 400:
+            self._hint_bar.place(relx=0.0, rely=1.0, x=12, y=-12, anchor="sw")
+        else:
+            self._hint_bar.place_forget()
+
+        if self._resize_after is not None:
+            self.after_cancel(self._resize_after)
+        self._resize_after = self.after(20, self._handle_deferred_resize)
+
+    def _handle_deferred_resize(self) -> None:
+        self._resize_after = None
+        self.redraw()
 
     def set_graph(self, graph: DirectedGraph) -> None:
         self.graph = graph
@@ -93,17 +173,67 @@ class NetworkCanvas(tk.Canvas):
         self.selected_pipe_id = None
         self.redraw()
 
+    def zoom_in(self) -> None:
+        w = max(200, self.winfo_width())
+        h = max(200, self.winfo_height())
+        self._zoom_at(w / 2.0, h / 2.0, 1.18)
+
+    def zoom_out(self) -> None:
+        w = max(200, self.winfo_width())
+        h = max(200, self.winfo_height())
+        self._zoom_at(w / 2.0, h / 2.0, 1.0 / 1.18)
+
     def reset_view(self) -> None:
         self._zoom = 1.0
         self._pan_x = 0.0
         self._pan_y = 0.0
+        self._update_zoom_label()
         self.redraw()
+
+    def focus_node(self, node_id: str) -> None:
+        """Centra el lienzo sobre el nodo indicado manteniendo el nivel de zoom actual."""
+        if self.graph is None:
+            return
+        node = self.graph.get_node(node_id)
+        if node is None:
+            return
+        self._center_world_point(node.x, node.y)
+
+    def focus_pipe(self, pipe_id: str) -> None:
+        """Centra el lienzo sobre el punto medio de la tubería indicada."""
+        if self.graph is None:
+            return
+        pipe = self.graph.get_pipe(pipe_id)
+        if pipe is None:
+            return
+        n1 = self.graph.get_node(pipe.from_node)
+        n2 = self.graph.get_node(pipe.to_node)
+        if n1 and n2:
+            self._center_world_point((n1.x + n2.x) / 2.0, (n1.y + n2.y) / 2.0)
+
+    def _center_world_point(self, nx: float, ny: float) -> None:
+        w = max(200, self.winfo_width())
+        h = max(200, self.winfo_height())
+        pad_x, pad_y = self._compute_padding(w, h)
+        base_x = pad_x + nx * (w - 2 * pad_x)
+        base_y = pad_y + ny * (h - 2 * pad_y)
+        cx, cy = w / 2.0, h / 2.0
+        self._pan_x = -(base_x - cx) * self._zoom
+        self._pan_y = -(base_y - cy) * self._zoom
+        self.redraw()
+
+    def _update_zoom_label(self) -> None:
+        self._lbl_zoom.configure(text=f"{int(round(self._zoom * 100))}%")
+
+    def _compute_padding(self, w: int, h: int) -> Tuple[float, float]:
+        pad_x = max(28.0, min(62.0, w * 0.08))
+        pad_y = max(32.0, min(58.0, h * 0.11))
+        return pad_x, pad_y
 
     def _world_to_screen(self, nx: float, ny: float) -> Tuple[float, float]:
         w = max(200, self.winfo_width())
         h = max(200, self.winfo_height())
-        pad_x = 58.0
-        pad_y = 48.0
+        pad_x, pad_y = self._compute_padding(w, h)
         base_x = pad_x + nx * (w - 2 * pad_x)
         base_y = pad_y + ny * (h - 2 * pad_y)
         cx, cy = w / 2.0, h / 2.0
@@ -126,6 +256,7 @@ class NetworkCanvas(tk.Canvas):
         self._pan_x = (mx - cx) - scale_ratio * (mx - cx - self._pan_x)
         self._pan_y = (my - cy) - scale_ratio * (my - cy - self._pan_y)
         self._zoom = new_zoom
+        self._update_zoom_label()
         self.redraw()
 
     def _on_left_press(self, event: tk.Event) -> None:
@@ -143,6 +274,7 @@ class NetworkCanvas(tk.Canvas):
             self._pan_x += dx
             self._pan_y += dy
             self._drag_start = (event.x, event.y)
+            self._hide_tooltip()
             self.redraw()
 
     def _on_left_release(self, event: tk.Event) -> None:
@@ -167,6 +299,13 @@ class NetworkCanvas(tk.Canvas):
                 if self.on_select_pipe:
                     self.on_select_pipe(pid)
                 return
+
+    def _on_double_click(self, event: tk.Event) -> None:
+        clicked = self.find_overlapping(event.x - 4, event.y - 4, event.x + 4, event.y + 4)
+        for item in clicked:
+            if item in self._item_to_node or item in self._item_to_pipe:
+                return
+        self.reset_view()
 
     def _on_mouse_move(self, event: tk.Event) -> None:
         if self.graph is None or self._drag_start is not None:
@@ -225,20 +364,27 @@ class NetworkCanvas(tk.Canvas):
         self._hide_tooltip()
         tw = tk.Toplevel(self)
         tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x_root}+{y_root}")
         lbl = tk.Label(
             tw,
             text=text,
             justify="left",
-            background=theme.PLUM_BASE,
-            foreground=theme.TEXT_PRIMARY,
+            background=theme.SHELL_BG,
+            foreground=theme.SHELL_TEXT,
             highlightthickness=1,
-            highlightbackground=theme.XANTHOUS,
+            highlightbackground=theme.ACCENT_ON_DARK,
             padx=10,
             pady=6,
-            font=(self.ui_font, 9),
+            font=(self.ui_font, 8),
         )
         lbl.pack()
+        tw.update_idletasks()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        tw_w = tw.winfo_reqwidth()
+        tw_h = tw.winfo_reqheight()
+        px = x_root if x_root + tw_w + 12 <= sw else max(8, x_root - tw_w - 24)
+        py = y_root if y_root + tw_h + 12 <= sh else max(8, y_root - tw_h - 24)
+        tw.wm_geometry(f"+{px}+{py}")
         self._tooltip_window = tw
 
     def _hide_tooltip(self) -> None:
@@ -246,30 +392,61 @@ class NetworkCanvas(tk.Canvas):
             self._tooltip_window.destroy()
             self._tooltip_window = None
 
-    def _draw_subtle_grid(self) -> None:
+    def _draw_drafting_grid(self) -> None:
         w = max(200, self.winfo_width())
         h = max(200, self.winfo_height())
-        step = 36
-        grid_color = "#321031"
-        for gx in range(0, w, step):
-            self.create_line(gx, 0, gx, h, fill=grid_color, width=1)
-        for gy in range(0, h, step):
-            self.create_line(0, gy, w, gy, fill=grid_color, width=1)
+        minor = 36
+        major = 144
+        for gx in range(0, w, minor):
+            col = theme.CANVAS_GRID_MAJOR if gx % major == 0 else theme.CANVAS_GRID_MINOR
+            self.create_line(gx, 0, gx, h, fill=col, width=1)
+        for gy in range(0, h, minor):
+            col = theme.CANVAS_GRID_MAJOR if gy % major == 0 else theme.CANVAS_GRID_MINOR
+            self.create_line(0, gy, w, gy, fill=col, width=1)
 
     def redraw(self) -> None:
         self.delete("all")
         self._item_to_pipe.clear()
         self._item_to_node.clear()
-        self._draw_subtle_grid()
+        self._draw_drafting_grid()
 
         if self.graph is None:
+            w = max(200, self.winfo_width())
+            h = max(200, self.winfo_height())
+            self.create_text(
+                w / 2.0,
+                h / 2.0,
+                text="Cargue un archivo Excel o carpeta CSV para visualizar la red.",
+                fill=theme.INK_MUTED,
+                font=(self.ui_font, 10),
+            )
             return
 
-        node_radius = max(9.0, min(18.0, 12.0 * math.sqrt(self._zoom)))
+        w = max(200, self.winfo_width())
+        h = max(200, self.winfo_height())
+        min_dim = min(w, h)
+        scale_factor = max(0.72, min(1.15, min_dim / 560.0))
+
         positions: Dict[str, Tuple[float, float]] = {
             node.node_id: self._world_to_screen(node.x, node.y)
             for node in self.graph.nodes()
         }
+
+        min_edge_dist = 999.0
+        for pipe in self.graph.pipes():
+            p1 = positions.get(pipe.from_node)
+            p2 = positions.get(pipe.to_node)
+            if p1 is not None and p2 is not None:
+                d = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+                if d > 1e-3:
+                    min_edge_dist = min(min_edge_dist, d)
+
+        base_radius = 11.0 * scale_factor * math.sqrt(self._zoom)
+        max_safe_r = max(5.2, min_edge_dist * 0.27) if min_edge_dist < 900.0 else 16.0
+        node_radius = max(5.2, min(16.0, base_radius, max_safe_r))
+        dense_mode = (w < 500 or self._zoom < 0.78)
+
+        label_queue = []
 
         # 1. Tuberías dirigidas
         for pipe in self.graph.pipes():
@@ -288,27 +465,29 @@ class NetworkCanvas(tk.Canvas):
 
             sx1 = x1 + ux * (node_radius + 1.5)
             sy1 = y1 + uy * (node_radius + 1.5)
-            sx2 = x2 - ux * (node_radius + 3.5)
-            sy2 = y2 - uy * (node_radius + 3.5)
+            sx2 = x2 - ux * (node_radius + 3.0)
+            sy2 = y2 - uy * (node_radius + 3.0)
 
             color = theme.PIPE_IDLE_COLOR
             util_pct = 0.0
             is_overloaded = False
+            is_critical = False
             if self.snapshot and pipe.pipe_id in self.snapshot.pipe_states:
                 ps = self.snapshot.pipe_states[pipe.pipe_id]
                 color = "#991b1b" if ps.category.is_overloaded else ps.category.color_hex
                 util_pct = ps.utilization_pct
                 is_overloaded = ps.category.is_overloaded
+                is_critical = util_pct >= 75.0
 
-            base_width = 2.1 + (pipe.diameter_in - 8.0) * 0.25
-            width = base_width * min(1.5, max(0.85, math.sqrt(self._zoom)))
+            base_width = 2.0 + (pipe.diameter_in - 8.0) * 0.24
+            width = base_width * min(1.45, max(0.78, math.sqrt(self._zoom) * scale_factor))
+
             if is_overloaded:
-                width += 1.8
-                # Halo sutil rojo claro para distinguir sobrecarga sobre fondo Plum oscuro
+                width += 1.5
                 glow_id = self.create_line(
                     sx1, sy1, sx2, sy2,
-                    fill="#fca5a5",
-                    width=width + 3.0,
+                    fill=theme.PIPE_OVERLOAD_HALO,
+                    width=width + 4.0,
                     capstyle=tk.ROUND,
                 )
                 self._item_to_pipe[glow_id] = pipe.pipe_id
@@ -316,11 +495,12 @@ class NetworkCanvas(tk.Canvas):
             is_selected = pipe.pipe_id == self.selected_pipe_id
             is_highlighted = pipe.pipe_id in self.highlight_pipe_ids
             if is_selected or is_highlighted:
-                halo_color = theme.PIPE_SELECTED_HALO if is_selected else theme.XANTHOUS
+                halo_color = theme.PIPE_SELECTED_HALO if is_selected else theme.PIPE_HIGHLIGHT_HALO
+                halo_width = width + (6.0 if is_selected else 7.5)
                 halo_id = self.create_line(
                     sx1, sy1, sx2, sy2,
                     fill=halo_color,
-                    width=width + 5.5,
+                    width=halo_width,
                     capstyle=tk.ROUND,
                 )
                 self._item_to_pipe[halo_id] = pipe.pipe_id
@@ -333,45 +513,136 @@ class NetworkCanvas(tk.Canvas):
                 fill=color,
                 width=width,
                 arrow=tk.LAST,
-                arrowshape=(9, 11, 4),
+                arrowshape=(8, 10, 3.8),
                 capstyle=tk.ROUND,
             )
             self._item_to_pipe[line_id] = pipe.pipe_id
 
-            if self.show_pipe_labels or self.show_util_labels:
-                mx, my = (sx1 + sx2) / 2.0, (sy1 + sy2) / 2.0
-                nx_perp, ny_perp = -uy, ux
-                lx = mx + nx_perp * 9.5
-                ly = my + ny_perp * 9.5
-                parts = []
-                if self.show_pipe_labels:
-                    parts.append(pipe.pipe_id)
-                if self.show_util_labels and self.snapshot is not None:
-                    parts.append(f"{util_pct:.0f}%")
-                if parts:
-                    lbl_id = self.create_text(
-                        lx,
-                        ly,
-                        text=" ".join(parts),
-                        fill=theme.XANTHOUS if (is_overloaded or is_selected) else theme.TEXT_SECONDARY,
-                        font=(self.ui_font, 7 if self._zoom < 1.2 else 8, "bold" if is_overloaded else "normal"),
-                    )
-                    self._item_to_pipe[lbl_id] = pipe.pipe_id
+            if (self.show_pipe_labels or self.show_util_labels) and dist > 26:
+                show_this = (not dense_mode) or is_selected or is_highlighted or is_critical
+                if show_this:
+                    parts = []
+                    if self.show_pipe_labels:
+                        parts.append(pipe.pipe_id)
+                    if self.show_util_labels and self.snapshot is not None:
+                        if not dense_mode or is_selected or is_critical:
+                            parts.append(f"{util_pct:.0f}%")
+                    if parts:
+                        mx, my = (sx1 + sx2) / 2.0, (sy1 + sy2) / 2.0
+                        nx_perp, ny_perp = -uy, ux
+                        is_vert = abs(ux) < 0.35
+                        if is_vert:
+                            side = -1.0 if mx > w * 0.72 else 1.0
+                            lx = mx + side * 26.0
+                            ly = my
+                        else:
+                            side = 1.0
+                            lx = mx + nx_perp * 13.0
+                            ly = my + ny_perp * 13.0
+                        priority = (
+                            (4 if is_selected else 0)
+                            + (3 if is_highlighted else 0)
+                            + (2 if is_overloaded else 0)
+                            + (1 if is_critical else 0)
+                        )
+                        label_queue.append(
+                            (priority, util_pct, pipe.pipe_id, lx, ly, mx, is_vert, side, " ".join(parts), is_selected, is_overloaded, is_highlighted)
+                        )
 
-        # 2. Vértices (alcantarillas, pozos, sumidero PTAR)
+        # Cajas ocupadas por nodos y sus etiquetas fijas (PTAR / Fuente) para evitar colisiones
+        placed_boxes = [
+            (nx - node_radius - 2, ny - node_radius - 2, nx + node_radius + 2, ny + node_radius + 2)
+            for nx, ny in positions.values()
+        ]
+        for node in self.graph.nodes():
+            nx, ny = positions[node.node_id]
+            if node.node_type == "sink":
+                px = max(60.0, nx)
+                py = ny - node_radius - 14
+                placed_boxes.append((px - 56, py - 9, px + 56, py + 9))
+            elif node.node_type == "source" and not dense_mode:
+                ty = (ny - node_radius - 11) if node.y < 0.2 else (ny + node_radius + 11)
+                placed_boxes.append((nx - 24, ty - 7, nx + 24, ty + 7))
+
+        # Ordenar por prioridad: seleccionada > resaltada > sobrecargada > crítica > mayor %
+        label_queue.sort(key=lambda item: (item[0], item[1]), reverse=True)
+
+        for priority, _u, pid, lx, ly, mx, is_vert, side, text_lbl, is_sel, is_over, is_hl in label_queue:
+            fg = (
+                theme.ACCENT_INK
+                if is_sel
+                else ("#991b1b" if is_over else (theme.ACCENT_PRIMARY if is_hl else theme.INK_SECONDARY))
+            )
+            bg = (
+                theme.ACCENT_PRIMARY
+                if is_sel
+                else ("#FEF2F2" if is_over else (theme.ACCENT_SOFT if is_hl else theme.CANVAS_FLOAT_BG))
+            )
+            border = (
+                theme.ACCENT_PRIMARY
+                if is_sel
+                else ("#FCA5A5" if is_over else (theme.PIPE_HIGHLIGHT_PATH if is_hl else "#E2E8F0"))
+            )
+            font_spec = (
+                self.mono_font,
+                7 if (self._zoom < 1.15 or dense_mode) else 8,
+                "bold" if (is_over or is_sel or is_hl) else "normal",
+            )
+            txt_id = self.create_text(lx, ly, text=text_lbl, fill=fg, font=font_spec)
+            bbox = self.bbox(txt_id)
+            if bbox is None:
+                self.delete(txt_id)
+                continue
+            if is_vert:
+                # Garantiza que las etiquetas de tramos verticales nunca pisen el eje de la tubería
+                half_w = (bbox[2] - bbox[0]) / 2.0
+                target_lx = mx + side * (half_w + 9.0)
+                target_lx = max(half_w + 6.0, min(w - half_w - 6.0, target_lx))
+                dx_shift = target_lx - lx
+                if abs(dx_shift) > 0.5:
+                    self.move(txt_id, dx_shift, 0.0)
+                    bbox = self.bbox(txt_id)
+                    if bbox is None:
+                        self.delete(txt_id)
+                        continue
+            bx0, by0, bx1, by1 = bbox[0] - 3, bbox[1] - 1, bbox[2] + 3, bbox[3] + 1
+            # Evitar superposición con nodos o etiquetas ya colocadas (si no es seleccionada)
+            overlaps = any(
+                not (bx1 < ox0 or bx0 > ox1 or by1 < oy0 or by0 > oy1)
+                for ox0, oy0, ox1, oy1 in placed_boxes
+            )
+            if overlaps and not is_sel:
+                self.delete(txt_id)
+                continue
+
+            placed_boxes.append((bx0, by0, bx1, by1))
+            rect_id = self.create_rectangle(
+                bx0, by0, bx1, by1,
+                fill=bg,
+                outline=border,
+                width=1,
+            )
+            self.tag_lower(rect_id, txt_id)
+            self._item_to_pipe[rect_id] = pid
+            self._item_to_pipe[txt_id] = pid
+
+        # 2. Vértices (alcantarillas fuente, pozos de inspección, sumidero PTAR)
         for node in self.graph.nodes():
             x, y = positions[node.node_id]
             r = node_radius
             if node.node_type == "sink":
-                r += 4.0
+                r += 3.5
                 fill = theme.NODE_SINK_FILL
                 outline = theme.NODE_SINK_BORDER
+                txt_fill = theme.NODE_SINK_TEXT
             elif node.node_type == "source":
                 fill = theme.NODE_SOURCE_FILL
                 outline = theme.NODE_SOURCE_BORDER
+                txt_fill = theme.NODE_SOURCE_TEXT
             else:
                 fill = theme.NODE_MANHOLE_FILL
                 outline = theme.NODE_MANHOLE_BORDER
+                txt_fill = theme.NODE_MANHOLE_TEXT
 
             stored_vol = 0.0
             if self.snapshot and node.node_id in self.snapshot.node_states:
@@ -380,7 +651,7 @@ class NetworkCanvas(tk.Canvas):
             if stored_vol > 1e-3:
                 ring_id = self.create_oval(
                     x - r - 4.5, y - r - 4.5, x + r + 4.5, y + r + 4.5,
-                    outline=theme.XANTHOUS,
+                    outline=theme.NODE_SURCHARGE_RING,
                     width=2.2,
                     dash=(3, 2),
                 )
@@ -388,14 +659,14 @@ class NetworkCanvas(tk.Canvas):
 
             if node.node_id == self.selected_node_id or node.node_id in self.highlight_node_ids:
                 sel_col = (
-                    theme.PIPE_SELECTED_HALO
+                    theme.ACCENT_PRIMARY
                     if node.node_id == self.selected_node_id
-                    else theme.XANTHOUS
+                    else theme.PIPE_HIGHLIGHT_PATH
                 )
                 ring2 = self.create_oval(
                     x - r - 3.5, y - r - 3.5, x + r + 3.5, y + r + 3.5,
                     outline=sel_col,
-                    width=2.5,
+                    width=2.6,
                 )
                 self._item_to_node[ring2] = node.node_id
 
@@ -411,26 +682,39 @@ class NetworkCanvas(tk.Canvas):
                 x,
                 y,
                 text=node.node_id,
-                fill=theme.TEXT_PRIMARY,
-                font=(self.ui_font, 8 if self._zoom < 1.2 else 9, "bold"),
+                fill=txt_fill,
+                font=(self.ui_font, 7 if dense_mode else (8 if self._zoom < 1.2 else 9), "bold"),
             )
             self._item_to_node[txt_id] = node.node_id
 
             if node.node_type == "sink":
+                ptar_x = max(60.0, x)
+                ptar_y = y - r - 14
                 ptar_id = self.create_text(
-                    x,
-                    y + r + 12,
+                    ptar_x,
+                    ptar_y,
                     text="PTAR Punta Canoa",
                     fill=theme.NODE_SINK_BORDER,
                     font=(self.ui_font, 8, "bold"),
                 )
+                pb = self.bbox(ptar_id)
+                if pb is not None:
+                    pbg = self.create_rectangle(
+                        pb[0] - 4, pb[1] - 1, pb[2] + 4, pb[3] + 1,
+                        fill=theme.CANVAS_FLOAT_BG,
+                        outline=theme.NODE_SINK_BORDER,
+                        width=1,
+                    )
+                    self.tag_lower(pbg, ptar_id)
+                    self._item_to_node[pbg] = node.node_id
                 self._item_to_node[ptar_id] = node.node_id
-            elif node.node_type == "source":
+            elif node.node_type == "source" and not dense_mode:
+                tag_y = (y - r - 11) if node.y < 0.2 else (y + r + 11)
                 src_tag = self.create_text(
                     x,
-                    y + r + 10,
-                    text="(S)",
-                    fill=theme.XANTHOUS,
+                    tag_y,
+                    text="Fuente",
+                    fill=theme.ACCENT_PRIMARY,
                     font=(self.ui_font, 7, "bold"),
                 )
                 self._item_to_node[src_tag] = node.node_id
