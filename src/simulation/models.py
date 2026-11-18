@@ -140,3 +140,4 @@ class SimulationResult:
     ever_critical_pipes: List[str]
     ever_overloaded_pipes: List[str]
     execution_time_ms: float
+    pipe_overloaded_minutes: Dict[str, float] = field(default_factory=dict)

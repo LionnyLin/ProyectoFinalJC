@@ -337,6 +337,16 @@ class SewerSimulationEngine:
 
         elapsed_ms = (time.perf_counter() - t_start) * 1000.0
         snapshots_list = self.history.to_list()
+        overloaded_minutes: Dict[str, float] = {pid: 0.0 for pid in self.graph.pipe_ids()}
+        for snap in self.history:
+            if snap.step_index == 0:
+                continue
+            for pid in snap.overloaded_pipe_ids:
+                overloaded_minutes[pid] = min(
+                    config.duration_min,
+                    overloaded_minutes.get(pid, 0.0) + config.dt_min,
+                )
+
         last_snap = snapshots_list[-1]
         residual = last_snap.total_manhole_storage_m3 + last_snap.total_pipe_transit_m3
 
@@ -354,4 +364,5 @@ class SewerSimulationEngine:
             ever_critical_pipes=sorted(ever_critical),
             ever_overloaded_pipes=sorted(ever_overloaded),
             execution_time_ms=elapsed_ms,
+            pipe_overloaded_minutes=overloaded_minutes,
         )

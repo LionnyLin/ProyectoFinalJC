@@ -141,6 +141,31 @@ class TestSimulation(unittest.TestCase):
         self.assertLess(int_res.peak_pipe_utilization["P31"], base_res.peak_pipe_utilization["P31"])
         self.assertAlmostEqual(self.dataset.graph.get_pipe("P31").diameter_in, 8.0, places=6)
 
+    def test_overloaded_minutes_memory(self) -> None:
+        engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
+        dry = engine.run(
+            SimulationConfig(
+                scenario_id=1,
+                scenario_name="Dry weather",
+                intensity_mm_h=0.0,
+                duration_min=90.0,
+                storm_duration_min=60.0,
+            )
+        )
+        self.assertEqual(sum(dry.pipe_overloaded_minutes.values()), 0.0)
+
+        mod = engine.run(
+            SimulationConfig(
+                scenario_id=3,
+                scenario_name="Moderate rain",
+                intensity_mm_h=30.0,
+                duration_min=90.0,
+                storm_duration_min=60.0,
+            )
+        )
+        self.assertGreater(mod.pipe_overloaded_minutes["P31"], 20.0)
+        self.assertLessEqual(mod.pipe_overloaded_minutes["P31"], 90.0)
+
 
 if __name__ == "__main__":
     unittest.main()
