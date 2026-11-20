@@ -411,6 +411,66 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertFalse(self.app.network_canvas._tour_active)
         self.assertIn("31", self.app.network_canvas.highlight_node_ids)
 
+    def test_u1_u2_u3_u4_ui_fixes(self) -> None:
+        # U1: toggle Aguas arriba / Aguas abajo solo en el Inspector (segundo clic limpia)
+        self.app.network_canvas.select_node("20")
+        self.app._on_node_selected("20")
+        _pump(self.app, 60)
+        self.app.btn_insp_downstream.invoke()
+        _pump(self.app, 60)
+        self.assertEqual(self.app._inspector_trace_state, ("20", "down"))
+        self.assertGreater(len(self.app.network_canvas.highlight_pipe_ids), 0)
+        self.app.btn_insp_downstream.invoke()
+        _pump(self.app, 60)
+        self.assertIsNone(self.app._inspector_trace_state)
+        self.assertEqual(len(self.app.network_canvas.highlight_pipe_ids), 0)
+
+        # U3: filtros excluyentes en Tuberías Críticas (>75-100% vs >100% vs <=75%)
+        self.app._set_step(30)
+        self.app.notebook.select(1)
+        _pump(self.app, 80)
+        self.app.var_crit_filter.set("critical")
+        self.app._refresh_critical_table()
+        _pump(self.app, 60)
+        for pid in self.app.tree_critical.get_children():
+            u_txt = self.app.tree_critical.set(pid, "util").split("%")[0].strip()
+            u_val = float(u_txt)
+            self.assertGreater(u_val, 75.0)
+            self.assertLessEqual(u_val, 100.0)
+        self.app.var_crit_filter.set("overloaded")
+        self.app._refresh_critical_table()
+        _pump(self.app, 60)
+        for pid in self.app.tree_critical.get_children():
+            u_txt = self.app.tree_critical.set(pid, "util").split("%")[0].strip()
+            self.assertGreater(float(u_txt), 100.0)
+        self.app.var_crit_filter.set("rest")
+        self.app._refresh_critical_table()
+        _pump(self.app, 60)
+        for pid in self.app.tree_critical.get_children():
+            u_txt = self.app.tree_critical.set(pid, "util").split("%")[0].strip()
+            self.assertLessEqual(float(u_txt), 75.0)
+
+        # U2: Comparación actualiza timestamp y marca sucio al cambiar parámetros
+        self.app.notebook.select(3)
+        _pump(self.app, 200)
+        self.assertIn("Al día", self.app.lbl_comp_hint.cget("text"))
+        self.app.var_ingress_pct.set(2.5)
+        self.app._schedule_param_rerun()
+        _pump(self.app, 180)
+        self.assertIn("Parámetros modificados", self.app.lbl_comp_hint.cget("text"))
+        self.app.btn_compare_scenarios.invoke()
+        _pump(self.app, 180)
+        self.assertIn("Al día", self.app.lbl_comp_hint.cget("text"))
+        self.app._apply_preset(100.0, 0.0)
+        _pump(self.app, 80)
+
+        # U4: _ScenarioMenuButton pausa reproducción al desplegar y mantiene 5 escenarios
+        self.assertEqual(len(self.app.combo_scenario["values"]), 5)
+        self.app.toggle_play_pause()
+        self.assertTrue(self.app.is_playing)
+        self.app.combo_scenario._handle_postcommand()
+        self.assertFalse(self.app.is_playing)
+
 
 if __name__ == "__main__":
     unittest.main()

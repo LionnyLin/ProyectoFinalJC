@@ -69,9 +69,10 @@ def generate_markdown_report(
         f"- **Perfil temporal (hietograma):** {cfg.hyetograph}",
         f"- **Reparto entre fuentes:** {cfg.source_distribution} (por capacidad instalada o uniforme 1/8)",
         f"- **Regla de distribución en bifurcaciones:** {cfg.split_rule}",
-        "- **Tiempo de tránsito:** $t_i = L_i / V_i$, con $V_i = Q_{max,i} / A_i$ (velocidad a tubo lleno de Manning)",
-        f"- **Utilización física vs. demanda:** Conducción física acotada a $\\le {cfg.max_physical_utilization_pct:.0f}\\%$ bajo sobrepresión; el exceso de demanda se reporta por separado como índice ($\\times Q_{{max}}$) y déficit.",
+        "- **Tiempo de tránsito:** $t_i = L_i / V_i$, con $V_i = Q_{max,i} / A_i$ (Manning) e integración con sub-paso hidráulico continuo ($\\Delta t_{sim} \\le 10\\;s$).",
+        "- **Utilización oficial:** $O_i(t) = (Q_{dem,i}(t) / Q_{max,ef,i}) \\times 100$ sin techo artificial; la conducción física aguas abajo se limita a $Q_{max,ef,i}$.",
         f"- **Pozos finitos y rebose:** Capacidad máxima de pozo = {cfg.max_manhole_storage_m3:.1f} m³ antes de derivar excedente a rebose superficial en vía con conservación exacta de masa.",
+        "- **Nota dataset (P57):** Se conserva `P57 = 12\"` (`0.08743 m³/s`) tal como figura en `DataSetBicentenario.xlsx` (el Anexo 2 gráfico del enunciado rotula `0.19`).",
     ]
     if interventions:
         int_desc = ", ".join(
@@ -90,12 +91,12 @@ def generate_markdown_report(
         f"- **Volumen remanente (en pozos + tránsito al cierre):** {current_result.final_residual_m3:,.3f} m³",
         f"- **Rebose superficial acumulado en vía:** {current_result.total_surface_flooding_m3:,.3f} m³",
         f"- **Error máximo de balance de masa:** {current_result.max_mass_balance_error_m3:.3e} m³",
-        f"- **Tuberías críticas (>= 75 %):** {len(current_result.ever_critical_pipes)} ({', '.join(current_result.ever_critical_pipes) or 'Ninguna'})",
-        f"- **Tuberías sobrecargadas (> 100 %):** {len(current_result.ever_overloaded_pipes)} ({', '.join(current_result.ever_overloaded_pipes) or 'Ninguna'})",
+        f"- **Tuberías críticas (>75–100 %):** {len(current_result.ever_near_capacity_pipes)} ({', '.join(current_result.ever_near_capacity_pipes) or 'Ninguna'})",
+        f"- **Tuberías sobrecargadas (>100 %):** {len(current_result.ever_overloaded_pipes)} ({', '.join(current_result.ever_overloaded_pipes) or 'Ninguna'})",
         f"- **Tiempo de cómputo:** {current_result.execution_time_ms:.2f} ms",
         "",
-        "## 4. Ranking de Tuberías por Utilización Física Pico",
-        "| # | Tubería | Tramo | Q_físico (m³/s) | Q_max (m³/s) | Util. Fís (%) | Demanda | Estado | Déficit (m³/s) |",
+        "## 4. Ranking de Tuberías por Utilización Pico",
+        "| # | Tubería | Tramo | Q_cond (m³/s) | Q_max (m³/s) | Util (%) | Razón Qmax | Estado | Exceso (m³/s) |",
         "|---:|:---:|:---:|---:|---:|---:|---:|:---|---:|",
     ])
 
@@ -110,14 +111,14 @@ def generate_markdown_report(
         lines.extend([
             "",
             "## 5. Comparación entre Escenarios de Precipitación",
-            "| Escenario | Condición | Intensidad (mm/h) | Util. Fís. Máx (%) | Demanda Máx | Tubería Crítica | Críticas (>=75%) | Sobrecargadas (>100%) | Pico PTAR (m³/s) | Rebose (m³) | Error Masa (m³) |",
+            "| Escenario | Condición | Intensidad (mm/h) | Util. Máx (%) | Razón Máx | Tubería Crítica | Críticas (>75–100%) | Sobrec. (>100%) | Pico PTAR (m³/s) | Rebose (m³) | Error Masa (m³) |",
             "|:---:|:---|---:|---:|---:|:---:|---:|---:|---:|---:|---:|",
         ])
         for sc in comparisons:
             lines.append(
                 f"| {sc.scenario_id} | {sc.condition} | {sc.intensity_mm_h:.1f} | "
                 f"{sc.max_utilization_pct:.2f}% | {sc.max_demand_ratio_pct / 100.0:.2f}x | {sc.most_critical_pipe} | "
-                f"{sc.num_critical_pipes} | {sc.num_overloaded_pipes} | "
+                f"{sc.num_near_capacity_pipes} | {sc.num_overloaded_pipes} | "
                 f"{sc.peak_sink_discharge_m3s:.4f} | {sc.total_surface_flooding_m3:,.2f} | {sc.mass_balance_error_m3:.2e} |"
             )
 

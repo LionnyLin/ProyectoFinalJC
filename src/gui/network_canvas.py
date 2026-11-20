@@ -406,29 +406,35 @@ class NetworkCanvas(tk.Canvas):
             lbl = f"{ov_min:.0f}m" if ov_min >= 0.5 else "0m"
             return (theme.INK_PRIMARY if is_closed else col, tier, is_over, is_crit, ov_min, lbl)
 
+        if is_closed:
+            return (theme.INK_PRIMARY, 0, False, False, 0.0, "CERRADA")
+
         if self._map_mode == "peak":
             u = self._peak_util_map.get(pipe_id, ps.utilization_pct if ps is not None else 0.0)
             cat = classify_utilization(u)
             col = "#991b1b" if cat.is_overloaded else cat.color_hex
+            lbl_u = f"{u / 1000.0:.1f}k%" if u >= 1000.0 else f"{u:.0f}%"
             return (
-                theme.INK_PRIMARY if is_closed else col,
+                col,
                 cat.tier_index,
-                cat.is_overloaded and not is_closed,
-                u >= 75.0 and not is_closed,
+                cat.is_overloaded,
+                u > 75.0,
                 u,
-                f"{u:.0f}%",
+                lbl_u,
             )
 
         if ps is None:
             return (theme.PIPE_IDLE_COLOR, 0, False, False, 0.0, "")
         col = "#991b1b" if ps.category.is_overloaded else ps.category.color_hex
+        u_inst = ps.utilization_pct
+        lbl_inst = f"{u_inst / 1000.0:.1f}k%" if u_inst >= 1000.0 else f"{u_inst:.0f}%"
         return (
-            theme.INK_PRIMARY if is_closed else col,
+            col,
             ps.category.tier_index,
-            ps.category.is_overloaded and not is_closed,
-            ps.utilization_pct >= 75.0 and not is_closed,
-            ps.utilization_pct,
-            f"{ps.utilization_pct:.0f}%",
+            ps.category.is_overloaded,
+            u_inst > 75.0,
+            u_inst,
+            lbl_inst,
         )
 
     def set_traversal_frame(self, frame: Optional[TraversalAnimFrame]) -> None:
@@ -1082,13 +1088,18 @@ class NetworkCanvas(tk.Canvas):
             lines.append("[AISLADO DE 31] Aguas arriba de un cierre al 100%")
         if self.snapshot and pipe.pipe_id in self.snapshot.pipe_states:
             ps = self.snapshot.pipe_states[pipe.pipe_id]
-            lines.append(
-                f"Caudal físico (t={self.snapshot.time_min:.0f}m): {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
-            )
-            if ps.demand_ratio_pct > 100.5:
+            if ps.is_closed:
                 lines.append(
-                    f"Índice de demanda: {ps.demand_ratio_pct / 100.0:.2f}× Qmax ({ps.demand_ratio_pct:.0f}%)  ·  Déficit: {ps.excess_flow_m3s:.4f} m³/s"
+                    f"Estado (t={self.snapshot.time_min:.0f}m): CERRADA 100%  ·  Caudal conducido: 0.0000 m³/s"
                 )
+            else:
+                lines.append(
+                    f"Caudal conducido (t={self.snapshot.time_min:.0f}m): {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
+                )
+                if ps.utilization_pct > 100.5:
+                    lines.append(
+                        f"Demanda: {ps.demand_flow_m3s:.4f} m³/s ({ps.utilization_pct / 100.0:.2f}× Qmax)  ·  Exceso: {ps.excess_flow_m3s:.4f} m³/s"
+                    )
         if self.snapshot and pipe.pipe_id in self._peak_util_map:
             pk = self._peak_util_map[pipe.pipe_id]
             lines.append(f"Pico hasta t = {self.snapshot.time_min:.0f} min: {pk:.1f}%")

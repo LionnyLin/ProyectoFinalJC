@@ -73,7 +73,7 @@ class TestAlgorithms(unittest.TestCase):
         self.assertEqual(classify_utilization(75.01).color_hex, "#ef4444")
         self.assertEqual(classify_utilization(100.0).color_hex, "#ef4444")
         cat_over = classify_utilization(100.1)
-        self.assertEqual(cat_over.color_hex, "#7f1d1d")
+        self.assertEqual(cat_over.color_hex, "#991b1b")
         self.assertTrue(cat_over.is_overloaded)
 
     def test_rank_critical_pipes_order(self) -> None:
@@ -81,8 +81,17 @@ class TestAlgorithms(unittest.TestCase):
         utils = {p.pipe_id: 10.0 for p in self.graph.pipes()}
         utils["P30"] = 140.0
         utils["P1"] = 85.0
-        ranked = rank_critical_pipes(self.graph, flows, utils, min_utilization_pct=75.0)
+        ranked = rank_critical_pipes(self.graph, flows, utils, min_utilization_pct=75.0, exclusive_min=True)
         self.assertEqual([r.pipe_id for r in ranked], ["P30", "P1"])
+        ranked_near = rank_critical_pipes(
+            self.graph, flows, utils, min_utilization_pct=75.0, max_utilization_pct=100.0, exclusive_min=True
+        )
+        self.assertEqual([r.pipe_id for r in ranked_near], ["P1"])
+        ranked_rest = rank_critical_pipes(
+            self.graph, flows, utils, min_utilization_pct=0.0, max_utilization_pct=75.0, exclusive_min=False
+        )
+        self.assertNotIn("P30", [r.pipe_id for r in ranked_rest])
+        self.assertNotIn("P1", [r.pipe_id for r in ranked_rest])
 
     def test_isolation_route_and_traversal_anim_frames(self) -> None:
         iso_nodes, iso_pipes = find_isolated_from_sinks(self.graph, {"P3"})
@@ -127,6 +136,12 @@ class TestAlgorithms(unittest.TestCase):
         self.assertEqual(classify_overload_persistence(35.0, 90.0)[0], 2)
         self.assertEqual(classify_overload_persistence(60.0, 90.0)[0], 3)
         self.assertEqual(classify_overload_persistence(80.0, 90.0)[0], 4)
+
+        # Tubería cerrada 100% no recibe atribución de fuentes (M3)
+        attr_closed = compute_source_attribution(
+            self.graph, snapshot=None, pipe_qmax_overrides={"P31": 0.0}
+        )
+        self.assertEqual(attr_closed.pipe_shares["P31"], [])
 
 
 if __name__ == "__main__":

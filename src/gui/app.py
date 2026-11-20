@@ -2,9 +2,10 @@
 
 import math
 import os
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from src.algorithms import (
     OVERLOAD_PERSISTENCE_LEVELS,
@@ -64,6 +65,84 @@ _COMMERCIAL_DIAMETERS_IN = [
 ]
 
 
+class _ScenarioMenuButton(tk.Menubutton):
+    """Selector de escenarios basado en tk.Menubutton + tk.Menu (inmune al popdown en blanco de clam)."""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        textvariable: tk.StringVar,
+        on_select: Callable[[], None],
+        on_before_open: Optional[Callable[[], None]] = None,
+        ui_font: str = "Segoe UI",
+    ) -> None:
+        super().__init__(
+            master,
+            textvariable=textvariable,
+            indicatoron=True,
+            anchor="w",
+            justify="left",
+            bg=theme.PAPER_BG,
+            fg=theme.INK_PRIMARY,
+            activebackground=theme.PAPER_SUBTLE,
+            activeforeground=theme.INK_PRIMARY,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=theme.DOCK_BORDER,
+            highlightcolor=theme.ACCENT_PRIMARY,
+            padx=8,
+            pady=5,
+            font=(ui_font, 9),
+            cursor="hand2",
+        )
+        self._var = textvariable
+        self._on_select = on_select
+        self._on_before_open = on_before_open
+        self._values: List[str] = []
+        self._menu = tk.Menu(
+            self,
+            tearoff=0,
+            bg=theme.PAPER_BG,
+            fg=theme.INK_PRIMARY,
+            activebackground=theme.ACCENT_PRIMARY,
+            activeforeground=theme.ACCENT_INK,
+            selectcolor=theme.ACCENT_PRIMARY,
+            font=(ui_font, 9),
+            postcommand=self._handle_postcommand,
+        )
+        self.configure(menu=self._menu)
+        self.bind("<ButtonPress-1>", lambda _e: self._handle_postcommand(), add="+")
+        self.bind("<<ComboboxSelected>>", lambda _e: self._on_select(), add="+")
+
+    def _handle_postcommand(self) -> None:
+        if self._on_before_open is not None:
+            self._on_before_open()
+
+    def set_values(self, values: Sequence[str]) -> None:
+        self._values = list(values)
+        self._menu.delete(0, tk.END)
+        for val in self._values:
+            self._menu.add_radiobutton(
+                label=val,
+                variable=self._var,
+                value=val,
+                command=self._on_select,
+            )
+
+    def __getitem__(self, key: str):
+        if key == "values":
+            return tuple(self._values)
+        return super().__getitem__(key)
+
+    def __setitem__(self, key: str, value) -> None:
+        if key == "values":
+            self.set_values(value)
+        else:
+            super().__setitem__(key, value)
+
+
 class BicentenarioSewerApp(tk.Tk):
     """Interfaz gráfica adaptable para simulación y análisis de la red de alcantarillado."""
 
@@ -115,6 +194,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._isolated_nodes: Set[str] = set()
         self._isolated_pipes: Set[str] = set()
         self._basin_isolated: bool = False
+        self._inspector_trace_state: Optional[Tuple[str, str]] = None
         self._active_route_pipes: List[PipeEdge] = []
         self._last_traversal_alg: str = "BFS"
         self._anim_frames: List[TraversalAnimFrame] = []
@@ -145,8 +225,8 @@ class BicentenarioSewerApp(tk.Tk):
         self.var_duration = tk.DoubleVar(value=90.0)
         self.var_storm_dur = tk.DoubleVar(value=60.0)
         self.var_dt = tk.DoubleVar(value=1.0)
-        self.var_ingress_pct = tk.DoubleVar(value=2.5)
-        self.var_dry_flow = tk.DoubleVar(value=0.003)
+        self.var_ingress_pct = tk.DoubleVar(value=100.0)
+        self.var_dry_flow = tk.DoubleVar(value=0.0)
         self.var_split_rule = tk.StringVar(value="proportional")
         self.var_hyetograph = tk.StringVar(value="uniform")
         self.var_source_dist = tk.StringVar(value="capacity")
@@ -647,7 +727,7 @@ class BicentenarioSewerApp(tk.Tk):
         left_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.left_panel.bind("<Enter>", lambda _e: self._bind_left_mousewheel(True))
-        self.left_panel.bind("<Leave>", lambda _e: self._bind_left_mousewheel(False))
+        self.left_panel.bind("<Leave>", self._on_left_panel_leave)
 
         self._build_left_controls(self.left_frame)
 
@@ -704,6 +784,18 @@ class BicentenarioSewerApp(tk.Tk):
             self.left_canvas.yview_scroll(units, "units")
         except tk.TclError:
             pass
+
+    def _on_left_panel_leave(self, event: tk.Event) -> None:
+        try:
+            widget = self.winfo_containing(event.x_root, event.y_root)
+            if widget is not None and (
+                self._is_descendant(widget, self.left_panel)
+                or widget.winfo_class() in ("Menu", "Listbox", "ComboboxPopdownFrame")
+            ):
+                return
+        except (KeyError, tk.TclError):
+            pass
+        self._bind_left_mousewheel(False)
 
     def _bind_left_mousewheel(self, active: bool) -> None:
         if not hasattr(self, "left_canvas") or not self.left_canvas.winfo_exists():
@@ -1044,11 +1136,12 @@ class BicentenarioSewerApp(tk.Tk):
             fg=theme.INK_PRIMARY,
             font=(self.ui_font, 8, "bold"),
         ).pack(anchor="w", pady=(0, 3))
-        self.combo_scenario = ttk.Combobox(
+        self.combo_scenario = _ScenarioMenuButton(
             sec_sim,
             textvariable=self.var_scenario,
-            state="readonly",
-            style="Light.TCombobox",
+            on_select=lambda: self._on_simulation_option_changed(mark_comp=False),
+            on_before_open=self._player_pause,
+            ui_font=self.ui_font,
         )
         self.combo_scenario.pack(fill=tk.X, pady=(0, 8))
         self.combo_scenario.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=False))
@@ -1097,8 +1190,8 @@ class BicentenarioSewerApp(tk.Tk):
         preset_row.pack(fill=tk.X, pady=(8, 4))
         self._make_btn(
             preset_row,
-            "Calibrado (2.5%)",
-            lambda: self._apply_preset(2.5, 0.003),
+            "Oficial Guía (100%)",
+            lambda: self._apply_preset(100.0, 0.0),
             variant="dock_secondary",
             padx=6,
             pady=4,
@@ -1106,8 +1199,8 @@ class BicentenarioSewerApp(tk.Tk):
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
         self._make_btn(
             preset_row,
-            "Racional 100%",
-            lambda: self._apply_preset(100.0, 0.0),
+            "Calibrado (2.5% + Q_san)",
+            lambda: self._apply_preset(2.5, 0.003),
             variant="dock_secondary",
             padx=6,
             pady=4,
@@ -1493,7 +1586,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._kpi_cards: Dict[str, tk.Label] = {}
         kpi_defs = [
             ("max_util", "UTILIZACIÓN MÁX.", "-"),
-            ("critical", "CRÍTICAS (≥75%)", "-"),
+            ("critical", "CRÍTICAS (>75–100%)", "-"),
             ("overloaded", "SOBRECARGA (>100%)", "-"),
             ("ptar", "DESCARGA PTAR 31", "-"),
         ]
@@ -1834,7 +1927,7 @@ class BicentenarioSewerApp(tk.Tk):
         self.btn_insp_upstream = self._make_btn(
             self.inspector_actions,
             "Aguas arriba",
-            lambda: self._trace_from_selected("up"),
+            lambda: self._action_toggle_inspector_trace("up"),
             variant="light_secondary",
             padx=7,
             pady=3,
@@ -1843,7 +1936,7 @@ class BicentenarioSewerApp(tk.Tk):
         self.btn_insp_downstream = self._make_btn(
             self.inspector_actions,
             "Aguas abajo",
-            lambda: self._trace_from_selected("down"),
+            lambda: self._action_toggle_inspector_trace("down"),
             variant="light_secondary",
             padx=7,
             pady=3,
@@ -2063,7 +2156,8 @@ class BicentenarioSewerApp(tk.Tk):
         tk.Frame(tab_crit, bg=theme.DOCK_BORDER, height=1).pack(fill=tk.X)
         for text, val in [
             ("Todas", "all"),
-            ("Críticas (≥75%)", "critical"),
+            ("Resto (≤75%)", "rest"),
+            ("Críticas (>75–100%)", "critical"),
             ("Sobrec. (>100%)", "overloaded"),
         ]:
             tk.Radiobutton(
@@ -2157,25 +2251,26 @@ class BicentenarioSewerApp(tk.Tk):
         comp_top = tk.Frame(tab_comp, bg=theme.PAPER_SUBTLE)
         comp_top.pack(fill=tk.X)
         tk.Frame(tab_comp, bg=theme.DOCK_BORDER, height=1).pack(fill=tk.X)
-        self._make_btn(
+        self.btn_compare_scenarios = self._make_btn(
             comp_top,
-            "Comparar 5 Escenarios",
+            "Recalcular 5 Escenarios",
             self._action_compare_scenarios,
-            variant="primary",
+            variant="light_secondary",
             padx=10,
             pady=4,
             font_size=8,
-        ).pack(side=tk.LEFT, padx=8, pady=6)
+        )
+        self.btn_compare_scenarios.pack(side=tk.LEFT, padx=8, pady=6)
         self.lbl_comp_hint = tk.Label(
             comp_top,
-            text="Doble clic para activar escenario",
+            text="Doble clic activa escenario",
             bg=theme.PAPER_SUBTLE,
             fg=theme.INK_MUTED,
             font=(self.ui_font, 8),
         )
         self.lbl_comp_hint.pack(side=tk.RIGHT, padx=8)
 
-        comp_cols = ("esc", "int", "max_u", "crit_p", "n_crit", "n_over", "ptar")
+        comp_cols = ("esc", "int", "max_u", "crit_p", "n_crit", "n_over", "ptar", "flood")
         self._comp_tree_compact: Optional[bool] = None
         self.tree_comp = ttk.Treeview(tab_comp, columns=comp_cols, show="headings", height=5)
         self.tree_comp.tag_configure("odd", background=theme.PAPER_ALT_ROW)
@@ -2184,9 +2279,10 @@ class BicentenarioSewerApp(tk.Tk):
             ("int", "mm/h"),
             ("max_u", "Máx %"),
             ("crit_p", "Crítica"),
-            ("n_crit", "≥75%"),
+            ("n_crit", ">75-100"),
             ("n_over", ">100%"),
             ("ptar", "Pico PTAR"),
+            ("flood", "Rebose m³"),
         ]:
             self.tree_comp.heading(cid, text=htext)
             self.tree_comp.column(cid, width=54, minwidth=30, anchor="center")
@@ -2229,23 +2325,23 @@ class BicentenarioSewerApp(tk.Tk):
 
         if compact:
             weights = [
-                ("rank", 0.07, 22),
-                ("pipe", 0.11, 34),
-                ("tramo", 0.16, 48),
-                ("q_curr", 0.15, 45),
-                ("q_max", 0.15, 45),
-                ("util", 0.17, 48),
-                ("estado", 0.19, 54),
+                ("rank", 0.06, 22),
+                ("pipe", 0.10, 34),
+                ("tramo", 0.15, 46),
+                ("q_curr", 0.14, 44),
+                ("q_max", 0.14, 44),
+                ("util", 0.16, 48),
+                ("estado", 0.25, 76),
             ]
         else:
             weights = [
-                ("rank", 0.07, 26),
-                ("pipe", 0.11, 40),
-                ("tramo", 0.15, 52),
-                ("q_curr", 0.17, 56),
-                ("q_max", 0.16, 54),
-                ("util", 0.13, 46),
-                ("estado", 0.21, 70),
+                ("rank", 0.06, 26),
+                ("pipe", 0.10, 38),
+                ("tramo", 0.14, 50),
+                ("q_curr", 0.15, 54),
+                ("q_max", 0.14, 52),
+                ("util", 0.15, 52),
+                ("estado", 0.26, 98),
             ]
         for cid, ratio, min_w in weights:
             self.tree_critical.column(cid, width=max(min_w, int(w * ratio)))
@@ -2258,7 +2354,7 @@ class BicentenarioSewerApp(tk.Tk):
             if compact:
                 self.tree_comp["displaycolumns"] = ("esc", "int", "max_u", "crit_p", "n_over", "ptar")
                 for cid, htext in [
-                    ("esc", "Esc."),
+                    ("esc", "Escenario"),
                     ("int", "mm"),
                     ("max_u", "Máx %"),
                     ("crit_p", "Crít."),
@@ -2272,10 +2368,11 @@ class BicentenarioSewerApp(tk.Tk):
                     ("esc", "Escenario"),
                     ("int", "mm/h"),
                     ("max_u", "Máx %"),
-                    ("crit_p", "Crítica"),
-                    ("n_crit", "≥75%"),
+                    ("crit_p", "Crít."),
+                    ("n_crit", ">75-100"),
                     ("n_over", ">100%"),
-                    ("ptar", "Pico PTAR"),
+                    ("ptar", "PTAR"),
+                    ("flood", "Rebose m³"),
                 ]:
                     self.tree_comp.heading(cid, text=htext)
             if self.comparisons:
@@ -2283,22 +2380,23 @@ class BicentenarioSewerApp(tk.Tk):
 
         if compact:
             weights = [
-                ("esc", 0.22, 60),
-                ("int", 0.11, 30),
-                ("max_u", 0.19, 52),
-                ("crit_p", 0.13, 38),
-                ("n_over", 0.15, 42),
-                ("ptar", 0.20, 56),
+                ("esc", 0.28, 96),
+                ("int", 0.09, 28),
+                ("max_u", 0.18, 50),
+                ("crit_p", 0.11, 36),
+                ("n_over", 0.13, 38),
+                ("ptar", 0.21, 54),
             ]
         else:
             weights = [
-                ("esc", 0.27, 82),
-                ("int", 0.10, 36),
-                ("max_u", 0.14, 46),
-                ("crit_p", 0.12, 42),
-                ("n_crit", 0.11, 38),
-                ("n_over", 0.11, 40),
-                ("ptar", 0.15, 52),
+                ("esc", 0.27, 128),
+                ("int", 0.08, 34),
+                ("max_u", 0.12, 50),
+                ("crit_p", 0.09, 38),
+                ("n_crit", 0.09, 44),
+                ("n_over", 0.09, 42),
+                ("ptar", 0.12, 54),
+                ("flood", 0.14, 62),
             ]
         for cid, ratio, min_w in weights:
             self.tree_comp.column(cid, width=max(min_w, int(w * ratio)))
@@ -2362,6 +2460,9 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _mark_comparisons_dirty(self) -> None:
         self._comparisons_dirty = True
+        if hasattr(self, "btn_compare_scenarios") and self.comparisons:
+            self.btn_compare_scenarios.configure(text="Recalcular 5 Escenarios *")
+            self._set_btn_variant(self.btn_compare_scenarios, "primary")
         if hasattr(self, "lbl_comp_hint") and self.comparisons:
             self.lbl_comp_hint.configure(
                 text="Parámetros modificados · Recalcular", fg=theme.STATUS_WARN_LIGHT
@@ -2544,9 +2645,9 @@ class BicentenarioSewerApp(tk.Tk):
         msg = (
             "Supuestos del Modelo Computacional (Ciudad Bicentenario):\n\n"
             "1. Grafo Dirigido Propio: 46 vértices (8 fuentes, 37 pozos, 1 sumidero PTAR 31) y 59 aristas.\n"
-            "2. Método Racional: Q = 0.00278 · C · I(t) · A · f_ingreso + Q_sanitario (ponderado por capacidad instalada de fuente o uniforme 1/8).\n"
-            "3. Tiempo de Tránsito: t_i = L_i / V_i, con V_i = Q_max,i / A_i (Manning).\n"
-            "4. Utilización Física vs. Demanda: La conducción física se acota a ≤115% bajo sobrepresión, separando el índice de demanda (× Q_max) y el déficit.\n"
+            "2. Método Racional: Q = 0.00278 · C · I(t) · A (por defecto al 100% y Q_san=0 según guía; opcionalmente calibrable en parámetros).\n"
+            "3. Tiempo de Tránsito Continuo: t_i = L_i / V_i con sub-paso hidráulico interno (≤10 s) y cola de prioridad de eventos.\n"
+            "4. Porcentaje Oficial de Utilización: O_i(t) = (Q_dem,i(t) / Q_max,i) × 100 sin techo artificial, mientras el caudal conducido se limita físicamente a Q_max,i.\n"
             "5. Pozos Finitos y Rebose: Cada pozo retiene hasta 4.0 m³ antes de derivar el excedente a rebose superficial en vía con conservación exacta de masa."
         )
         messagebox.showinfo("Supuestos del Modelo", msg)
@@ -2812,8 +2913,8 @@ class BicentenarioSewerApp(tk.Tk):
             text=f"{max_u:.1f}%", fg=theme.TIER_TEXT_ON_LIGHT[tier_idx]
         )
         self._kpi_cards["critical"].configure(
-            text=str(len(snap.critical_pipe_ids)),
-            fg=theme.STATUS_ERR_LIGHT if snap.critical_pipe_ids else theme.INK_PRIMARY,
+            text=str(len(snap.near_capacity_pipe_ids)),
+            fg=theme.STATUS_ERR_LIGHT if snap.near_capacity_pipe_ids else theme.INK_PRIMARY,
         )
         self._kpi_cards["overloaded"].configure(
             text=str(len(snap.overloaded_pipe_ids)),
@@ -3051,6 +3152,9 @@ class BicentenarioSewerApp(tk.Tk):
     def _on_pipe_selected(self, pipe_id: str) -> None:
         self._selected_pipe_id = pipe_id
         self._selected_node_id = None
+        if self._inspector_trace_state is not None:
+            self._inspector_trace_state = None
+            self._sync_inspector_trace_buttons()
         self._sync_intervention_controls()
         if self._basin_isolated:
             self._apply_basin_isolation()
@@ -3079,6 +3183,9 @@ class BicentenarioSewerApp(tk.Tk):
             )
 
     def _on_node_selected(self, node_id: str) -> None:
+        if self._inspector_trace_state is not None and self._inspector_trace_state[0] != node_id:
+            self._inspector_trace_state = None
+            self._sync_inspector_trace_buttons()
         self._selected_node_id = node_id
         self._selected_pipe_id = None
         self.var_bfs_start.set(node_id)
@@ -3261,10 +3368,42 @@ class BicentenarioSewerApp(tk.Tk):
         self._sync_isolation_and_canvas()
         self.run_simulation(preserve_previous=True)
 
+    def _sync_inspector_trace_buttons(self) -> None:
+        up_on = (
+            self._inspector_trace_state is not None
+            and self._inspector_trace_state[0] == self._selected_node_id
+            and self._inspector_trace_state[1] == "up"
+        )
+        dn_on = (
+            self._inspector_trace_state is not None
+            and self._inspector_trace_state[0] == self._selected_node_id
+            and self._inspector_trace_state[1] == "down"
+        )
+        if hasattr(self, "btn_insp_upstream"):
+            self._set_btn_variant(
+                self.btn_insp_upstream, "primary" if up_on else "light_secondary"
+            )
+        if hasattr(self, "btn_insp_downstream"):
+            self._set_btn_variant(
+                self.btn_insp_downstream, "primary" if dn_on else "light_secondary"
+            )
+
+    def _action_toggle_inspector_trace(self, direction: str) -> None:
+        if self.dataset is None or not self._selected_node_id:
+            return
+        if self._inspector_trace_state == (self._selected_node_id, direction):
+            self._inspector_trace_state = None
+            self.network_canvas.set_highlights(set(), set())
+            self._sync_inspector_trace_buttons()
+            self.status_var.set("Vista de red restaurada.")
+            return
+        self.var_bfs_start.set(self._selected_node_id)
+        self._run_trace(direction)
+        self._inspector_trace_state = (self._selected_node_id, direction)
+        self._sync_inspector_trace_buttons()
+
     def _trace_from_selected(self, direction: str) -> None:
-        if self._selected_node_id:
-            self.var_bfs_start.set(self._selected_node_id)
-            self._run_trace(direction)
+        self._action_toggle_inspector_trace(direction)
 
     def _deactivate_focus_filters_for_traversal(self) -> None:
         """Limpia enfoque de guía o aislamiento de cuenca para que los recorridos/búsquedas sean visibles."""
@@ -3287,6 +3426,8 @@ class BicentenarioSewerApp(tk.Tk):
             messagebox.showinfo("Sin resultados", f"No se encontró nodo o tubería para '{q}'.")
             return
 
+        self._inspector_trace_state = None
+        self._sync_inspector_trace_buttons()
         self._stop_traversal_anim(clear_canvas=False)
         self._deactivate_focus_filters_for_traversal()
         exact_pipe = self.dataset.graph.get_pipe(q.upper()) or self.dataset.graph.get_pipe(q)
@@ -3322,6 +3463,8 @@ class BicentenarioSewerApp(tk.Tk):
     def _run_traversal(self, alg: str) -> None:
         if self.dataset is None:
             return
+        self._inspector_trace_state = None
+        self._sync_inspector_trace_buttons()
         self._stop_traversal_anim(clear_canvas=True)
         self._deactivate_focus_filters_for_traversal()
         self._last_traversal_alg = alg
@@ -3477,6 +3620,8 @@ class BicentenarioSewerApp(tk.Tk):
         self.status_var.set(f"{label} desde {nid}: {len(nodes)} nodo(s), {len(pipes)} tubería(s).")
 
     def _clear_highlights(self) -> None:
+        self._inspector_trace_state = None
+        self._sync_inspector_trace_buttons()
         self._stop_traversal_anim(clear_canvas=True)
         self._active_route_pipes = []
         self._basin_isolated = False
@@ -3527,12 +3672,21 @@ class BicentenarioSewerApp(tk.Tk):
             }
 
             flt = self.var_crit_filter.get()
-            min_u = 75.0 if flt == "critical" else (100.0001 if flt == "overloaded" else 0.0)
+            if flt == "rest":
+                min_u, max_u, exc_min = 0.0, 75.0, False
+            elif flt == "critical":
+                min_u, max_u, exc_min = 75.0, 100.0, True
+            elif flt == "overloaded":
+                min_u, max_u, exc_min = 100.0, None, True
+            else:
+                min_u, max_u, exc_min = 0.0, None, False
             ranked = rank_critical_pipes(
                 self.dataset.graph,
                 flows,
                 utils,
                 min_utilization_pct=min_u,
+                max_utilization_pct=max_u,
+                exclusive_min=exc_min,
                 pipe_qmax_overrides=qmax_overrides,
                 pipe_demand_ratios_pct=demands,
                 pipe_excess_flows_m3s=excesses,
@@ -3543,24 +3697,35 @@ class BicentenarioSewerApp(tk.Tk):
                 "Baja utilización": "Baja",
                 "Utilización moderada": "Moderada",
                 "Utilización alta": "Alta",
-                "Cercana a la capacidad máxima": "Cercana",
-                "Capacidad excedida": "Excedida",
+                "Cercana a la capacidad máxima": "Cercana máx.",
+                "Capacidad excedida": "Cap. excedida",
+            }
+            wide_estado = {
+                "Baja utilización": "Baja util.",
+                "Utilización moderada": "Moderada",
+                "Utilización alta": "Alta",
+                "Cercana a la capacidad máxima": "Cercana máx.",
+                "Capacidad excedida": "Cap. excedida",
             }
             compact = bool(self._crit_tree_compact)
             desired_ids = [rec.pipe_id for rec in ranked]
             existing_ids = list(self.tree_critical.get_children())
 
             def _row_values(rec):
-                estado_txt = (
-                    short_estado.get(rec.category.label, rec.category.label)
-                    if compact
-                    else rec.category.label
-                )
-                util_txt = (
-                    f"{rec.utilization_pct:.1f}% ({rec.demand_ratio_pct / 100.0:.1f}×)"
-                    if rec.demand_ratio_pct > 100.5
-                    else f"{rec.utilization_pct:.1f}%"
-                )
+                if rec.q_max_m3s <= 1e-12:
+                    estado_txt = "Cerrada 100%"
+                    util_txt = "0.0%"
+                else:
+                    estado_txt = (
+                        short_estado.get(rec.category.label, rec.category.label)
+                        if compact
+                        else wide_estado.get(rec.category.label, rec.category.label)
+                    )
+                    util_txt = (
+                        f"{rec.utilization_pct:.1f}% ({rec.utilization_pct / 100.0:.1f}×)"
+                        if rec.utilization_pct > 100.5
+                        else f"{rec.utilization_pct:.1f}%"
+                    )
                 return (
                     rec.rank,
                     rec.pipe_id,
@@ -3591,11 +3756,14 @@ class BicentenarioSewerApp(tk.Tk):
                     )
 
             if not ranked:
-                msg = (
-                    "Ninguna tubería supera el 100% en este instante."
-                    if flt == "overloaded"
-                    else "Ninguna tubería alcanza ≥75% en este instante."
-                )
+                if flt == "overloaded":
+                    msg = "Ninguna tubería supera el 100% en este instante."
+                elif flt == "critical":
+                    msg = "Ninguna tubería está en >75–100% en este instante."
+                elif flt == "rest":
+                    msg = "Ninguna tubería está en ≤75% en este instante."
+                else:
+                    msg = "Sin tuberías para mostrar."
                 self.lbl_crit_empty.configure(text=msg)
                 self.lbl_crit_empty.place(relx=0.5, rely=0.5, anchor="center")
             else:
@@ -3722,20 +3890,23 @@ class BicentenarioSewerApp(tk.Tk):
                     ps = snap.pipe_states[p.pipe_id]
                     add_line("")
                     add_line(f"Estado en t = {snap.time_min:.1f} min", "section")
-                    add_line(f"Caudal físico   : {ps.flow_m3s:.5f} m³/s (cond. {ps.conveyed_flow_m3s:.5f})")
-                    add_line(f"Demanda entrante: {ps.demand_flow_m3s:.5f} m³/s ({ps.demand_ratio_pct / 100.0:.2f}× Qmax)")
-                    add_line(f"Vol. tránsito   : {ps.volume_in_transit_m3:.2f} m³")
-                    add_line(
-                        f"Utilización fís.: {ps.utilization_pct:.2f} %",
-                        "alert" if ps.utilization_pct > 100.0 else None,
-                    )
-                    add_line(f"Clasificación   : {ps.category.label}")
-                    add_line(f"Déficit / exceso: {ps.excess_flow_m3s:.5f} m³/s")
+                    if ps.is_closed:
+                        add_line("Estado tramo    : CERRADA 100% (caudal nulo)", "alert")
+                        add_line(f"Demanda retenida: {ps.demand_flow_m3s:.5f} m³/s")
+                    else:
+                        add_line(f"Caudal conducido: {ps.flow_m3s:.5f} m³/s")
+                        add_line(f"Demanda entrante: {ps.demand_flow_m3s:.5f} m³/s ({ps.utilization_pct / 100.0:.2f}× Qmax)")
+                        add_line(f"Vol. tránsito   : {ps.volume_in_transit_m3:.2f} m³")
+                        add_line(
+                            f"Utilización     : {ps.utilization_pct:.2f} %",
+                            "alert" if ps.utilization_pct > 100.0 else None,
+                        )
+                        add_line(f"Clasificación   : {ps.category.label}")
+                        add_line(f"Exceso no cond. : {ps.excess_flow_m3s:.5f} m³/s")
                 if self.result:
                     pk_u = self.result.peak_pipe_utilization.get(p.pipe_id, 0.0)
-                    pk_d = self.result.peak_pipe_demand_ratio.get(p.pipe_id, pk_u)
                     add_line(
-                        f"Pico físico / dem.: {pk_u:.2f} % / {pk_d / 100.0:.2f}× ({pk_d:.0f}%)"
+                        f"Pico utilización: {pk_u:.2f} % ({pk_u / 100.0:.2f}× Qmax)"
                     )
                     ov_m = self.result.pipe_overloaded_minutes.get(p.pipe_id, 0.0)
                     _, _, ov_desc = classify_overload_persistence(ov_m, self.result.config.duration_min)
@@ -3795,7 +3966,7 @@ class BicentenarioSewerApp(tk.Tk):
                     "alert" if snap.total_surface_flooding_m3 > 1e-3 else None,
                 )
                 add_line(f"Error balance   : {self.result.max_mass_balance_error_m3:.3e} m³")
-                add_line(f"Críticas (≥75%) : {len(self.result.ever_critical_pipes)} tuberías")
+                add_line(f"Crít. (>75–100%): {len(self.result.ever_near_capacity_pipes)} tuberías")
                 add_line(f"Sobrec. (>100%) : {len(self.result.ever_overloaded_pipes)} tuberías")
                 if self._interventions:
                     add_line(
@@ -3821,9 +3992,10 @@ class BicentenarioSewerApp(tk.Tk):
                     f"{s.intensity_mm_h:.0f}",
                     f"{s.max_utilization_pct:.1f}%",
                     s.most_critical_pipe,
-                    s.num_critical_pipes,
+                    s.num_near_capacity_pipes,
                     s.num_overloaded_pipes,
                     f"{s.peak_sink_discharge_m3s:.4f}",
+                    f"{s.total_surface_flooding_m3:,.1f}",
                 ),
             )
 
@@ -3836,15 +4008,21 @@ class BicentenarioSewerApp(tk.Tk):
             messagebox.showerror("Parámetros inválidos", f"Revise los parámetros numéricos: {exc}")
             return
 
+        t_start = time.perf_counter()
         self.comparisons = compare_all_scenarios(self.dataset, cfg)
+        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
         self._comparisons_dirty = False
+        if hasattr(self, "btn_compare_scenarios"):
+            self.btn_compare_scenarios.configure(text="Recalcular 5 Escenarios")
+            self._set_btn_variant(self.btn_compare_scenarios, "light_secondary")
         self.lbl_comp_hint.configure(
-            text="Doble clic para activar escenario", fg=theme.INK_MUTED
+            text=f"Al día ({elapsed_ms:.0f} ms) · Doble clic activa",
+            fg=theme.INK_MUTED,
         )
 
         self._populate_comp_tree()
         self.comparison_charts.update_comparison(self.comparisons)
-        self.status_var.set("Comparación de los 5 escenarios completada.")
+        self.status_var.set(f"Comparación de los 5 escenarios recalculada en {elapsed_ms:.0f} ms.")
 
     def _on_comparison_row_activate(self, _event: tk.Event) -> None:
         if self.dataset is None:
@@ -4233,26 +4411,26 @@ class BicentenarioSewerApp(tk.Tk):
             q25, u25, _d25 = _pipe_qud(s3, "P25")
             return [
                 {
-                    "title": "Flujo base sanitario en las 8 fuentes (0 mm/h)",
+                    "title": "Tiempo seco sin escorrentía en las 8 fuentes (0 mm/h)",
                     "target_min": 5.0,
                     "step_idx": idx1,
                     "nodes": set(src_ids),
                     "pipes": set(src_pipes),
                     "desc": (
-                        "En tiempo seco (0 mm/h), solo ingresa el caudal sanitario base por los 8 nodos "
-                        "fuente (1, 6, 9, 17, 18, 19, 20 y 27) avanzando según el tránsito de Manning."
+                        "Con I = 0 mm/h y Q_san = 0 por defecto, el Método Racional genera caudal nulo "
+                        "en las 8 fuentes (puede activarse Q_san opcional desde el panel izquierdo)."
                     ),
                     "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
                 },
                 {
-                    "title": "Holgura hidráulica en cabeceras de 8\"",
+                    "title": "Cabeceras de 8\" en reposo hidráulico",
                     "target_min": 25.0,
                     "step_idx": idx2,
                     "nodes": n_head8,
                     "pipes": set(p_head8),
                     "desc": (
-                        "Las tuberías iniciales P31, P39 y P43 (8\") operan en banda verde (baja utilización), "
-                        "muy por debajo de Qmax y sin almacenamiento ni rebose en pozos."
+                        "Las tuberías iniciales P31, P39 y P43 (8\") permanecen en banda verde (0%–25%), "
+                        "sin acumulación en pozos ni rebose superficial."
                     ),
                     "metrics": f"Util. máx: {u2_max:.2f}%  ·  Pozo/Rebose: {v2_stor:.2f}/{v2_flood:.2f} m³",
                 },
@@ -4263,20 +4441,20 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": n_25,
                     "pipes": set(p_25),
                     "desc": (
-                        "Al confluir las subcuencas sobre el pozo 23 hacia J (P25, 12\"), el flujo sanitario "
-                        "mantiene una amplia reserva hidráulica sin cuellos de botella."
+                        "Al confluir las subcuencas sobre el pozo 23 hacia J (P25, 12\"), toda la red "
+                        "mantiene 100% de reserva hidráulica."
                     ),
                     "metrics": f"P25: Q = {q25:.5f} m³/s  ·  Utilización = {u25:.2f}%",
                 },
                 {
-                    "title": "Régimen permanente hacia PTAR Punta Canoa",
+                    "title": "Balance nulo verificado hacia PTAR Punta Canoa",
                     "target_min": 65.0,
                     "step_idx": idx4,
                     "nodes": n_ptar,
                     "pipes": set(p_ptar),
                     "desc": (
-                        "Superado el tiempo máximo de recorrido de la red, los colectores de 20\" (P29 y P30) "
-                        "descargan en el Nodo sumidero 31 exactamente el caudal sanitario inyectado."
+                        "Los colectores troncales P29 y P30 (20\") hacia el Nodo sumidero 31 verifican "
+                        "conservación exacta de masa sin aportes no contabilizados."
                     ),
                     "metrics": f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  P29/P30: {u_ptar4:.2f}%  ·  Err = {err4:.1e} m³",
                 },
@@ -4357,7 +4535,7 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": set(src_ids),
                     "pipes": set(src_pipes),
                     "desc": (
-                        "Con 60 mm/h, las cabeceras alcanzan su tope físico presurizado (≤115%) y "
+                        "Con 60 mm/h, las cabeceras superan el 100% de su capacidad Qmax y "
                         "llenan los pozos de 4 m³, iniciando rebose superficial en vía."
                     ),
                     "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Pozos: {stor1:.1f} m³  ·  Rebose: {flood1:.1f} m³",
@@ -4369,8 +4547,8 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": n2_nodes,
                     "pipes": set(p2_pipes),
                     "desc": (
-                        "Las cabeceras conducen a tubo lleno presurizado (~114%) mientras su demanda "
-                        "supera 2.5× Qmax, derivando el excedente a inundación superficial."
+                        "Las cabeceras conducen al límite Qmax mientras la demanda racional "
+                        "supera con holgura su capacidad, derivando el excedente a rebose superficial."
                     ),
                     "metrics": f"8\": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P1/P2: {u_p12:.1f}% ({d_p12:.2f}×)  ·  Rebose: {v2_flood:.0f} m³",
                 },
@@ -4420,7 +4598,7 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": set(src_ids),
                     "pipes": set(src_pipes),
                     "desc": (
-                        "El evento extremo satura de inmediato las cabeceras al tope físico (≤115%) "
+                        "El evento extremo satura de inmediato las cabeceras por encima de Qmax "
                         "llenando los pozos y generando escorrentía superficial por rebose."
                     ),
                     "metrics": f"Q_in = {q_in1:.4f} m³/s  ·  Pozos: {stor1:.1f} m³  ·  Rebose: {flood1:.1f} m³",
@@ -4432,8 +4610,8 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": n2_nodes,
                     "pipes": set(p2_pipes),
                     "desc": (
-                        "Los tubos conducen a su límite físico presurizado (~115%) aunque la demanda "
-                        "alcanza >4× Qmax; el exceso físico rebosa en superficie sin romper la masa."
+                        "Los tubos conducen exactamente hasta Qmax mientras la utilización de demanda "
+                        "supera ampliamente el 100%; el exceso rebosa en superficie sin romper la masa."
                     ),
                     "metrics": f"8\": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P13: {u_p13:.1f}% ({d_p13:.2f}×)  ·  Rebose: {v2_flood:.0f} m³",
                 },
@@ -4486,7 +4664,7 @@ class BicentenarioSewerApp(tk.Tk):
                     "nodes": n_head8,
                     "pipes": set(p_head8),
                     "desc": (
-                        "Los tramos iniciales P31, P39 y P43 (8\") operan en sobrecarga física (≤115%), "
+                        "Los tramos iniciales P31, P39 y P43 (8\") operan en sobrecarga (>100% de Qmax), "
                         "llenan la capacidad de sus pozos y generan rebose superficial controlado."
                     ),
                     "metrics": f"Util. fís: {u2_max:.1f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",

@@ -71,13 +71,13 @@ class SimulationConfig:
     duration_min: float = 90.0
     storm_duration_min: float = 60.0
     dt_min: float = 1.0
-    ingress_factor: float = 0.025  # 2.5% ingreso pluvial a red sanitaria (ajustable 0.01..1.0)
-    dry_weather_flow_per_source_m3s: float = 0.003  # Caudal sanitario base por fuente (m³/s)
+    ingress_factor: float = 1.0  # 100% del Método Racional según guía docente (ajustable 0.01..1.0)
+    dry_weather_flow_per_source_m3s: float = 0.0  # Caudal sanitario base opcional por fuente (m³/s)
     split_rule: str = "proportional"  # "proportional" (por Qmax) o "equal" (uniforme)
     hyetograph: str = "uniform"  # "uniform" (constante) o "triangular" (pico al 50%)
     source_distribution: str = "capacity"  # "capacity" (ponderado por Qmax) o "equal" (1/N)
     max_manhole_storage_m3: float = 4.0  # Capacidad física amortiguadora por pozo antes de rebose
-    max_physical_utilization_pct: float = 115.0  # Tope físico presurizado en tubo (>100% realista)
+    max_physical_utilization_pct: Optional[float] = None  # Obsoleto: mantenido solo por compatibilidad
     interventions: Dict[str, PipeIntervention] = field(default_factory=dict)
 
 
@@ -86,16 +86,17 @@ class PipeStepState:
     """Estado de una tubería en un instante de tiempo t."""
 
     pipe_id: str
-    flow_m3s: float          # Caudal físico efectivo en la tubería (acotado a tope presurizado)
+    flow_m3s: float          # Caudal físico conducido aguas abajo (<= Qmax, coherente con node.outflow_m3s)
     conveyed_flow_m3s: float # Caudal físico transportado aguas abajo (<= Qmax)
     volume_in_transit_m3: float
-    utilization_pct: float   # Utilización física O_i(t) acotada (<= max_physical_utilization_pct)
+    utilization_pct: float   # Utilización oficial O_i(t) = (Q_demanda / Qmax_ef) * 100 sin recorte
     category: UtilizationCategory
     excess_flow_m3s: float   # Déficit/exceso de demanda por encima de Qmax (m³/s)
     demand_flow_m3s: float = 0.0     # Caudal de demanda total intentando ingresar (m³/s)
-    demand_ratio_pct: float = 0.0    # Índice de demanda = (Q_demanda / Qmax) * 100 (%)
+    demand_ratio_pct: float = 0.0    # Índice de demanda = (Q_demanda / Qmax_ef) * 100 (%)
     effective_q_max_m3s: Optional[float] = None
     effective_velocity_ms: Optional[float] = None
+    is_closed: bool = False
 
 
 @dataclass
@@ -127,8 +128,9 @@ class TimeStepSnapshot:
     total_surface_flooding_m3: float = 0.0
     pipe_states: Dict[str, PipeStepState] = field(default_factory=dict)
     node_states: Dict[str, NodeStepState] = field(default_factory=dict)
-    critical_pipe_ids: List[str] = field(default_factory=list)   # >= 75%
-    overloaded_pipe_ids: List[str] = field(default_factory=list) # > 100%
+    critical_pipe_ids: List[str] = field(default_factory=list)       # > 75% (cercanas + sobrecargadas)
+    near_capacity_pipe_ids: List[str] = field(default_factory=list)  # > 75% y <= 100%
+    overloaded_pipe_ids: List[str] = field(default_factory=list)     # > 100%
 
 
 @dataclass
@@ -148,6 +150,7 @@ class SimulationResult:
     ever_critical_pipes: List[str]
     ever_overloaded_pipes: List[str]
     execution_time_ms: float
+    ever_near_capacity_pipes: List[str] = field(default_factory=list)
     pipe_overloaded_minutes: Dict[str, float] = field(default_factory=dict)
     peak_pipe_demand_ratio: Dict[str, float] = field(default_factory=dict)
     peak_pipe_demand_flow: Dict[str, float] = field(default_factory=dict)

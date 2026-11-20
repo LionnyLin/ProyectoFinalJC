@@ -14,7 +14,7 @@ Aplicación de escritorio en Python para la representación, simulación tempora
 
 - Python 3.11+
 - `openpyxl`, `matplotlib`, `python-docx`, `lxml`, `Pillow` (instalables con `pip install -r requirements.txt`)
-- `tkinter` (incluido en Python estándar para Windows)
+- `tkinter` (incluido en Python estándar para Windows; en Ubuntu/Debian Linux instalar con `sudo apt install python3-tk`)
 
 *(Nota: la exportación a Word `.docx` con ecuaciones OMML nativas funciona 100 % en Python puro sin requerir Pandoc instalado en el equipo de sustentación).*
 

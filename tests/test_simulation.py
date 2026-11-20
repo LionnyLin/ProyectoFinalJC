@@ -166,9 +166,16 @@ class TestSimulation(unittest.TestCase):
         self.assertGreater(mod.pipe_overloaded_minutes["P31"], 20.0)
         self.assertLessEqual(mod.pipe_overloaded_minutes["P31"], 90.0)
 
-    def test_physical_utilization_cap_demand_separation_and_surface_flooding(self) -> None:
+    def test_unbounded_utilization_defaults_and_surface_flooding(self) -> None:
         engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
-        # Escenario extremo: utilización física acotada <= 115%, demanda > 200%, pozos <= 4 m³ y rebose > 0
+        # E2: valores por defecto oficiales -> ingress=1.0, Q_san=0.0; Tiempo seco produce 0 m³
+        dry_res = engine.run(
+            SimulationConfig(scenario_id=1, scenario_name="Dry weather", intensity_mm_h=0.0)
+        )
+        self.assertAlmostEqual(dry_res.total_inflow_m3, 0.0, places=9)
+        self.assertAlmostEqual(max(dry_res.peak_pipe_utilization.values()), 0.0, places=9)
+
+        # E1: utilización real sin recorte de 115%, pozos <= 4 m³ y rebose superficial > 0
         cfg_cap = SimulationConfig(
             scenario_id=5,
             scenario_name="Extreme rain",
@@ -177,12 +184,15 @@ class TestSimulation(unittest.TestCase):
             storm_duration_min=60.0,
             source_distribution="capacity",
             max_manhole_storage_m3=4.0,
-            max_physical_utilization_pct=115.0,
         )
         res_cap = engine.run(cfg_cap)
         self.assertLess(res_cap.max_mass_balance_error_m3, 1e-6)
-        self.assertLessEqual(max(res_cap.peak_pipe_utilization.values()), 115.0 + 1e-9)
-        self.assertGreater(max(res_cap.peak_pipe_demand_ratio.values()), 300.0)
+        self.assertGreater(max(res_cap.peak_pipe_utilization.values()), 115.0)
+        self.assertAlmostEqual(
+            max(res_cap.peak_pipe_utilization.values()),
+            max(res_cap.peak_pipe_demand_ratio.values()),
+            places=6,
+        )
         self.assertGreater(res_cap.total_surface_flooding_m3, 0.0)
         for v_st in res_cap.max_manhole_storage_m3.values():
             self.assertLessEqual(v_st, 4.0 + 1e-9)
@@ -198,11 +208,82 @@ class TestSimulation(unittest.TestCase):
         )
         res_eq = engine.run(cfg_eq)
         self.assertLess(res_eq.max_mass_balance_error_m3, 1e-6)
-        self.assertLessEqual(max(res_eq.peak_pipe_utilization.values()), 115.0 + 1e-9)
         self.assertGreater(
             res_eq.peak_pipe_demand_ratio["P31"],
             res_cap.peak_pipe_demand_ratio["P31"],
         )
+
+    def test_e3_transit_delay_dt_invariance_and_e4_flow_coherence(self) -> None:
+        engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
+        # E3: llegada mínima física a PTAR 31 es 8.7529 min (27->C->31); nunca debe llegar antes
+        sinks = []
+        for dt in (0.5, 1.0, 2.0, 5.0):
+            res = engine.run(
+                SimulationConfig(
+                    scenario_id=3,
+                    scenario_name="Moderate rain",
+                    intensity_mm_h=30.0,
+                    duration_min=90.0,
+                    storm_duration_min=60.0,
+                    dt_min=dt,
+                    ingress_factor=0.025,
+                    dry_weather_flow_per_source_m3s=0.003,
+                )
+            )
+            first_arr = next(
+                (s.time_min for s in res.snapshots if s.total_sink_discharge_m3s > 1e-9),
+                999.0,
+            )
+            self.assertGreaterEqual(first_arr, 8.75)
+            sinks.append(res.total_sink_discharge_m3)
+        # Invarianza ante dt (dispersión < 0.2%)
+        self.assertLess(max(sinks) - min(sinks), 1.0)
+
+        # E4: coherencia estricta node.outflow_m3s == sum(pipe.flow_m3s) en todos los pasos
+        res_e3 = engine.run(
+            SimulationConfig(scenario_id=3, scenario_name="Moderate rain", intensity_mm_h=30.0)
+        )
+        for snap in res_e3.snapshots:
+            for nid, nst in snap.node_states.items():
+                outs = self.dataset.graph.outgoing_pipes(nid)
+                if outs:
+                    pipe_sum = sum(snap.pipe_states[e.pipe_id].flow_m3s for e in outs)
+                    self.assertAlmostEqual(nst.outflow_m3s, pipe_sum, places=8)
+
+    def test_m1_m2_m3_m8_regressions(self) -> None:
+        engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
+        # M2: triangular storm=1, dt=1 debe inyectar volumen completo, y duration=10, dt=3 termina en 10.0 min
+        tri = engine.run(
+            SimulationConfig(
+                scenario_id=3,
+                scenario_name="Triangular",
+                intensity_mm_h=30.0,
+                duration_min=10.0,
+                storm_duration_min=1.0,
+                dt_min=3.0,
+                hyetograph="triangular",
+            )
+        )
+        expected_in = 0.00278 * 0.75 * 30.0 * 388.0 * 60.0
+        self.assertAlmostEqual(tri.total_inflow_m3, expected_in, delta=1e-3)
+        self.assertAlmostEqual(tri.snapshots[-1].time_min, 10.0, places=6)
+
+        # M3 + M8: tubería cerrada al 100% reporta 0% y is_closed=True; source_distribution="capacity" responde
+        _q_base, inflows_base = engine.compute_source_inflows_by_source(
+            SimulationConfig(scenario_id=3, scenario_name="Mod", intensity_mm_h=30.0), 10.0
+        )
+        cfg_closed = SimulationConfig(
+            scenario_id=3,
+            scenario_name="Mod",
+            intensity_mm_h=30.0,
+            interventions={"P31": PipeIntervention("P31", obstruction_pct=100.0)},
+        )
+        _q_closed, inflows_closed = engine.compute_source_inflows_by_source(cfg_closed, 10.0)
+        self.assertAlmostEqual(inflows_closed["17"], 0.0, places=9)
+        self.assertGreater(inflows_base["17"], 0.0)
+        res_closed = engine.run(cfg_closed)
+        self.assertAlmostEqual(res_closed.peak_pipe_utilization["P31"], 0.0, places=9)
+        self.assertTrue(res_closed.snapshots[1].pipe_states["P31"].is_closed)
 
 
 if __name__ == "__main__":

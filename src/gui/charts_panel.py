@@ -320,13 +320,23 @@ class TemporalChartsPanel(tk.Frame):
         times = [s.time_min for s in result.snapshots]
         inflows = [s.total_source_inflow_m3s for s in result.snapshots]
         ptar_out = [s.total_sink_discharge_m3s for s in result.snapshots]
+        flood_rates: List[float] = []
+        for idx, s in enumerate(result.snapshots):
+            if idx == 0:
+                flood_rates.append(0.0)
+            else:
+                prev_s = result.snapshots[idx - 1]
+                dt_sec = max((s.time_min - prev_s.time_min) * 60.0, 1e-6)
+                dv_flood = max(0.0, s.total_surface_flooding_m3 - prev_s.total_surface_flooding_m3)
+                flood_rates.append(dv_flood / dt_sec)
+        has_flood = any(r > 1e-6 for r in flood_rates)
 
         has_prev = (
             previous_result is not None
             and previous_result is not result
             and bool(previous_result.snapshots)
         )
-        max_q_val = max(inflows + ptar_out + [0.05])
+        max_q_val = max(inflows + ptar_out + (flood_rates if has_flood else []) + [0.05])
         if has_prev:
             prev_times = [s.time_min for s in previous_result.snapshots]
             prev_ptar = [s.total_sink_discharge_m3s for s in previous_result.snapshots]
@@ -351,6 +361,17 @@ class TemporalChartsPanel(tk.Frame):
             alpha=0.88,
             zorder=3,
         )
+        if has_flood:
+            self.ax_flow.plot(
+                times,
+                flood_rates,
+                label="Rebose vía",
+                color="#dc2626",
+                linestyle="--",
+                linewidth=1.55,
+                alpha=0.92,
+                zorder=3.5,
+            )
         self.ax_flow.plot(
             times,
             ptar_out,
@@ -373,9 +394,10 @@ class TemporalChartsPanel(tk.Frame):
             pad=5,
         )
         self.ax_flow.set_ylabel("m³/s", color=theme.INK_PRIMARY, fontsize=7.6)
+        n_flow_legs = 2 + (1 if has_prev else 0) + (1 if has_flood else 0)
         self.ax_flow.legend(
             loc="upper center",
-            ncol=3 if has_prev else 2,
+            ncol=min(4, max(2, n_flow_legs)),
             frameon=True,
             facecolor=theme.PAPER_BG,
             edgecolor=theme.PAPER_BORDER,
@@ -416,6 +438,9 @@ class TemporalChartsPanel(tk.Frame):
                 linewidth=1.9,
             )
 
+        self.ax_util.axhline(
+            75.0, color="#f97316", linestyle=":", linewidth=1.0, label="Crít. 75%"
+        )
         self.ax_util.axhline(
             100.0, color="#dc2626", linestyle="--", linewidth=1.1, label="Cap. 100%"
         )
@@ -487,6 +512,7 @@ class TemporalChartsPanel(tk.Frame):
 
         xs = list(range(len(route)))
         q_lives: List[float] = []
+        q_dems: List[float] = []
         q_maxs: List[float] = []
         bar_colors: List[str] = []
         diams: List[float] = []
@@ -500,13 +526,15 @@ class TemporalChartsPanel(tk.Frame):
                 else pipe.q_max_m3s
             )
             q_live = ps.flow_m3s if ps is not None else 0.0
+            q_dem = ps.demand_flow_m3s if ps is not None else q_live
             col = (
-                ("#991b1b" if ps.category.is_overloaded else ps.category.color_hex)
+                (theme.INK_MUTED if ps.is_closed else ("#991b1b" if ps.category.is_overloaded else ps.category.color_hex))
                 if ps is not None
                 else theme.ACCENT_PRIMARY
             )
             diam = self._last_diam_overrides.get(pipe.pipe_id, pipe.diameter_in)
             q_lives.append(q_live)
+            q_dems.append(q_dem)
             q_maxs.append(eff_qmax)
             bar_colors.append(col)
             diams.append(diam)
@@ -527,12 +555,17 @@ class TemporalChartsPanel(tk.Frame):
         )
 
         top_y = max(q_lives + q_maxs + [0.05])
-        self.ax_profile.set_ylim(0.0, top_y * 1.36)
+        self.ax_profile.set_ylim(0.0, top_y * 1.42)
 
         tag_fs = 6.2 if len(route) >= 9 else (6.8 if len(route) >= 7 else 7.4)
-        for idx, (pipe, q_live, q_mx, diam) in enumerate(zip(route, q_lives, q_maxs, diams)):
+        for idx, (pipe, q_live, q_dem, q_mx, diam) in enumerate(zip(route, q_lives, q_dems, q_maxs, diams)):
             y_pos = max(q_live, q_mx) + top_y * 0.025
-            tag = f"{diam:.0f}\"" if q_mx > 1e-9 else "OBST"
+            if q_mx <= 1e-9:
+                tag = "CERRADA"
+            elif q_dem > q_mx * 1.005:
+                tag = f"{diam:.0f}\"\n×{q_dem / q_mx:.1f}"
+            else:
+                tag = f"{diam:.0f}\""
             is_sel = pipe.pipe_id == self._last_pipe_id
             self.ax_profile.text(
                 idx,
@@ -682,24 +715,24 @@ class ComparisonChartsPanel(tk.Frame):
             _apply_axis_style(ax)
 
         labels = [f"E{s.scenario_id}" for s in summaries]
-        crit_counts = [s.num_critical_pipes for s in summaries]
+        near_counts = [s.num_near_capacity_pipes for s in summaries]
         over_counts = [s.num_overloaded_pipes for s in summaries]
         x = list(range(len(labels)))
         width = 0.36
-        max_c = max(crit_counts + over_counts + [4])
+        max_c = max(near_counts + over_counts + [4])
 
         self.ax_bar.bar(
             [i - width / 2 for i in x],
-            crit_counts,
+            near_counts,
             width=width,
-            label="Críticas ≥75%",
+            label="Críticas (>75–100%)",
             color="#ef4444",
         )
         self.ax_bar.bar(
             [i + width / 2 for i in x],
             over_counts,
             width=width,
-            label="Sobrec. >100%",
+            label="Sobrec. (>100%)",
             color="#991b1b",
         )
         self.ax_bar.set_ylim(0, max_c * 1.58)

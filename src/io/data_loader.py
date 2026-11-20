@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import openpyxl
 
 from src.algorithms.traversals import topological_sort
-from src.data_structures import DirectedGraph, ManholeNode, PipeEdge
+from src.data_structures import DirectedGraph, HashTable, ManholeNode, PipeEdge, Queue
 
 
 class DataLoadError(ValueError):
@@ -103,7 +103,12 @@ def _parse_float(raw: object, field_name: str, row_ctx: str) -> float:
     if isinstance(raw, (int, float)):
         val = float(raw)
     else:
-        text = str(raw).strip().lstrip("=")
+        raw_str = str(raw).strip()
+        if raw_str.startswith("="):
+            raise DataLoadError(
+                f"La celda '{field_name}' contiene una fórmula sin valor cacheado ('{raw_str}') en {row_ctx}."
+            )
+        text = raw_str
         # Limpiar unidades si vienen adjuntas (ej. '10 mm/h')
         text = text.replace("mm/h", "").strip()
         try:
@@ -142,6 +147,68 @@ def _load_coords_csv(path: str) -> Dict[str, Tuple[float, float, str]]:
             label = (row.get("label") or nid).strip()
             coords[nid] = (x, y, label)
     return coords
+
+
+def _is_bicentenario_graph(graph: DirectedGraph) -> bool:
+    """Detecta si el grafo corresponde a la red de Ciudad Bicentenario."""
+    if "31" not in set(graph.sink_ids()) or graph.num_nodes == 0:
+        return False
+    known = sum(1 for nid in graph.node_ids() if nid in DEFAULT_NODE_COORDS)
+    return (known / graph.num_nodes) >= 0.8
+
+
+def _resolve_excel_pipe_columns(ws_pipes) -> Dict[str, int]:
+    """Resuelve columnas de la hoja Pipe(s) por encabezado normalizado con respaldo posicional."""
+    defaults = {
+        "from_node": 1,
+        "to_node": 2,
+        "diameter_in": 3,
+        "diameter_m": 4,
+        "manning_n": 5,
+        "slope": 6,
+        "q_max_m3s": 7,
+        "pipe_id": 9,
+        "length_m": 10,
+        "note": 11,
+    }
+    aliases = {
+        "from(i)": "from_node",
+        "from": "from_node",
+        "from_node": "from_node",
+        "to(i)": "to_node",
+        "to": "to_node",
+        "to_node": "to_node",
+        "⌀ (in)": "diameter_in",
+        "diameter (in)": "diameter_in",
+        "diameter_in": "diameter_in",
+        "⌀ (m)": "diameter_m",
+        "diameter (m)": "diameter_m",
+        "diameter_m": "diameter_m",
+        "n": "manning_n",
+        "manning_n": "manning_n",
+        "s": "slope",
+        "slope": "slope",
+        "q": "q_max_m3s",
+        "q_max": "q_max_m3s",
+        "q_max_m3s": "q_max_m3s",
+        "pipe": "pipe_id",
+        "pipe_id": "pipe_id",
+        "lenght (m)": "length_m",
+        "length (m)": "length_m",
+        "length_m": "length_m",
+        "note": "note",
+        "nota": "note",
+    }
+    cols = dict(defaults)
+    max_col = max(ws_pipes.max_column or 11, 11)
+    for c in range(1, max_col + 1):
+        hdr = ws_pipes.cell(1, c).value
+        if hdr is None:
+            continue
+        key = " ".join(str(hdr).strip().lower().split())
+        if key in aliases:
+            cols[aliases[key]] = c
+    return cols
 
 
 def _assign_missing_coordinates(
@@ -241,6 +308,38 @@ def _validate_graph_and_data(
             "La red contiene ciclos dirigidos; se esperaba un grafo acíclico dirigido (DAG)."
         )
 
+    dead_ends = [
+        nid
+        for nid in graph.node_ids()
+        if (node := graph.get_node(nid)) is not None
+        and node.node_type != "sink"
+        and graph.out_degree(nid) == 0
+    ]
+    if dead_ends:
+        raise DataLoadError(
+            "Existen nodos sin tubería de salida que no están declarados como sumideros "
+            f"(posible error de conexión): {', '.join(dead_ends)}."
+        )
+
+    reachable: HashTable[str, bool] = HashTable()
+    q_rev: Queue[str] = Queue()
+    for sid in graph.sink_ids():
+        if graph.has_node(sid):
+            reachable.put(sid, True)
+            q_rev.enqueue(sid)
+    while not q_rev.is_empty():
+        v = q_rev.dequeue()
+        for edge in graph.incoming_pipes(v):
+            if not reachable.contains(edge.from_node):
+                reachable.put(edge.from_node, True)
+                q_rev.enqueue(edge.from_node)
+    isolated = [nid for nid in graph.node_ids() if not reachable.contains(nid)]
+    if isolated:
+        raise DataLoadError(
+            "Existen nodos aislados sin ruta hacia ningún sumidero: "
+            f"{', '.join(sorted(isolated))}."
+        )
+
 
 def load_from_excel(
     xlsx_path: str,
@@ -294,10 +393,11 @@ def load_from_excel(
             graph.add_node(ManholeNode(node_id=k, node_type="sink"))
 
         ws_pipes = wb["Pipe(s)"]
+        pcols = _resolve_excel_pipe_columns(ws_pipes)
         for r in range(2, ws_pipes.max_row + 1):
-            from_val = ws_pipes.cell(r, 1).value
-            to_val = ws_pipes.cell(r, 2).value
-            pid_val = ws_pipes.cell(r, 9).value
+            from_val = ws_pipes.cell(r, pcols["from_node"]).value
+            to_val = ws_pipes.cell(r, pcols["to_node"]).value
+            pid_val = ws_pipes.cell(r, pcols["pipe_id"]).value
             # Saltar filas resumen finales del Excel (ej. conteos o URLs)
             if pid_val is None or str(pid_val).strip() == "":
                 continue
@@ -305,18 +405,24 @@ def load_from_excel(
                 raise DataLoadError(f"Conexión incompleta en Pipe(s) fila {r}.")
 
             ctx = f"Pipe(s) fila {r}"
-            d_m = _parse_float(ws_pipes.cell(r, 4).value, "⌀ (m)", ctx)
-            raw_d_in = ws_pipes.cell(r, 3).value
+            d_m = _parse_float(ws_pipes.cell(r, pcols["diameter_m"]).value, "⌀ (m)", ctx)
+            raw_d_in = ws_pipes.cell(r, pcols["diameter_in"]).value
             d_in = round(
                 _parse_float(raw_d_in, "⌀ (in)", ctx)
-                if raw_d_in is not None and not str(raw_d_in).startswith("=")
+                if raw_d_in is not None and not str(raw_d_in).strip().startswith("=")
                 else (d_m / 0.0254),
                 4,
             )
-            manning_n = _parse_float(ws_pipes.cell(r, 5).value, "n", ctx)
-            slope = _parse_float(ws_pipes.cell(r, 6).value, "S", ctx)
-            raw_q = ws_pipes.cell(r, 7).value
-            if raw_q is not None and not str(raw_q).startswith("="):
+            if d_m > 0.0 and d_in > 0.0:
+                rel_diff = abs(d_m - (d_in * 0.0254)) / d_m
+                if rel_diff > 0.02:
+                    raise DataLoadError(
+                        f"Inconsistencia de unidades diámetro {d_in} in vs {d_m} m en {ctx}."
+                    )
+            manning_n = _parse_float(ws_pipes.cell(r, pcols["manning_n"]).value, "n", ctx)
+            slope = _parse_float(ws_pipes.cell(r, pcols["slope"]).value, "S", ctx)
+            raw_q = ws_pipes.cell(r, pcols["q_max_m3s"]).value
+            if raw_q is not None and not str(raw_q).strip().startswith("="):
                 q_max = _parse_float(raw_q, "Q", ctx)
             else:
                 # Fallback solo si el archivo Excel no tiene valores cacheados de fórmula
@@ -326,8 +432,8 @@ def load_from_excel(
                     )
                 area = math.pi * (d_m ** 2) / 4.0
                 q_max = (1.0 / manning_n) * area * ((d_m / 4.0) ** (2.0 / 3.0)) * (slope ** 0.5)
-            length_m = _parse_float(ws_pipes.cell(r, 10).value, "Lenght (m)", ctx)
-            note = str(ws_pipes.cell(r, 11).value or "").strip()
+            length_m = _parse_float(ws_pipes.cell(r, pcols["length_m"]).value, "Lenght (m)", ctx)
+            note = str(ws_pipes.cell(r, pcols["note"]).value or "").strip()
 
             pipe = PipeEdge(
                 pipe_id=str(pid_val).strip(),
@@ -365,7 +471,7 @@ def load_from_excel(
     finally:
         wb.close()
 
-    coords = dict(DEFAULT_NODE_COORDS)
+    coords = dict(DEFAULT_NODE_COORDS) if _is_bicentenario_graph(graph) else {}
     if coords_csv_path:
         coords.update(_load_coords_csv(coords_csv_path))
     _assign_missing_coordinates(graph, coords)
@@ -427,15 +533,39 @@ def load_from_csv_dir(csv_dir: str) -> NetworkDataset:
             if not pid or not u or not v:
                 raise DataLoadError(f"Identificador o conexión faltante en {ctx}.")
 
+            d_m = _parse_float(row.get("diameter_m"), "diameter_m", ctx)
+            raw_d_in = (row.get("diameter_in") or "").strip()
+            d_in = (
+                _parse_float(raw_d_in, "diameter_in", ctx)
+                if raw_d_in
+                else round(d_m / 0.0254, 4)
+            )
+            if d_m > 0.0 and d_in > 0.0:
+                rel_diff = abs(d_m - (d_in * 0.0254)) / d_m
+                if rel_diff > 0.02:
+                    raise DataLoadError(
+                        f"Inconsistencia de unidades diámetro {d_in} in vs {d_m} m en {ctx}."
+                    )
+            manning_n = _parse_float(row.get("manning_n"), "manning_n", ctx)
+            slope = _parse_float(row.get("slope"), "slope", ctx)
+            raw_q = (row.get("q_max_m3s") or "").strip()
+            if raw_q:
+                q_max = _parse_float(raw_q, "q_max_m3s", ctx)
+            else:
+                if d_m <= 0.0 or manning_n <= 0.0 or slope <= 0.0:
+                    raise DataLoadError(f"Parámetros geométricos/hidráulicos <= 0 en {ctx}.")
+                area = math.pi * (d_m ** 2) / 4.0
+                q_max = (1.0 / manning_n) * area * ((d_m / 4.0) ** (2.0 / 3.0)) * (slope ** 0.5)
+
             pipe = PipeEdge(
                 pipe_id=pid,
                 from_node=u,
                 to_node=v,
-                diameter_in=_parse_float(row.get("diameter_in"), "diameter_in", ctx),
-                diameter_m=_parse_float(row.get("diameter_m"), "diameter_m", ctx),
-                manning_n=_parse_float(row.get("manning_n"), "manning_n", ctx),
-                slope=_parse_float(row.get("slope"), "slope", ctx),
-                q_max_m3s=_parse_float(row.get("q_max_m3s"), "q_max_m3s", ctx),
+                diameter_in=d_in,
+                diameter_m=d_m,
+                manning_n=manning_n,
+                slope=slope,
+                q_max_m3s=q_max,
                 length_m=_parse_float(row.get("length_m"), "length_m", ctx),
                 note=(row.get("note") or "").strip(),
             )
@@ -471,7 +601,7 @@ def load_from_csv_dir(csv_dir: str) -> NetworkDataset:
                 )
             )
 
-    coords = dict(DEFAULT_NODE_COORDS)
+    coords = dict(DEFAULT_NODE_COORDS) if _is_bicentenario_graph(graph) else {}
     coords.update(_load_coords_csv(os.path.join(csv_dir, "node_coords.csv")))
     _assign_missing_coordinates(graph, coords)
     _validate_graph_and_data(graph, basin, scenarios)
@@ -520,7 +650,7 @@ def export_to_csv_dir(dataset: NetworkDataset, out_dir: str) -> None:
         for p in dataset.graph.pipes():
             w.writerow([
                 p.pipe_id, p.from_node, p.to_node, round(p.diameter_in, 4), p.diameter_m,
-                p.manning_n, p.slope, round(p.q_max_m3s, 8), p.length_m, p.note,
+                p.manning_n, p.slope, f"{p.q_max_m3s:.12g}", p.length_m, p.note,
             ])
 
     with open(os.path.join(out_dir, "drainage_basin.csv"), "w", encoding="utf-8", newline="") as f:

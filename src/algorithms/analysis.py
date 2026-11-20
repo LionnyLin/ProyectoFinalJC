@@ -11,7 +11,7 @@ UTILIZATION_LEVELS: List[Tuple[float, float, str, str]] = [
     (25.0, 50.0, "#eab308", "Utilización moderada"),
     (50.0, 75.0, "#f97316", "Utilización alta"),
     (75.0, 100.0, "#ef4444", "Cercana a la capacidad máxima"),
-    (100.0, float("inf"), "#7f1d1d", "Capacidad excedida"),
+    (100.0, float("inf"), "#991b1b", "Capacidad excedida"),
 ]
 
 
@@ -23,7 +23,7 @@ class UtilizationCategory:
     color_hex: str
     tier_index: int  # 0..4
     is_overloaded: bool
-    is_critical: bool  # >= 75%
+    is_critical: bool  # > 75%
 
 
 def classify_utilization(utilization_pct: float) -> UtilizationCategory:
@@ -36,7 +36,7 @@ def classify_utilization(utilization_pct: float) -> UtilizationCategory:
         return UtilizationCategory("Utilización alta", "#f97316", 2, False, False)
     if utilization_pct <= 100.0:
         return UtilizationCategory("Cercana a la capacidad máxima", "#ef4444", 3, False, True)
-    return UtilizationCategory("Capacidad excedida", "#7f1d1d", 4, True, True)
+    return UtilizationCategory("Capacidad excedida", "#991b1b", 4, True, True)
 
 
 @dataclass
@@ -64,13 +64,17 @@ def rank_critical_pipes(
     pipe_qmax_overrides: Optional[Dict[str, float]] = None,
     pipe_demand_ratios_pct: Optional[Dict[str, float]] = None,
     pipe_excess_flows_m3s: Optional[Dict[str, float]] = None,
+    max_utilization_pct: Optional[float] = None,
+    exclusive_min: bool = False,
 ) -> List[CriticalPipeRecord]:
     """Ordena tuberías de mayor a menor utilización (y demanda como desempate) usando PriorityQueue propia."""
     pq: PriorityQueue[str] = PriorityQueue()
     for pipe in graph.pipes():
         util = pipe_utilizations_pct.get(pipe.pipe_id, 0.0)
         dem = pipe_demand_ratios_pct.get(pipe.pipe_id, util) if pipe_demand_ratios_pct else util
-        if util >= min_utilization_pct:
+        passes_min = (util > min_utilization_pct) if exclusive_min else (util >= min_utilization_pct)
+        passes_max = (util <= max_utilization_pct) if max_utilization_pct is not None else True
+        if passes_min and passes_max:
             # Min-heap: prioridad negativa por (utilización, demanda) para extraer mayor exigencia primero.
             pq.push((-util, -dem), pipe.pipe_id)
 
@@ -93,7 +97,7 @@ def rank_critical_pipes(
         excess = (
             pipe_excess_flows_m3s[pid]
             if pipe_excess_flows_m3s and pid in pipe_excess_flows_m3s
-            else max(0.0, flow - q_max)
+            else max(0.0, (util / 100.0 - 1.0) * q_max if q_max > 0.0 else 0.0, flow - q_max)
         )
         ranked.append(
             CriticalPipeRecord(
@@ -236,6 +240,9 @@ def compute_source_attribution(
 
         sum_qmax_active = sum(pipe_eff_qmax[e.pipe_id] for e in active_pipes)
         for e in out_pipes:
+            if pipe_eff_qmax[e.pipe_id] <= 1e-12:
+                pipe_shares[e.pipe_id] = []
+                continue
             pipe_shares[e.pipe_id] = list(ordered_u)
             if total_live > 1e-12:
                 w_e = live_flows.get(e.pipe_id, 0.0)

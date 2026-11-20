@@ -323,7 +323,7 @@ def generate_docx_report(
             ("Volumen remanente pozos/tránsito (m3)", f"{current_result.final_residual_m3:,.3f}"),
             ("Rebose superficial en vía (m3)", f"{current_result.total_surface_flooding_m3:,.3f}"),
             ("Error máximo balance de masa (m3)", f"{current_result.max_mass_balance_error_m3:.3e}"),
-            ("Tuberías críticas (>=75 %)", str(len(current_result.ever_critical_pipes))),
+            ("Tuberías críticas (>75–100 %)", str(len(current_result.ever_near_capacity_pipes))),
             ("Tuberías sobrecargadas (>100 %)", str(len(current_result.ever_overloaded_pipes))),
         ],
         col_widths_in=(2.25, 1.15),
@@ -344,11 +344,12 @@ def generate_docx_report(
                 peak_sink_discharge_m3s=current_result.peak_sink_discharge_m3s,
                 total_inflow_m3=current_result.total_inflow_m3,
                 total_sink_discharge_m3=current_result.total_sink_discharge_m3,
-                max_stored_surcharge_m3=sum(current_result.max_manhole_storage_m3.values()),
+                max_stored_surcharge_m3=max((s.total_manhole_storage_m3 for s in current_result.snapshots), default=0.0),
                 mass_balance_error_m3=current_result.max_mass_balance_error_m3,
                 result=current_result,
                 max_demand_ratio_pct=max(current_result.peak_pipe_demand_ratio.values(), default=0.0),
                 total_surface_flooding_m3=current_result.total_surface_flooding_m3,
+                num_near_capacity_pipes=len(current_result.ever_near_capacity_pipes),
             )
         ]
         fig_paths = generate_single_column_figures(current_result, comp_for_fig, tmpdir)
@@ -357,7 +358,7 @@ def generate_docx_report(
         if len(comp_for_fig) > 1:
             _add_single_column_figure(doc, fig_paths[2], "Figura 3. Comparación de tuberías críticas y sobrecargadas por escenario.")
 
-    _add_heading_1(doc, "5. Top 20 Tuberías por Utilización Física Pico")
+    _add_heading_1(doc, "5. Top 20 Tuberías por Utilización Pico")
     eff_qmax_map = {
         p.pipe_id: resolve_pipe_hydraulics(p, interventions.get(p.pipe_id))[0]
         for p in dataset.graph.pipes()
@@ -375,7 +376,7 @@ def generate_docx_report(
     )
     _add_plain_table(
         doc,
-        headers=("#", "Tub.", "Tramo", "Q fís.", "Q max", "Util/Dem", "Estado"),
+        headers=("#", "Tub.", "Tramo", "Q cond.", "Q max", "Util (%)", "Estado"),
         rows=[
             (
                 r.rank,
@@ -383,7 +384,7 @@ def generate_docx_report(
                 f"{r.from_node}->{r.to_node}",
                 f"{r.flow_m3s:.4f}",
                 f"{r.q_max_m3s:.4f}",
-                f"{r.utilization_pct:.0f}%/{r.demand_ratio_pct/100:.1f}x",
+                f"{r.utilization_pct:.1f}%",
                 r.category.label,
             )
             for r in ranked[:20]
@@ -522,35 +523,35 @@ def generate_technical_document_docx(
     add_omml_equation(doc, "rational", "1")
     _add_body(
         doc,
-        "El caudal efectivo incorporado por las fuentes combina el factor de ingreso pluvial f_ing "
-        "(2.5 % calibrado a red sanitaria o 100 % para el caso teórico directo) y un caudal sanitario base:",
+        "El caudal efectivo incorporado por las fuentes aplica por defecto el 100 % del Método Racional "
+        "(f_ing = 1.0 y Q_san = 0.0 m³/s, con opción de calibración en interfaz):",
     )
     add_omml_equation(doc, "inflow", "2")
     _add_body(
         doc,
         "Las capacidades máximas suministradas provienen de la ecuación de Manning a tubo lleno, "
-        "a partir de la cual se calculan la velocidad de referencia y el tiempo de tránsito por tubería:",
+        "a partir de la cual se calculan la velocidad de referencia y el tiempo de tránsito continuo por tubería:",
     )
     add_omml_equation(doc, "manning", "3")
     add_omml_equation(doc, "velocity", "4")
     add_omml_equation(doc, "transit", "5")
     _add_body(
         doc,
-        "En cada intervalo discreto de 1 minuto se evalúa la utilización física acotada (≤115 % bajo sobrepresión) y el índice de demanda respecto a Q_max,i:",
+        "Con integración en sub-pasos continuos (≤10 s) y cola de prioridad de eventos, se evalúa el porcentaje oficial de utilización sin techo artificial:",
     )
     add_omml_equation(doc, "utilization", "6")
     _add_body(
         doc,
-        "Cuando el caudal demandado excede Q_max,i (>100 %), la conducción física aguas abajo se acota a la "
-        "capacidad nominal y el volumen excedente se retiene en el pozo aguas arriba hasta su capacidad útil (4.0 m³), derivando cualquier exceso adicional a rebose superficial en vía con conservación exacta de masa:",
+        "Cuando el caudal demandado excede Q_max,i (>100 %), la conducción física aguas abajo se limita a "
+        "la capacidad nominal y el volumen excedente llena el pozo hasta su capacidad útil (4.0 m³), derivando el excedente a rebose superficial en vía con conservación exacta de masa (se conserva P57 = 12\" tal como figura en DataSetBicentenario.xlsx):",
     )
     add_omml_equation(doc, "mass_balance", "7")
 
     _add_heading_1(doc, "5. Resultados y Comparación")
     _add_body(
         doc,
-        "La simulación ejecutada durante 90 min (lluvia uniforme de 60 min, paso de 1 min, f_ing = 2.5 %, "
-        "reparto por capacidad instalada en fuentes y caudal sanitario = 0.003 m3/s por fuente) evidencia la transición progresiva de los cinco estados de color:",
+        "La simulación ejecutada durante 90 min (lluvia uniforme de 60 min, paso de reporte de 1 min, f_ing = 100 %, "
+        "reparto por capacidad instalada en fuentes y Q_san = 0.0 m³/s) evidencia la transición progresiva de los cinco estados de color:",
     )
     _add_plain_table(
         doc,

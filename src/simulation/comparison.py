@@ -16,7 +16,7 @@ class ScenarioSummary:
     intensity_mm_h: float
     max_utilization_pct: float
     most_critical_pipe: str
-    num_critical_pipes: int      # >= 75%
+    num_critical_pipes: int      # > 75% (total crítico)
     num_overloaded_pipes: int    # > 100%
     peak_sink_discharge_m3s: float
     total_inflow_m3: float
@@ -26,6 +26,7 @@ class ScenarioSummary:
     result: SimulationResult
     max_demand_ratio_pct: float = 0.0
     total_surface_flooding_m3: float = 0.0
+    num_near_capacity_pipes: int = 0  # > 75% y <= 100%
 
 
 def compare_all_scenarios(
@@ -72,11 +73,15 @@ def compare_all_scenarios(
                 peak_sink_discharge_m3s=res.peak_sink_discharge_m3s,
                 total_inflow_m3=res.total_inflow_m3,
                 total_sink_discharge_m3=res.total_sink_discharge_m3,
-                max_stored_surcharge_m3=sum(res.max_manhole_storage_m3.values()),
+                max_stored_surcharge_m3=max(
+                    (s.total_manhole_storage_m3 for s in res.snapshots),
+                    default=0.0,
+                ),
                 mass_balance_error_m3=res.max_mass_balance_error_m3,
                 result=res,
                 max_demand_ratio_pct=max_dem,
                 total_surface_flooding_m3=res.total_surface_flooding_m3,
+                num_near_capacity_pipes=len(res.ever_near_capacity_pipes),
             )
         )
 
