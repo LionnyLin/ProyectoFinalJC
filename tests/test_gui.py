@@ -344,47 +344,72 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.app._run_param_rerun()
         self.app.var_duration.set(90.0)
 
-    def test_stress_map_modes_track_current_time_and_reset_on_execute(self) -> None:
-        # Escenario 3 por defecto: en t = 0 min la sobrecarga acumulada es 0m
+    def test_stress_map_modes_frozen_global_and_pause_on_select(self) -> None:
+        # 1. Incluso regresando a t = 0 min, Minutos en Sobrecarga muestra totales globales 0–90 min
         self.app._set_step(0)
         self.app._set_map_mode("overload_minutes")
         _pump(self.app, 80)
-        self.assertEqual(self.app.network_canvas._overload_minutes_map.get("P31", 0.0), 0.0)
-        self.assertIn("0.0 min", self.app.network_canvas._stamp_lbl.cget("text"))
-        self.assertIn("0 min", self.app._legend_header_label.cget("text"))
-
-        # Al avanzar al minuto 25, refleja valores acumulados hasta t = 25 min y muestra t = 25
-        self.app._set_step(25)
-        _pump(self.app, 80)
+        expected_p31_ov = self.app.result.pipe_overloaded_minutes.get("P31", 0.0)
+        self.assertGreater(expected_p31_ov, 0.0)
         self.assertAlmostEqual(
-            self.app.network_canvas._overload_minutes_map.get("P31", 0.0), 25.0, places=3
+            self.app.network_canvas._overload_minutes_map.get("P31", 0.0),
+            expected_p31_ov,
+            places=3,
         )
-        self.assertIn("25.0 min", self.app.network_canvas._stamp_lbl.cget("text"))
-        self.assertIn("25 min", self.app._legend_header_label.cget("text"))
+        self.assertIn("0–90 min", self.app.network_canvas._stamp_lbl.cget("text"))
+        self.assertIn("0–90 min", self.app._legend_header_label.cget("text"))
+        self.assertIn("0–90", self.app.lbl_clock.cget("text"))
+        self.assertEqual(self.app.current_step, 0)
 
-        # En Pico Máximo al minuto 25 muestra t = 25 y pico hasta ese minuto
+        # 2. En Pico Máximo desde t = 0 muestra el pico global completo y KPI coherente
         self.app._set_map_mode("peak")
         _pump(self.app, 80)
-        self.assertIn("25.0 min", self.app.network_canvas._stamp_lbl.cget("text"))
-        self.assertGreater(self.app.network_canvas._peak_util_map.get("P31", 0.0), 100.0)
-        # P30 en Esc. 3 al min 25 aún no llega a su pico máximo final de min 60
-        peak_p30_t25 = self.app.network_canvas._peak_util_map.get("P30", 0.0)
-        self.app._set_step(65)
-        _pump(self.app, 80)
-        self.assertGreaterEqual(
-            self.app.network_canvas._peak_util_map.get("P30", 0.0), peak_p30_t25
+        expected_p30_peak = self.app.result.peak_pipe_utilization.get("P30", 0.0)
+        expected_max_peak = max(self.app.result.peak_pipe_utilization.values(), default=0.0)
+        self.assertAlmostEqual(
+            self.app.network_canvas._peak_util_map.get("P30", 0.0),
+            expected_p30_peak,
+            places=2,
         )
+        self.assertIn("0–90 min", self.app.network_canvas._stamp_lbl.cget("text"))
+        self.assertIn("0–90 min", self.app._legend_header_label.cget("text"))
+        self.assertEqual(self.app._kpi_cards["max_util"].cget("text"), f"{expected_max_peak:.1f}%")
 
-        # Si está en Pico Máximo y presiona Ejecutar simulación -> regresa a Instantáneo y reproduce
+        # 3. Al reproducir y pulsar Pico Máximo o Minutos en Sobrecarga, pausa automáticamente
+        #    y conserva current_step para al regresar a Instantáneo
         self.app.var_speed.set("10x")
         self.app.btn_run_sim.invoke()
         _pump(self.app, 180)
         self.assertEqual(self.app._map_mode, "instant")
-        self.assertEqual(self.app.network_canvas._map_mode, "instant")
         self.assertTrue(self.app.is_playing)
-        self.app._player_pause()
+        self.app._set_map_mode("peak")
+        _pump(self.app, 80)
+        self.assertFalse(self.app.is_playing)
+        saved_step = self.app.current_step
+        self.assertGreater(saved_step, 0)
+        self.assertAlmostEqual(
+            self.app.network_canvas._peak_util_map.get("P30", 0.0),
+            expected_p30_peak,
+            places=2,
+        )
+        # Regresar a Instantáneo O(t) restaura el instante guardado en el slider
+        self.app._set_map_mode("instant")
+        _pump(self.app, 60)
+        self.assertEqual(self.app.current_step, saved_step)
+        self.assertAlmostEqual(
+            self.app.network_canvas.snapshot.time_min,
+            self.app.result.snapshots[saved_step].time_min,
+            places=3,
+        )
 
-        # También si presiona Reproducir estando en Minutos en Sobrecarga -> regresa a Instantáneo
+        # 4. Avanzar paso (+1) o Reproducir desde Minutos en Sobrecarga regresa a Instantáneo
+        self.app._set_map_mode("overload_minutes")
+        _pump(self.app, 60)
+        self.app._player_step(1)
+        _pump(self.app, 60)
+        self.assertEqual(self.app._map_mode, "instant")
+        self.assertEqual(self.app.current_step, min(len(self.app.result.snapshots) - 1, saved_step + 1))
+
         self.app._set_map_mode("overload_minutes")
         _pump(self.app, 60)
         self.app.toggle_play_pause()
@@ -464,12 +489,120 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.app._apply_preset(100.0, 0.0)
         _pump(self.app, 80)
 
-        # U4: _ScenarioMenuButton pausa reproducción al desplegar y mantiene 5 escenarios
+        # U2 tabla completa + scroll horizontal en Comparación (sin recorte en panel mediano)
+        self.app.geometry("1080x680+20+20")
+        self.app.notebook.select(3)
+        _pump(self.app, 180)
+        self.assertTrue(bool(self.app.comp_xscroll.winfo_ismapped()))
+        self.assertEqual(
+            self.app.tree_comp.item("3", "values")[0],
+            "E3 Lluvia moderada",
+        )
+        self.assertEqual(
+            self.app.tree_comp.item("5", "values")[0],
+            "E5 Lluvia extrema",
+        )
+        total_comp_w = sum(
+            self.app.tree_comp.column(c, "width") for c in self.app.tree_comp["columns"]
+        )
+        self.assertGreater(total_comp_w, self.app.tree_comp.winfo_width())
+        self.assertLess(self.app.tree_comp.xview()[1], 1.0)
+
+        # U4: _ScenarioMenuButton pausa reproducción al desplegar y reemplaza los 3 selectores de simulación
         self.assertEqual(len(self.app.combo_scenario["values"]), 5)
-        self.app.toggle_play_pause()
-        self.assertTrue(self.app.is_playing)
+        for combo_attr in ("combo_split_rule", "combo_hyetograph", "combo_source_dist"):
+            widget = getattr(self.app, combo_attr)
+            self.assertEqual(widget.winfo_class(), "Menubutton")
+            before_txt = widget.cget("text")
+            self.assertTrue(bool(before_txt))
+            self.app.toggle_play_pause()
+            self.assertTrue(self.app.is_playing)
+            widget._handle_postcommand()
+            self.assertFalse(self.app.is_playing)
+            self.assertEqual(widget.cget("text"), before_txt)
         self.app.combo_scenario._handle_postcommand()
         self.assertFalse(self.app.is_playing)
+
+    def test_network_canvas_compact_hidpi_no_node_or_badge_overlap(self) -> None:
+        from src.gui.network_canvas import NetworkCanvas
+
+        for width, height, dpi_scale, zoom, expect_all_texts in (
+            (652, 378, 1.5, 1.0, True),
+            (652, 378, 1.0, 1.0, True),
+            (644, 374, 1.5, 0.55, False),
+        ):
+            canvas = NetworkCanvas(self.app, dpi_scale=dpi_scale, width=width, height=height)
+            canvas.place(x=0, y=0, width=width, height=height)
+            _pump(self.app, 40)
+            canvas.set_graph(self.app.dataset.graph)
+            canvas._zoom = zoom
+            canvas.redraw()
+            _pump(self.app, 40)
+
+            ovals = {}
+            node_texts = {}
+            ptar_box = None
+            fuente_boxes = []
+            for iid in canvas.find_all():
+                tags = canvas.gettags(iid)
+                if "node_layer" not in tags:
+                    continue
+                nid = canvas._item_to_node.get(iid)
+                if not nid:
+                    continue
+                itype = canvas.type(iid)
+                if itype == "oval":
+                    bb = canvas.coords(iid)
+                    w_o = bb[2] - bb[0]
+                    if nid not in ovals or w_o < (ovals[nid][2] - ovals[nid][0]):
+                        ovals[nid] = bb
+                elif itype == "text":
+                    txt = canvas.itemcget(iid, "text")
+                    if txt == nid:
+                        node_texts[nid] = canvas.bbox(iid)
+                    elif "PTAR" in txt:
+                        ptar_box = canvas.bbox(iid)
+                    elif txt == "Fuente":
+                        fuente_boxes.append((nid, canvas.bbox(iid)))
+
+            self.assertEqual(len(ovals), 46)
+            if expect_all_texts:
+                self.assertEqual(len(node_texts), 46)
+            else:
+                self.assertLessEqual(len(node_texts), 2)
+
+            # Ningún par de nodos debe solaparse
+            nids = list(ovals.keys())
+            for i in range(len(nids)):
+                a = ovals[nids[i]]
+                for j in range(i + 1, len(nids)):
+                    b = ovals[nids[j]]
+                    overlaps = not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3])
+                    self.assertFalse(overlaps, f"Nodos solapados {nids[i]}-{nids[j]} en zoom={zoom}")
+
+            # Las etiquetas internas visibles deben caber dentro de su círculo
+            for nid, tb in node_texts.items():
+                ob = ovals[nid]
+                self.assertGreaterEqual(tb[0], ob[0] - 1)
+                self.assertLessEqual(tb[2], ob[2] + 1)
+                self.assertGreaterEqual(tb[1], ob[1] - 1)
+                self.assertLessEqual(tb[3], ob[3] + 1)
+
+            # El cartel PTAR no debe invadir otros nodos ni overlays
+            self.assertIsNotNone(ptar_box)
+            for nid, ob in ovals.items():
+                if nid == "31":
+                    continue
+                self.assertFalse(
+                    not (ptar_box[2] < ob[0] or ptar_box[0] > ob[2] or ptar_box[3] < ob[1] or ptar_box[1] > ob[3])
+                )
+            for ov_box in canvas._overlay_boxes(width, height):
+                for _nid, fb in fuente_boxes:
+                    self.assertFalse(
+                        not (fb[2] < ov_box[0] or fb[0] > ov_box[2] or fb[3] < ov_box[1] or fb[1] > ov_box[3])
+                    )
+
+            canvas.destroy()
 
 
 if __name__ == "__main__":
