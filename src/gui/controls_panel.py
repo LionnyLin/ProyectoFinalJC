@@ -108,6 +108,15 @@ class ControlsPanelMixin:
                 steps = -1 if delta > 0 else 1
             self._scroll_left_canvas(steps)
 
+    @staticmethod
+    def _is_descendant(widget: tk.Misc, ancestor: tk.Misc) -> bool:
+        cur: Optional[tk.Misc] = widget
+        while cur is not None:
+            if cur is ancestor:
+                return True
+            cur = getattr(cur, "master", None)
+        return False
+
     def _make_rail_section(
         self,
         parent: tk.Misc,
