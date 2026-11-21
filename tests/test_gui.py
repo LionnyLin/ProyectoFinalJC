@@ -109,11 +109,9 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         # Escenarios y selectores en español sin alterar valores internos del motor
         self.assertIn("Lluvia moderada", self.app.var_scenario.get())
         self.app.var_split_rule_es.set("Equitativa")
-        self.app.var_hyetograph_es.set("Triangular")
         self.app.var_source_dist_es.set("Uniforme (1/8)")
         cfg = self.app._build_sim_config()
         self.assertEqual(cfg.split_rule, "equal")
-        self.assertEqual(cfg.hyetograph, "triangular")
         self.assertEqual(cfg.source_distribution, "equal")
         self.app.var_source_dist_es.set("Por capacidad")
 
@@ -508,9 +506,9 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertGreater(total_comp_w, self.app.tree_comp.winfo_width())
         self.assertLess(self.app.tree_comp.xview()[1], 1.0)
 
-        # U4: _ScenarioMenuButton pausa reproducción al desplegar y reemplaza los 3 selectores de simulación
+        # U4: _ScenarioMenuButton pausa reproducción al desplegar y reemplaza los selectores de simulación
         self.assertEqual(len(self.app.combo_scenario["values"]), 5)
-        for combo_attr in ("combo_split_rule", "combo_hyetograph", "combo_source_dist"):
+        for combo_attr in ("combo_split_rule", "combo_source_dist"):
             widget = getattr(self.app, combo_attr)
             self.assertEqual(widget.winfo_class(), "Menubutton")
             before_txt = widget.cget("text")

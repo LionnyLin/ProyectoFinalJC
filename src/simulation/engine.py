@@ -41,26 +41,10 @@ class SewerSimulationEngine:
             raise ValueError("El grafo debe ser un DAG para ejecutar la simulación.")
         self.history: LinkedList[TimeStepSnapshot] = LinkedList()
 
-    def _effective_intensity(self, config: SimulationConfig, time_min: float) -> float:
-        """Calcula la intensidad instantánea de lluvia I(t) en mm/h según el perfil temporal."""
-        if time_min < 0.0 or time_min > config.storm_duration_min or config.storm_duration_min <= 0.0:
-            return 0.0
-        if config.hyetograph == "triangular":
-            half = config.storm_duration_min / 2.0
-            if half <= 0.0:
-                return config.intensity_mm_h
-            # Triángulo simétrico con área equivalente a la lluvia uniforme (pico = 2 * I_media)
-            if time_min <= half:
-                return 2.0 * config.intensity_mm_h * (time_min / half)
-            return 2.0 * config.intensity_mm_h * (
-                (config.storm_duration_min - time_min) / half
-            )
-        return config.intensity_mm_h
-
     def _interval_mean_intensity(
         self, config: SimulationConfig, t0_min: float, t1_min: float
     ) -> float:
-        """Calcula la intensidad promedio exacta (1/(t1-t0)) * integral_{t0}^{t1} I(tau) dtau."""
+        """Calcula la intensidad promedio exacta del bloque uniforme sobre [t0_min, t1_min]."""
         dt = t1_min - t0_min
         storm_dur = float(config.storm_duration_min)
         if dt <= 1e-12 or storm_dur <= 0.0 or config.intensity_mm_h <= 0.0:
@@ -69,26 +53,7 @@ class SewerSimulationEngine:
         b = min(storm_dur, t1_min)
         if b <= a + 1e-12:
             return 0.0
-
-        if config.hyetograph != "triangular":
-            return float(config.intensity_mm_h) * ((b - a) / dt)
-
-        half = storm_dur / 2.0
-        if half <= 1e-12:
-            return float(config.intensity_mm_h) * ((b - a) / dt)
-
-        def _tri_at(t: float) -> float:
-            if t <= half:
-                return 2.0 * float(config.intensity_mm_h) * (t / half)
-            return 2.0 * float(config.intensity_mm_h) * ((storm_dur - t) / half)
-
-        integral = 0.0
-        if a < half < b:
-            integral += 0.5 * (_tri_at(a) + _tri_at(half)) * (half - a)
-            integral += 0.5 * (_tri_at(half) + _tri_at(b)) * (b - half)
-        else:
-            integral += 0.5 * (_tri_at(a) + _tri_at(b)) * (b - a)
-        return integral / dt
+        return float(config.intensity_mm_h) * ((b - a) / dt)
 
     def compute_source_inflows_by_source(
         self, config: SimulationConfig, intensity_mm_h: float

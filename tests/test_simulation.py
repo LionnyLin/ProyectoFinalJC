@@ -252,21 +252,20 @@ class TestSimulation(unittest.TestCase):
 
     def test_m1_m2_m3_m8_regressions(self) -> None:
         engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
-        # M2: triangular storm=1, dt=1 debe inyectar volumen completo, y duration=10, dt=3 termina en 10.0 min
-        tri = engine.run(
+        # M2: lluvia uniforme con storm=1, dt=3 debe inyectar volumen completo, y duration=10, dt=3 termina en 10.0 min
+        unif = engine.run(
             SimulationConfig(
                 scenario_id=3,
-                scenario_name="Triangular",
+                scenario_name="Uniforme",
                 intensity_mm_h=30.0,
                 duration_min=10.0,
                 storm_duration_min=1.0,
                 dt_min=3.0,
-                hyetograph="triangular",
             )
         )
         expected_in = 0.00278 * 0.75 * 30.0 * 388.0 * 60.0
-        self.assertAlmostEqual(tri.total_inflow_m3, expected_in, delta=1e-3)
-        self.assertAlmostEqual(tri.snapshots[-1].time_min, 10.0, places=6)
+        self.assertAlmostEqual(unif.total_inflow_m3, expected_in, delta=1e-3)
+        self.assertAlmostEqual(unif.snapshots[-1].time_min, 10.0, places=6)
 
         # M3 + M8: tubería cerrada al 100% reporta 0% y is_closed=True; source_distribution="capacity" responde
         _q_base, inflows_base = engine.compute_source_inflows_by_source(

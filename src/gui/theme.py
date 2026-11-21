@@ -129,12 +129,6 @@ SPLIT_RULE_TO_ES: Dict[str, str] = {
 }
 ES_TO_SPLIT_RULE: Dict[str, str] = {v: k for k, v in SPLIT_RULE_TO_ES.items()}
 
-HYETOGRAPH_TO_ES: Dict[str, str] = {
-    "uniform": "Uniforme",
-    "triangular": "Triangular",
-}
-ES_TO_HYETOGRAPH: Dict[str, str] = {v: k for k, v in HYETOGRAPH_TO_ES.items()}
-
 SOURCE_DIST_TO_ES: Dict[str, str] = {
     "capacity": "Por capacidad",
     "equal": "Uniforme (1/8)",

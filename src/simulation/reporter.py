@@ -66,7 +66,7 @@ def generate_markdown_report(
         f"- **Método Racional:** $Q = 0.00278 \\cdot C \\cdot I \\cdot A$ con factor de ingreso pluvial = {cfg.ingress_factor * 100:.1f}%",
         f"- **Caudal sanitario base (tiempo seco):** {cfg.dry_weather_flow_per_source_m3s:.4f} m³/s por fuente",
         f"- **Duración de simulación / lluvia:** {cfg.duration_min:.1f} min / {cfg.storm_duration_min:.1f} min ($\\Delta t$ = {cfg.dt_min:.2f} min)",
-        f"- **Perfil temporal (hietograma):** {cfg.hyetograph}",
+        f"- **Perfil temporal:** Uniforme constante durante {cfg.storm_duration_min:.1f} min",
         f"- **Reparto entre fuentes:** {cfg.source_distribution} (por capacidad instalada o uniforme 1/8)",
         f"- **Regla de distribución en bifurcaciones:** {cfg.split_rule}",
         "- **Tiempo de tránsito:** $t_i = L_i / V_i$, con $V_i = Q_{max,i} / A_i$ (Manning) e integración con sub-paso hidráulico continuo ($\\Delta t_{sim} \\le 10\\;s$).",

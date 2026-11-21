@@ -180,10 +180,13 @@ class TemporalChartsPanel(tk.Frame):
         _lock_tkagg_dpi(self.profile_canvas, self._profile_frame)
 
         self._cached_key: Optional[Tuple[int, int, Optional[str]]] = None
+        self._ax_flow_ptar = None
         self._cursor_flow: Optional[Line2D] = None
         self._cursor_util: Optional[Line2D] = None
+        self._blit_bg = None
         self._resize_after: Optional[str] = None
         self._last_draw_ts: float = 0.0
+        self.canvas.mpl_connect("draw_event", self._on_mpl_draw)
 
         self._last_result: Optional[SimulationResult] = None
         self._last_prev_result: Optional[SimulationResult] = None
@@ -214,8 +217,19 @@ class TemporalChartsPanel(tk.Frame):
             self.after_cancel(self._resize_after)
         self._resize_after = self.after(120, self._refit_layout)
 
+    def _on_mpl_draw(self, _event) -> None:
+        try:
+            self._blit_bg = self.canvas.copy_from_bbox(self.figure.bbox)
+            if self._cursor_flow is not None:
+                self.ax_flow.draw_artist(self._cursor_flow)
+            if self._cursor_util is not None:
+                self.ax_util.draw_artist(self._cursor_util)
+        except Exception:
+            self._blit_bg = None
+
     def _refit_layout(self) -> None:
         self._resize_after = None
+        self._blit_bg = None
         if self._subtab == "profile":
             _sync_figure_to_widget(self.profile_canvas, self.profile_figure)
             _safe_tight_layout(self.profile_figure, self.profile_canvas.get_tk_widget())
@@ -289,13 +303,24 @@ class TemporalChartsPanel(tk.Frame):
         prev_id = id(previous_result) if (previous_result is not None and previous_result is not result) else 0
         cache_key = (id(result), prev_id, selected_pipe_id) if result is not None else None
         if cache_key is not None and cache_key == self._cached_key:
-            # Actualización rápida en reproducción: solo desplaza las líneas de tiempo
+            # Actualización rápida en reproducción: blitting sobre el fondo cacheado
             if current_time_min is not None:
                 if self._cursor_flow is not None:
                     self._cursor_flow.set_xdata([current_time_min, current_time_min])
                 if self._cursor_util is not None:
                     self._cursor_util.set_xdata([current_time_min, current_time_min])
                 if self._subtab == "hydro":
+                    if self._blit_bg is not None:
+                        try:
+                            self.canvas.restore_region(self._blit_bg)
+                            if self._cursor_flow is not None:
+                                self.ax_flow.draw_artist(self._cursor_flow)
+                            if self._cursor_util is not None:
+                                self.ax_util.draw_artist(self._cursor_util)
+                            self.canvas.blit(self.figure.bbox)
+                            return
+                        except Exception:
+                            self._blit_bg = None
                     if not throttle_draw or (now - self._last_draw_ts) >= 0.14:
                         self._last_draw_ts = now
                         self.canvas.draw_idle()
@@ -304,6 +329,13 @@ class TemporalChartsPanel(tk.Frame):
         self._cached_key = cache_key
         self._cursor_flow = None
         self._cursor_util = None
+        self._blit_bg = None
+        if self._ax_flow_ptar is not None:
+            try:
+                self._ax_flow_ptar.remove()
+            except Exception:
+                pass
+            self._ax_flow_ptar = None
 
         self.ax_flow.clear()
         self.ax_util.clear()
@@ -336,54 +368,80 @@ class TemporalChartsPanel(tk.Frame):
             and previous_result is not result
             and bool(previous_result.snapshots)
         )
-        max_q_val = max(inflows + ptar_out + (flood_rates if has_flood else []) + [0.05])
+        max_left_q = max(inflows + (flood_rates if has_flood else []) + [0.05])
+        max_ptar_q = max(ptar_out + [0.05])
+
+        self._ax_flow_ptar = self.ax_flow.twinx()
+        ax_ptar = self._ax_flow_ptar
+        ax_ptar.tick_params(colors=theme.ACCENT_TEXT_ON_LIGHT, labelsize=7.2)
+        for spine in ax_ptar.spines.values():
+            spine.set_color(theme.INK_PRIMARY)
+            spine.set_linewidth(0.85)
+        ax_ptar.set_ylabel("PTAR (m³/s)", color=theme.ACCENT_TEXT_ON_LIGHT, fontsize=7.4)
+
+        lines_left = []
+        lines_right = []
         if has_prev:
             prev_times = [s.time_min for s in previous_result.snapshots]
             prev_ptar = [s.total_sink_discharge_m3s for s in previous_result.snapshots]
             if prev_ptar:
-                max_q_val = max(max_q_val, max(prev_ptar))
-            self.ax_flow.plot(
-                prev_times,
-                prev_ptar,
-                label="Antes",
-                color=theme.INK_MUTED,
-                linestyle=":",
-                linewidth=1.9,
-                zorder=2,
+                max_ptar_q = max(max_ptar_q, max(prev_ptar))
+            lines_right.extend(
+                ax_ptar.plot(
+                    prev_times,
+                    prev_ptar,
+                    label="Antes",
+                    color=theme.INK_MUTED,
+                    linestyle=":",
+                    linewidth=1.9,
+                    zorder=2,
+                )
             )
 
-        self.ax_flow.plot(
-            times,
-            inflows,
-            label="Entrada",
-            color=theme.INK_PRIMARY,
-            linewidth=1.7,
-            alpha=0.88,
-            zorder=3,
-        )
-        if has_flood:
+        lines_left.extend(
             self.ax_flow.plot(
                 times,
-                flood_rates,
-                label="Rebose vía",
-                color="#dc2626",
-                linestyle="--",
-                linewidth=1.55,
-                alpha=0.92,
-                zorder=3.5,
+                inflows,
+                label="Entrada",
+                color=theme.INK_PRIMARY,
+                linewidth=1.7,
+                alpha=0.88,
+                zorder=3,
             )
-        self.ax_flow.plot(
-            times,
-            ptar_out,
-            label="PTAR 31",
-            color=theme.ACCENT_PRIMARY,
-            linewidth=2.3,
-            zorder=4,
         )
-        self.ax_flow.set_ylim(0.0, max_q_val * 1.38)
+        if has_flood:
+            lines_left.extend(
+                self.ax_flow.plot(
+                    times,
+                    flood_rates,
+                    label="Rebose vía",
+                    color="#dc2626",
+                    linestyle="--",
+                    linewidth=1.55,
+                    alpha=0.92,
+                    zorder=3.5,
+                )
+            )
+        lines_right.extend(
+            ax_ptar.plot(
+                times,
+                ptar_out,
+                label="PTAR 31",
+                color=theme.ACCENT_PRIMARY,
+                linewidth=2.3,
+                zorder=4,
+            )
+        )
+        self.ax_flow.set_ylim(0.0, max_left_q * 1.38)
+        ax_ptar.set_ylim(0.0, max_ptar_q * 1.38)
         t_cur = current_time_min if current_time_min is not None else times[0]
         self._cursor_flow = self.ax_flow.axvline(
-            t_cur, color=theme.ACCENT_PRIMARY, linestyle=":", linewidth=1.4, alpha=0.9
+            t_cur,
+            color=theme.ACCENT_PRIMARY,
+            linestyle=":",
+            linewidth=1.4,
+            alpha=0.9,
+            animated=True,
         )
         self.ax_flow.set_title(
             "Caudal: Antes vs. Después (m³/s)" if has_prev else "Balance de Caudales (m³/s)",
@@ -393,11 +451,14 @@ class TemporalChartsPanel(tk.Frame):
             fontfamily=["Inter", "Segoe UI", "DejaVu Sans"],
             pad=5,
         )
-        self.ax_flow.set_ylabel("m³/s", color=theme.INK_PRIMARY, fontsize=7.6)
-        n_flow_legs = 2 + (1 if has_prev else 0) + (1 if has_flood else 0)
+        self.ax_flow.set_ylabel("Entrada (m³/s)", color=theme.INK_PRIMARY, fontsize=7.4)
+        all_flow_lines = lines_left + lines_right
+        all_flow_labels = [l.get_label() for l in all_flow_lines]
         self.ax_flow.legend(
+            all_flow_lines,
+            all_flow_labels,
             loc="upper center",
-            ncol=min(4, max(2, n_flow_legs)),
+            ncol=min(4, max(2, len(all_flow_lines))),
             frameon=True,
             facecolor=theme.PAPER_BG,
             edgecolor=theme.PAPER_BORDER,
@@ -444,9 +505,19 @@ class TemporalChartsPanel(tk.Frame):
         self.ax_util.axhline(
             100.0, color="#dc2626", linestyle="--", linewidth=1.1, label="Cap. 100%"
         )
-        self.ax_util.set_ylim(0.0, max_u_val * 1.32)
+        if max_u_val > 250.0:
+            self.ax_util.set_yscale("symlog", linthresh=100.0)
+            self.ax_util.set_ylim(0.0, max_u_val * 1.45)
+        else:
+            self.ax_util.set_yscale("linear")
+            self.ax_util.set_ylim(0.0, max_u_val * 1.32)
         self._cursor_util = self.ax_util.axvline(
-            t_cur, color=theme.ACCENT_PRIMARY, linestyle=":", linewidth=1.4, alpha=0.9
+            t_cur,
+            color=theme.ACCENT_PRIMARY,
+            linestyle=":",
+            linewidth=1.4,
+            alpha=0.9,
+            animated=True,
         )
         title_u = (
             f"Utilización — {selected_pipe_id}"

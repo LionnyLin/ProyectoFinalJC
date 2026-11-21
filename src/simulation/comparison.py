@@ -48,7 +48,6 @@ def compare_all_scenarios(
             ingress_factor=base_config.ingress_factor,
             dry_weather_flow_per_source_m3s=base_config.dry_weather_flow_per_source_m3s,
             split_rule=base_config.split_rule,
-            hyetograph=base_config.hyetograph,
             source_distribution=base_config.source_distribution,
             max_manhole_storage_m3=base_config.max_manhole_storage_m3,
             max_physical_utilization_pct=base_config.max_physical_utilization_pct,

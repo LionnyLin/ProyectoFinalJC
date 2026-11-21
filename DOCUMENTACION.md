@@ -17,7 +17,7 @@ El proyecto implementa un **simulador hidráulico discreto de red de alcantarill
 | `src/io/` | Ingesta, validación topológica/hidráulica y exportación | `load_dataset()`, `load_from_excel()`, `load_from_csv_dir()`, `export_to_csv_dir()` |
 | `src/algorithms/` | Recorridos, consultas topológicas y análisis de criticidad | `bfs()`, `dfs()`, `topological_sort()`, `classify_utilization()`, `rank_critical_pipes()`, `compute_source_attribution()` |
 | `src/simulation/` | Motor hidráulico discreto, comparación y generación de reportes | `SewerSimulationEngine`, `SimulationConfig`, `PipeIntervention`, `compare_all_scenarios()`, `generate_markdown_report()`, `generate_docx_report()` |
-| `src/gui/` | Interfaz gráfica Tkinter + Matplotlib embebido | `BicentenarioSewerApp`, `NetworkCanvas`, `TemporalChartsPanel`, `ComparisonChartsPanel`, `theme`, `icons` |
+| `src/gui/` | Interfaz gráfica modular Tkinter + Matplotlib embebido | `BicentenarioSewerApp`, `ControlsPanelMixin`, `InspectorPanelMixin`, `ComparisonPanelMixin`, `GuidedTourMixin`, `NetworkCanvas`, `TemporalChartsPanel`, `ComparisonChartsPanel`, `widgets`, `theme`, `icons` |
 | `data/` | Conjunto de datos oficial (Excel y CSV equivalentes) | `DataSetBicentenario.xlsx`, `data/csv/*.csv` |
 | `tests/` | Suite de pruebas unitarias e integración GUI/DOCX | `test_data_structures.py`, `test_loader.py`, `test_algorithms.py`, `test_simulation.py`, `test_gui.py`, `test_docx_exporter.py` |
 
@@ -128,9 +128,8 @@ Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`
        - `Ingreso pluvial (%)`: rango `0.5–100.0`, inc `0.5`, default `100.0`.
        - `Caudal sanitario (m³/s)`: rango `0.0–0.05`, inc `0.001`, default `0.000`.
      - Botones preset rápidos: `Oficial Guía (100%)` ($\to 100.0\%,\; Q_{\text{san}}=0.0$) y `Calibrado (2.5% + Q_san)` ($\to 2.5\%,\; Q_{\text{san}}=0.003$).
-     - 3 selectores `_ScenarioMenuButton` (`tk.Menubutton` + `tk.Menu` estilizado, inmunes al bug de popdown en blanco bajo Windows `clam` + HiDPI al hacer doble clic sin elegir opción, mapeados ES $\leftrightarrow$ clave interna vía `theme.py:185-204`):
+     - 2 selectores `_ScenarioMenuButton` (`tk.Menubutton` + `tk.Menu` estilizado, inmunes al bug de popdown en blanco bajo Windows `clam` + HiDPI al hacer doble clic sin elegir opción, mapeados ES $\leftrightarrow$ clave interna vía `theme.py`):
        - `Bifurcación`: `"Proporcional"` (`proportional`) | `"Equitativa"` (`equal`).
-       - `Hietograma`: `"Uniforme"` (`uniform`) | `"Triangular"` (`triangular`).
        - `Reparto fuentes`: `"Por capacidad"` (`capacity`) | `"Uniforme (1/8)"` (`equal`).
      - Botón primario `Ejecutar simulación`: ejecuta `run_simulation(..., auto_play=True)` y arranca la reproducción desde `t = 0`.
   2. **Lámina dinámica de Leyenda (`sec_leg`):** muestra los 5 rangos cromáticos y un contador de tuberías por banda. En `instant` muestra `Escala oficial · t = X min` (`theme.COLOR_SCALE_LEGEND`); en las vistas congeladas globales muestra `Pico máximo · 0–X min` (`theme.COLOR_SCALE_LEGEND`) y `Sobrecarga acumulada · 0–X min` (`OVERLOAD_PERSISTENCE_LEVELS`).
@@ -218,10 +217,7 @@ Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`
 3. **Reglas de reparto en nodos de bifurcación (`SimulationConfig.split_rule`, `engine.py:242-255`):**
    - **`"proportional"` (*Proporcional a capacidad*, valor por defecto):** si un nodo tiene $k > 1$ tuberías salientes, el volumen disponible se divide en proporción a la capacidad efectiva $Q_{\max,\text{ef},e}$ de cada salida (si todas tienen capacidad nula, usa $1/k$).
    - **`"equal"` (*Equitativa*):** divide el flujo disponible por igual entre todas las tuberías salientes ($w_e = 1/k$).
-4. **Hietograma temporal (`SimulationConfig.hyetograph`, `engine.py:44-58`):**
-   - **`"uniform"` (*Uniforme (bloque)*, defecto):** $I_{\text{ef}}(t) = I_{\text{media}}$ para $0 < t \le t_{\text{lluvia}}$ y $0$ para $t > t_{\text{lluvia}}$.
-   - **`"triangular"` (*Triangular*):** mantiene el mismo volumen total de lluvia con pico $2 I_{\text{media}}$ en $t_{\text{pico}} = t_{\text{lluvia}}/2$:
-     $$I_{\text{ef}}(t) = \begin{cases} 2 I_{\text{media}} \cdot \dfrac{t}{t_{\text{pico}}}, & 0 < t \le t_{\text{pico}} \\[6pt] 2 I_{\text{media}} \cdot \dfrac{t_{\text{lluvia}} - t}{t_{\text{lluvia}} - t_{\text{pico}}}, & t_{\text{pico}} < t \le t_{\text{lluvia}} \\[6pt] 0, & t > t_{\text{lluvia}} \end{cases}$$
+4. **Perfil temporal de lluvia (`engine.py`):** bloque **uniforme** constante, $I_{\text{ef}}(t) = I_{\text{media}}$ para $0 < t \le t_{\text{lluvia}}$ y $0$ para $t > t_{\text{lluvia}}$.
 5. **Presets de ingreso y calibración en GUI:**
    - `Oficial Guía (100%)` *(predeterminado)*: `ingress_factor = 1.0`, `dry_weather_flow_per_source_m3s = 0.0`.
    - `Calibrado (2.5% + Q_san)` *(análisis de sensibilidad)*: `ingress_factor = 0.025`, `dry_weather_flow_per_source_m3s = 0.003`.
@@ -302,7 +298,7 @@ Definidos en `src/algorithms/analysis.py:9-40` (`classify_utilization`) y `src/g
 
 ## 5. Procedimiento Matemático Paso a Paso de las Salidas del Inspector y Resumen
 
-A continuación se desglosa exactamente el algoritmo y las ecuaciones de `src/simulation/engine.py` y `src/gui/app.py` tomando como referencia numérica exacta el **Escenario 3 — Lluvia moderada ($I = 30\;\text{mm/h}$)** en el instante **$t = 30.0\;\text{min}$** bajo la configuración oficial por defecto (`duration_min=90.0`, `storm_duration_min=60.0`, `dt_min=1.0`, `ingress_factor=1.0`, `Q_san=0.0 m³/s`, `source_distribution="capacity"`, `split_rule="proportional"`, `hyetograph="uniform"`, `V_max=4.0 m³`).
+A continuación se desglosa exactamente el algoritmo y las ecuaciones de `src/simulation/engine.py` y `src/gui/app.py` tomando como referencia numérica exacta el **Escenario 3 — Lluvia moderada ($I = 30\;\text{mm/h}$)** en el instante **$t = 30.0\;\text{min}$** bajo la configuración oficial por defecto (`duration_min=90.0`, `storm_duration_min=60.0`, `dt_min=1.0`, `ingress_factor=1.0`, `Q_san=0.0 m³/s`, `source_distribution="capacity"`, `split_rule="proportional"`, `V_max=4.0 m³`).
 
 ### 5.1 Cálculo en Nodos (Referencia: `NODO 20 (FUENTE)` en $t = 30.0\;\text{min}$)
 

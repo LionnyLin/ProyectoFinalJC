@@ -74,7 +74,6 @@ class SimulationConfig:
     ingress_factor: float = 1.0  # 100% del Método Racional según guía docente (ajustable 0.01..1.0)
     dry_weather_flow_per_source_m3s: float = 0.0  # Caudal sanitario base opcional por fuente (m³/s)
     split_rule: str = "proportional"  # "proportional" (por Qmax) o "equal" (uniforme)
-    hyetograph: str = "uniform"  # "uniform" (constante) o "triangular" (pico al 50%)
     source_distribution: str = "capacity"  # "capacity" (ponderado por Qmax) o "equal" (1/N)
     max_manhole_storage_m3: float = 4.0  # Capacidad física amortiguadora por pozo antes de rebose
     max_physical_utilization_pct: Optional[float] = None  # Obsoleto: mantenido solo por compatibilidad

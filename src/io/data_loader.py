@@ -341,6 +341,85 @@ def _validate_graph_and_data(
         )
 
 
+def _add_validated_pipe(
+    graph: DirectedGraph,
+    pipe_id: str,
+    from_node: str,
+    to_node: str,
+    raw_d_m: object,
+    raw_d_in: object,
+    raw_manning_n: object,
+    raw_slope: object,
+    raw_q: object,
+    raw_length_m: object,
+    note: str,
+    ctx: str,
+) -> None:
+    """Parsea, valida consistencia de unidades/Manning y agrega una tubería al grafo."""
+    d_m = _parse_float(raw_d_m, "diameter_m", ctx)
+    d_in_str = str(raw_d_in).strip() if raw_d_in is not None else ""
+    d_in = (
+        round(_parse_float(raw_d_in, "diameter_in", ctx), 4)
+        if d_in_str and not d_in_str.startswith("=")
+        else round(d_m / 0.0254, 4)
+    )
+    if d_m > 0.0 and d_in > 0.0:
+        rel_diff = abs(d_m - (d_in * 0.0254)) / d_m
+        if rel_diff > 0.02:
+            raise DataLoadError(
+                f"Inconsistencia de unidades diámetro {d_in} in vs {d_m} m en {ctx}."
+            )
+
+    manning_n = _parse_float(raw_manning_n, "manning_n", ctx)
+    slope = _parse_float(raw_slope, "slope", ctx)
+    q_str = str(raw_q).strip() if raw_q is not None else ""
+    if q_str and not q_str.startswith("="):
+        q_max = _parse_float(raw_q, "q_max_m3s", ctx)
+    else:
+        if d_m <= 0.0 or manning_n <= 0.0 or slope <= 0.0:
+            raise DataLoadError(f"Parámetros geométricos/hidráulicos <= 0 en {ctx}.")
+        area = math.pi * (d_m ** 2) / 4.0
+        q_max = (1.0 / manning_n) * area * ((d_m / 4.0) ** (2.0 / 3.0)) * (slope ** 0.5)
+
+    pipe = PipeEdge(
+        pipe_id=pipe_id,
+        from_node=from_node,
+        to_node=to_node,
+        diameter_in=d_in,
+        diameter_m=d_m,
+        manning_n=manning_n,
+        slope=slope,
+        q_max_m3s=q_max,
+        length_m=_parse_float(raw_length_m, "length_m", ctx),
+        note=note,
+    )
+    try:
+        graph.add_pipe(pipe)
+    except ValueError as exc:
+        raise DataLoadError(str(exc)) from exc
+
+
+def _finalize_dataset(
+    graph: DirectedGraph,
+    basin: DrainageBasin,
+    scenarios: List[PrecipitationScenario],
+    source_path: str,
+    extra_coords: Optional[Dict[str, Tuple[float, float, str]]] = None,
+) -> NetworkDataset:
+    """Asigna coordenadas, valida integridad topológica/hidráulica y construye el dataset."""
+    coords = dict(DEFAULT_NODE_COORDS) if _is_bicentenario_graph(graph) else {}
+    if extra_coords:
+        coords.update(extra_coords)
+    _assign_missing_coordinates(graph, coords)
+    _validate_graph_and_data(graph, basin, scenarios)
+    return NetworkDataset(
+        graph=graph,
+        basin=basin,
+        scenarios=scenarios,
+        source_path=os.path.abspath(source_path),
+    )
+
+
 def load_from_excel(
     xlsx_path: str,
     coords_csv_path: Optional[str] = None,
@@ -405,52 +484,20 @@ def load_from_excel(
                 raise DataLoadError(f"Conexión incompleta en Pipe(s) fila {r}.")
 
             ctx = f"Pipe(s) fila {r}"
-            d_m = _parse_float(ws_pipes.cell(r, pcols["diameter_m"]).value, "⌀ (m)", ctx)
-            raw_d_in = ws_pipes.cell(r, pcols["diameter_in"]).value
-            d_in = round(
-                _parse_float(raw_d_in, "⌀ (in)", ctx)
-                if raw_d_in is not None and not str(raw_d_in).strip().startswith("=")
-                else (d_m / 0.0254),
-                4,
-            )
-            if d_m > 0.0 and d_in > 0.0:
-                rel_diff = abs(d_m - (d_in * 0.0254)) / d_m
-                if rel_diff > 0.02:
-                    raise DataLoadError(
-                        f"Inconsistencia de unidades diámetro {d_in} in vs {d_m} m en {ctx}."
-                    )
-            manning_n = _parse_float(ws_pipes.cell(r, pcols["manning_n"]).value, "n", ctx)
-            slope = _parse_float(ws_pipes.cell(r, pcols["slope"]).value, "S", ctx)
-            raw_q = ws_pipes.cell(r, pcols["q_max_m3s"]).value
-            if raw_q is not None and not str(raw_q).strip().startswith("="):
-                q_max = _parse_float(raw_q, "Q", ctx)
-            else:
-                # Fallback solo si el archivo Excel no tiene valores cacheados de fórmula
-                if d_m <= 0.0 or manning_n <= 0.0 or slope <= 0.0:
-                    raise DataLoadError(
-                        f"Parámetros geométricos/hidráulicos <= 0 en {ctx}."
-                    )
-                area = math.pi * (d_m ** 2) / 4.0
-                q_max = (1.0 / manning_n) * area * ((d_m / 4.0) ** (2.0 / 3.0)) * (slope ** 0.5)
-            length_m = _parse_float(ws_pipes.cell(r, pcols["length_m"]).value, "Lenght (m)", ctx)
-            note = str(ws_pipes.cell(r, pcols["note"]).value or "").strip()
-
-            pipe = PipeEdge(
+            _add_validated_pipe(
+                graph=graph,
                 pipe_id=str(pid_val).strip(),
                 from_node=str(from_val).strip(),
                 to_node=str(to_val).strip(),
-                diameter_in=d_in,
-                diameter_m=d_m,
-                manning_n=manning_n,
-                slope=slope,
-                q_max_m3s=q_max,
-                length_m=length_m,
-                note=note,
+                raw_d_m=ws_pipes.cell(r, pcols["diameter_m"]).value,
+                raw_d_in=ws_pipes.cell(r, pcols["diameter_in"]).value,
+                raw_manning_n=ws_pipes.cell(r, pcols["manning_n"]).value,
+                raw_slope=ws_pipes.cell(r, pcols["slope"]).value,
+                raw_q=ws_pipes.cell(r, pcols["q_max_m3s"]).value,
+                raw_length_m=ws_pipes.cell(r, pcols["length_m"]).value,
+                note=str(ws_pipes.cell(r, pcols["note"]).value or "").strip(),
+                ctx=ctx,
             )
-            try:
-                graph.add_pipe(pipe)
-            except ValueError as exc:
-                raise DataLoadError(str(exc)) from exc
 
         ws_basin = wb["Drainage Basin"]
         c_val = _parse_float(ws_basin.cell(2, 1).value, "C", "Drainage Basin fila 2")
@@ -471,18 +518,8 @@ def load_from_excel(
     finally:
         wb.close()
 
-    coords = dict(DEFAULT_NODE_COORDS) if _is_bicentenario_graph(graph) else {}
-    if coords_csv_path:
-        coords.update(_load_coords_csv(coords_csv_path))
-    _assign_missing_coordinates(graph, coords)
-    _validate_graph_and_data(graph, basin, scenarios)
-
-    return NetworkDataset(
-        graph=graph,
-        basin=basin,
-        scenarios=scenarios,
-        source_path=os.path.abspath(xlsx_path),
-    )
+    extra_coords = _load_coords_csv(coords_csv_path) if coords_csv_path else None
+    return _finalize_dataset(graph, basin, scenarios, xlsx_path, extra_coords)
 
 
 def load_from_csv_dir(csv_dir: str) -> NetworkDataset:
@@ -533,46 +570,20 @@ def load_from_csv_dir(csv_dir: str) -> NetworkDataset:
             if not pid or not u or not v:
                 raise DataLoadError(f"Identificador o conexión faltante en {ctx}.")
 
-            d_m = _parse_float(row.get("diameter_m"), "diameter_m", ctx)
-            raw_d_in = (row.get("diameter_in") or "").strip()
-            d_in = (
-                _parse_float(raw_d_in, "diameter_in", ctx)
-                if raw_d_in
-                else round(d_m / 0.0254, 4)
-            )
-            if d_m > 0.0 and d_in > 0.0:
-                rel_diff = abs(d_m - (d_in * 0.0254)) / d_m
-                if rel_diff > 0.02:
-                    raise DataLoadError(
-                        f"Inconsistencia de unidades diámetro {d_in} in vs {d_m} m en {ctx}."
-                    )
-            manning_n = _parse_float(row.get("manning_n"), "manning_n", ctx)
-            slope = _parse_float(row.get("slope"), "slope", ctx)
-            raw_q = (row.get("q_max_m3s") or "").strip()
-            if raw_q:
-                q_max = _parse_float(raw_q, "q_max_m3s", ctx)
-            else:
-                if d_m <= 0.0 or manning_n <= 0.0 or slope <= 0.0:
-                    raise DataLoadError(f"Parámetros geométricos/hidráulicos <= 0 en {ctx}.")
-                area = math.pi * (d_m ** 2) / 4.0
-                q_max = (1.0 / manning_n) * area * ((d_m / 4.0) ** (2.0 / 3.0)) * (slope ** 0.5)
-
-            pipe = PipeEdge(
+            _add_validated_pipe(
+                graph=graph,
                 pipe_id=pid,
                 from_node=u,
                 to_node=v,
-                diameter_in=d_in,
-                diameter_m=d_m,
-                manning_n=manning_n,
-                slope=slope,
-                q_max_m3s=q_max,
-                length_m=_parse_float(row.get("length_m"), "length_m", ctx),
+                raw_d_m=row.get("diameter_m"),
+                raw_d_in=row.get("diameter_in"),
+                raw_manning_n=row.get("manning_n"),
+                raw_slope=row.get("slope"),
+                raw_q=row.get("q_max_m3s"),
+                raw_length_m=row.get("length_m"),
                 note=(row.get("note") or "").strip(),
+                ctx=ctx,
             )
-            try:
-                graph.add_pipe(pipe)
-            except ValueError as exc:
-                raise DataLoadError(str(exc)) from exc
 
     with open(os.path.join(csv_dir, "drainage_basin.csv"), "r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
@@ -601,17 +612,8 @@ def load_from_csv_dir(csv_dir: str) -> NetworkDataset:
                 )
             )
 
-    coords = dict(DEFAULT_NODE_COORDS) if _is_bicentenario_graph(graph) else {}
-    coords.update(_load_coords_csv(os.path.join(csv_dir, "node_coords.csv")))
-    _assign_missing_coordinates(graph, coords)
-    _validate_graph_and_data(graph, basin, scenarios)
-
-    return NetworkDataset(
-        graph=graph,
-        basin=basin,
-        scenarios=scenarios,
-        source_path=os.path.abspath(csv_dir),
-    )
+    extra_coords = _load_coords_csv(os.path.join(csv_dir, "node_coords.csv"))
+    return _finalize_dataset(graph, basin, scenarios, csv_dir, extra_coords)
 
 
 def load_dataset(path: str) -> NetworkDataset:
