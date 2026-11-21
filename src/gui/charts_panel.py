@@ -244,6 +244,7 @@ class ChartsPanel(tk.Frame):
                 col, ls = _TOP3_STYLES[idx % len(_TOP3_STYLES)]
                 ax2.plot(times, series, color=col, ls=ls, lw=1.8 - idx * 0.2, label=f"{pid} ({peak_val:.0f}%)")
 
+        ax2.axhspan(75.0, 100.0, color="#ef4444", alpha=0.09, zorder=0)
         ax2.axhline(75.0, color="#ef4444", ls="--", lw=1.0, label="75% crítica")
         ax2.axhline(100.0, color="#991b1b", ls="-", lw=1.1, label="100% sobrecarga")
         ax2.set_xlabel("Tiempo (min)", fontsize=7.5, color=theme.INK_PRIMARY)

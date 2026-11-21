@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from src.data_structures import DirectedGraph, HashTable, ManholeNode, PipeEdge, Queue
-from .traversals import TraversalResult, bfs
+from .traversals import TraversalFrame, TraversalResult, bfs
 
 
 @dataclass(slots=True)
@@ -83,9 +83,13 @@ def get_pipe_details(graph: DirectedGraph, pipe_id: str) -> Optional[PipeQueryRe
     )
 
 
-def trace_downstream(graph: DirectedGraph, start_node: str) -> TraversalResult:
+def trace_downstream(
+    graph: DirectedGraph,
+    start_node: str,
+    record_frames: bool = False,
+) -> TraversalResult:
     """Traza todos los nodos y tuberías alcanzables aguas abajo mediante BFS."""
-    return bfs(graph, start_node)
+    return bfs(graph, start_node, record_frames=record_frames)
 
 
 def trace_upstream(graph: DirectedGraph, target_node: str) -> Tuple[List[str], List[PipeEdge]]:
@@ -114,3 +118,105 @@ def trace_upstream(graph: DirectedGraph, target_node: str) -> Tuple[List[str], L
                 queue.enqueue(edge.from_node)
 
     return nodes_order, pipes_list
+
+
+def trace_upstream_result(
+    graph: DirectedGraph,
+    target_node: str,
+    record_frames: bool = False,
+) -> TraversalResult:
+    """Traza aguas arriba desde `target_node` (BFS inverso) y retorna TraversalResult."""
+    if not graph.has_node(target_node):
+        raise KeyError(f"Nodo no encontrado en el grafo: {target_node}")
+
+    queue: Queue[str] = Queue()
+    visited: HashTable[str, bool] = HashTable(64)
+    levels: HashTable[str, int] = HashTable(64)
+    seen_pipes: HashTable[str, bool] = HashTable(128)
+
+    visited.put(target_node, True)
+    levels.put(target_node, 0)
+    queue.enqueue(target_node)
+
+    nodes_order: List[str] = []
+    pipes_list: List[PipeEdge] = []
+    frames: List[TraversalFrame] = []
+    visited_nodes_set = {target_node}
+    visited_edges_set: set[str] = set()
+
+    if record_frames:
+        frames.append(
+            TraversalFrame(
+                step_index=0,
+                total_steps=0,
+                algorithm="UPSTREAM",
+                current_node=target_node,
+                active_edge=None,
+                visited_nodes=set(visited_nodes_set),
+                visited_edges=set(visited_edges_set),
+                structure_name="Queue",
+                structure_items=list(queue),
+                note=f"Inicio aguas arriba desde nodo {target_node} (cola inversa)",
+            )
+        )
+
+    while not queue.is_empty():
+        curr = queue.dequeue()
+        nodes_order.append(curr)
+        curr_level = levels.get(curr, 0)
+        incoming = graph.incoming_pipes(curr)
+        enqueued_upstream: List[str] = []
+        last_edge_id: Optional[str] = None
+
+        for edge in incoming:
+            if not seen_pipes.contains(edge.pipe_id):
+                seen_pipes.put(edge.pipe_id, True)
+                pipes_list.append(edge)
+                visited_edges_set.add(edge.pipe_id)
+                last_edge_id = edge.pipe_id
+            if not visited.contains(edge.from_node):
+                visited.put(edge.from_node, True)
+                levels.put(edge.from_node, curr_level + 1)
+                queue.enqueue(edge.from_node)
+                visited_nodes_set.add(edge.from_node)
+                enqueued_upstream.append(edge.from_node)
+
+        if record_frames:
+            if enqueued_upstream:
+                note = f"Desencola nodo {curr} · Aportantes encolados: {', '.join(enqueued_upstream)}"
+            elif last_edge_id is not None:
+                note = f"Desencola nodo {curr} · Tuberías entrantes ya visitadas"
+            else:
+                note = f"Sin tuberías entrantes en nodo {curr}"
+            frames.append(
+                TraversalFrame(
+                    step_index=0,
+                    total_steps=0,
+                    algorithm="UPSTREAM",
+                    current_node=curr,
+                    active_edge=last_edge_id,
+                    visited_nodes=set(visited_nodes_set),
+                    visited_edges=set(visited_edges_set),
+                    structure_name="Queue",
+                    structure_items=list(queue),
+                    note=note,
+                )
+            )
+
+    total = len(frames)
+    for idx, frame in enumerate(frames):
+        frame.step_index = idx
+        frame.total_steps = total
+
+    return TraversalResult(
+        algorithm="UPSTREAM",
+        start_node=target_node,
+        target_node=None,
+        visited_order=nodes_order,
+        traversed_edges=pipes_list,
+        levels=levels,
+        path_nodes=[],
+        path_pipes=[],
+        target_reached=False,
+        frames=frames,
+    )

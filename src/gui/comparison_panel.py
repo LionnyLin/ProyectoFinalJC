@@ -13,7 +13,7 @@ from . import theme
 _COLUMNS: Tuple[Tuple[str, str, int, str], ...] = (
     ("esc", "Esc.", 30, "center"), ("escenario", "Escenario", 62, "w"),
     ("intensidad", "I mm/h", 44, "e"), ("max_pct", "Máx.%", 52, "e"),
-    ("crit", "Crít.", 34, "e"), ("sobr", "Sobr.", 36, "e"),
+    ("crit", ">75–100%", 54, "e"), ("sobr", ">100%", 42, "e"),
     ("pico", "PTAR", 46, "e"), ("rebose", "Rebose", 54, "e"),
 )
 
@@ -173,13 +173,13 @@ class ComparisonPanel(tk.Frame):
             self._row_scenario.clear()
             for idx, s in enumerate(summaries):
                 base = "even" if idx % 2 == 0 else "odd"
-                tags = (base, "over") if s.num_overloaded_pipes > 0 else ((base, "crit") if s.num_critical_pipes > 0 else (base,))
+                tags = (base, "over") if s.num_overloaded_pipes > 0 else ((base, "crit") if s.num_near_capacity_pipes > 0 else (base,))
                 iid = f"sc_{s.scenario_id}"
                 self._row_scenario[iid] = s.scenario_id
                 vals = (
                     f"E{s.scenario_id}", theme.translate_scenario_name(s.condition, short=True),
                     f"{s.intensity_mm_h:.0f}", _fmt_pct(s.max_utilization_pct),
-                    str(s.num_critical_pipes), str(s.num_overloaded_pipes),
+                    str(s.num_near_capacity_pipes), str(s.num_overloaded_pipes),
                     f"{s.peak_sink_discharge_m3s:.3f}", _fmt_m3(s.total_surface_flooding_m3),
                 )
                 self._tree.insert("", tk.END, iid=iid, tags=tags, values=vals)
@@ -196,7 +196,7 @@ class ComparisonPanel(tk.Frame):
         self._populate_table(summaries)
 
         xs, w = list(range(len(summaries))), 0.34
-        crit = [s.num_critical_pipes for s in summaries]
+        crit = [s.num_near_capacity_pipes for s in summaries]
         over = [s.num_overloaded_pipes for s in summaries]
         peaks = [s.peak_sink_discharge_m3s for s in summaries]
         floods_k = [s.total_surface_flooding_m3 / 1000.0 for s in summaries]
@@ -208,7 +208,7 @@ class ComparisonPanel(tk.Frame):
         ax2.clear()
         ax2.set_visible(True)
         _style_sub(ax1, "Tuberías críticas vs. pico PTAR 31", "N.º tuberías")
-        ax1.bar([x - w / 2 for x in xs], crit, width=w, color="#ef4444", edgecolor=theme.INK_PRIMARY, lw=0.5, label="Crít. (>75%)")
+        ax1.bar([x - w / 2 for x in xs], crit, width=w, color="#ef4444", edgecolor=theme.INK_PRIMARY, lw=0.5, label="Crít. (>75–100%)")
         ax1.bar([x + w / 2 for x in xs], over, width=w, color="#991b1b", edgecolor=theme.INK_PRIMARY, lw=0.5, label="Sobr. (>100%)")
         ax1.set_xticks(xs)
         ax1.set_xticklabels(labels, fontsize=6.7, color=theme.INK_PRIMARY)

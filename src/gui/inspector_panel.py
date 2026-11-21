@@ -12,11 +12,11 @@ from . import theme
 
 _EMPTY_MSG = "Haz clic en una tubería o pozo del plano, o usa el buscador O(1)."
 _NODE_LABELS = {"source": "Alcantarilla Fuente", "sink": "PTAR Punta Canoa", "manhole": "Pozo"}
-_FILTER_MODES = ("Todas", "Críticas (>75%)", "Sobrecargadas (>100%)")
+_FILTER_MODES = ("Todas", "Críticas (>75–100%)", "Sobrecargadas (>100%)", "En alerta (>75%)")
 _TIER_NAMES = tuple(label for _, _, label in theme.COLOR_SCALE_LEGEND)
 _SUM_KEYS = (
     "Escenario", "Intensidad", "Q total entrada", "PTAR 31 pico / acum.",
-    "Almacenamiento pozos", "Rebose total", "Críticas (>75%)", "Sobrecargadas (>100%)", "Err. masa / Cómputo",
+    "Almacenamiento pozos", "Rebose total", "Críticas (>75–100%)", "Sobrecargadas (>100%)", "Err. masa / Cómputo",
 )
 _COLS = (("#", 28, "e", False), ("ID", 44, "center", False), ("Tramo", 62, "center", True), ("Q (m³/s)", 66, "e", False), ("Qmax", 58, "e", False), ("Util. %", 56, "e", False), ("Estado", 86, "w", True))
 
@@ -39,8 +39,11 @@ class InspectorTab(tk.Frame):
         self._win_id = self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
         self._inner.bind("<Configure>", lambda _e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
         self._canvas.bind("<Configure>", lambda e: (self._canvas.itemconfigure(self._win_id, width=e.width), self._empty_lbl.configure(wraplength=max(160, e.width - 28))))
+        self._wheel_active = False
         self._canvas.bind("<Enter>", lambda _e: self._toggle_wheel(True))
         self._canvas.bind("<Leave>", lambda _e: self._toggle_wheel(False))
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self._canvas.bind(seq, self._on_wheel)
 
         self._header("ENTIDAD SELECCIONADA")
         hdr = tk.Frame(self._inner, bg=theme.PAPER_BG); hdr.pack(fill=tk.X, padx=10, pady=(0, 4))
@@ -63,9 +66,11 @@ class InspectorTab(tk.Frame):
             kl.configure(text=key); vl.configure(text="—")
 
     def _toggle_wheel(self, active: bool) -> None:
-        fn = lambda e: self._canvas.yview_scroll(-1 if (e.num == 4 or (e.delta and e.delta > 0)) else 1, "units")
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            self._canvas.bind_all(seq, fn) if active else self._canvas.unbind_all(seq)
+        self._wheel_active = active
+
+    def _on_wheel(self, e: tk.Event) -> None:
+        if self._wheel_active:
+            self._canvas.yview_scroll(-1 if (e.num == 4 or (e.delta and e.delta > 0)) else 1, "units")
 
     def _header(self, title: str) -> None:
         tk.Label(self._inner, text=title, bg=theme.PAPER_BG, fg=theme.ACCENT_TEXT, font=self._fonts["label"], anchor="w").pack(fill=tk.X, padx=10, pady=(8, 2))
@@ -154,7 +159,7 @@ class InspectorTab(tk.Frame):
             (f"{result.peak_sink_discharge_m3s:.4f} m³/s | {result.total_sink_discharge_m3:,.1f} m³", None),
             (f"{snapshot.total_manhole_storage_m3:.2f} m³", None),
             (f"{result.total_surface_flooding_m3:,.2f} m³", "#991b1b" if result.total_surface_flooding_m3 > 1e-6 else None),
-            (f"{len(snapshot.critical_pipe_ids)} act. / {len(result.ever_critical_pipes)} pico", "#dc2626" if result.ever_critical_pipes else None),
+            (f"{len(snapshot.near_capacity_pipe_ids)} act. / {len(result.ever_near_capacity_pipes)} pico", "#dc2626" if result.ever_near_capacity_pipes else None),
             (f"{len(snapshot.overloaded_pipe_ids)} act. / {len(result.ever_overloaded_pipes)} pico", "#991b1b" if result.ever_overloaded_pipes else None),
             (f"{result.max_mass_balance_error_m3:.2e} m³ | {result.execution_time_ms:.1f} ms", None),
         )
@@ -180,7 +185,7 @@ class CriticalPipesTab(tk.Frame):
         tk.Frame(self, bg=theme.PAPER_BORDER, height=1).pack(fill=tk.X)
         tk.Label(bar, text="Filtro:", bg=theme.PAPER_SUBTLE, fg=theme.INK_MUTED, font=fonts["small"]).pack(side=tk.LEFT)
         self._filter_var = tk.StringVar(value=_FILTER_MODES[0])
-        cb = ttk.Combobox(bar, textvariable=self._filter_var, values=_FILTER_MODES, state="readonly", width=18, font=fonts["small"])
+        cb = ttk.Combobox(bar, textvariable=self._filter_var, values=_FILTER_MODES, state="readonly", width=20, font=fonts["small"])
         cb.pack(side=tk.LEFT, padx=(4, 6)); cb.bind("<<ComboboxSelected>>", lambda _e: self._render())
         self._count_lbl = tk.Label(bar, text="0 tuberías", bg=theme.PAPER_SUBTLE, fg=theme.ACCENT_TEXT, font=fonts["mono_bold"])
         self._count_lbl.pack(side=tk.RIGHT)
@@ -208,10 +213,17 @@ class CriticalPipesTab(tk.Frame):
             self._count_lbl.configure(text="0 tuberías")
             return
         mode = self._filter_var.get()
-        min_u, excl = (100.0, True) if "100%" in mode else ((75.0, True) if "75%" in mode else (0.0, False))
+        if mode == "Críticas (>75–100%)":
+            min_u, max_u, excl = 75.0, 100.0, True
+        elif mode == "Sobrecargadas (>100%)":
+            min_u, max_u, excl = 100.0, None, True
+        elif mode == "En alerta (>75%)":
+            min_u, max_u, excl = 75.0, None, True
+        else:
+            min_u, max_u, excl = 0.0, None, False
         flows = {pid: st.flow_m3s for pid, st in snap.pipe_states.items()}
         utils = {pid: st.utilization_pct for pid, st in snap.pipe_states.items()}
-        records = rank_critical_pipes(graph, flows, utils, min_utilization_pct=min_u, exclusive_min=excl)
+        records = rank_critical_pipes(graph, flows, utils, min_utilization_pct=min_u, max_utilization_pct=max_u, exclusive_min=excl)
 
         self._suppress_select = True
         try:

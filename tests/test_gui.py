@@ -1,6 +1,7 @@
 """Pruebas de GUI: funciones puras de tema, API de los 7 módulos y smoke test con display."""
 
 import os, tkinter as tk, unittest
+from unittest.mock import patch
 from src.algorithms.analysis import UTILIZATION_SCALE
 from src.gui import app as gui_app, charts_panel, comparison_panel, controls_panel, inspector_panel, network_canvas, theme
 
@@ -101,6 +102,138 @@ class TestGuiSmoke(unittest.TestCase):
             tree.selection_set(iid)
             self.app.update()
         self.assertEqual(calls[0], 3)
+
+    def test_upstream_and_downstream_are_visually_distinct(self) -> None:
+        self.app._action_trace("17", upstream=False)
+        self.app.step_traversal_animation(len(self.app.traversal_frames) - 1)
+        self.app.update()
+        self.assertEqual(self.app.network_canvas._traversal_mode, "downstream")
+        self.assertGreater(len(self.app.traversal_frames), 0)
+        down_banner = self.app.network_canvas._banner_lbl.cget("text")
+        self.assertIn("Aguas abajo", down_banner)
+        self.assertTrue(bool(self.app.network_canvas._banner_lbl.place_info()))
+        down_edges = [
+            iid for iid in self.app.network_canvas.find_all()
+            if self.app.network_canvas.type(iid) == "line"
+            and self.app.network_canvas.itemcget(iid, "fill") == theme.TRAV_DOWNSTREAM_EDGE
+        ]
+        self.assertGreater(len(down_edges), 0)
+        self.assertTrue(all(self.app.network_canvas.itemcget(iid, "dash") == "" for iid in down_edges))
+
+        self.app._action_trace("31", upstream=True)
+        self.app.step_traversal_animation(len(self.app.traversal_frames) - 1)
+        self.app.update()
+        self.assertEqual(self.app.network_canvas._traversal_mode, "upstream")
+        self.assertGreater(len(self.app.traversal_frames), 0)
+        up_banner = self.app.network_canvas._banner_lbl.cget("text")
+        self.assertIn("Aguas arriba", up_banner)
+        self.assertNotEqual(up_banner, down_banner)
+        up_edges = [
+            iid for iid in self.app.network_canvas.find_all()
+            if self.app.network_canvas.type(iid) == "line"
+            and self.app.network_canvas.itemcget(iid, "fill") == theme.TRAV_UPSTREAM_EDGE
+        ]
+        self.assertGreater(len(up_edges), 0)
+        self.assertTrue(all(self.app.network_canvas.itemcget(iid, "dash") != "" for iid in up_edges))
+
+        self.app._action_trace("17", upstream=True)
+        self.app.update()
+        note = self.app.controls._note_label.cget("text")
+        self.assertTrue(len(note.strip()) > 0)
+
+    def test_critical_pipes_strict_75_to_100_range(self) -> None:
+        self.app.controls._scenario_var.set(self.app.controls._scenario_combo["values"][4])
+        self.app.run_simulation()
+        self.app.update()
+        target_step = None
+        for idx in range(len(self.app.result.snapshots)):
+            snap = self.app.result.snapshots[idx]
+            if snap.near_capacity_pipe_ids and snap.overloaded_pipe_ids:
+                target_step = idx
+                break
+        self.assertIsNotNone(target_step)
+        self.app.go_to_step(target_step)
+        self.app.notebook.select(1)
+        self.app.update()
+
+        tab = self.app.critical_tab
+        tab._filter_var.set("Críticas (>75–100%)")
+        tab.update_view(self.app.dataset.graph, self.app.result.snapshots[target_step])
+        self.app.update()
+        crit_rows = tab._tree.get_children()
+        self.assertGreater(len(crit_rows), 0)
+        for iid in crit_rows:
+            util_str = str(tab._tree.item(iid, "values")[5]).rstrip("%")
+            util_val = float(util_str)
+            self.assertGreater(util_val, 75.0)
+            self.assertLessEqual(util_val, 100.0)
+
+        tab._filter_var.set("Sobrecargadas (>100%)")
+        tab.update_view(self.app.dataset.graph, self.app.result.snapshots[target_step])
+        self.app.update()
+        over_rows = tab._tree.get_children()
+        self.assertGreater(len(over_rows), 0)
+        for iid in over_rows:
+            util_str = str(tab._tree.item(iid, "values")[5]).rstrip("%")
+            self.assertGreater(float(util_str), 100.0)
+
+        snap = self.app.result.snapshots[target_step]
+        kpi_crit_text = self.app._kpi_labels["crit"].cget("text")
+        self.assertIn(str(len(snap.near_capacity_pipe_ids)), kpi_crit_text)
+
+    def test_search_error_feedback_on_missing_or_empty_entity(self) -> None:
+        with patch("tkinter.messagebox.showwarning") as mock_warn:
+            self.app._action_search("NO_EXISTE_999")
+            self.app.update()
+            self.assertEqual(mock_warn.call_count, 1)
+            fb_text = self.app.controls._search_feedback.cget("text")
+            self.assertIn("NO_EXISTE_999", fb_text)
+
+        self.app.controls._search_var.set("   ")
+        self.app.controls._emit_search()
+        self.app.update()
+        empty_fb = self.app.controls._search_feedback.cget("text")
+        self.assertTrue(len(empty_fb.strip()) > 0)
+
+        self.app._action_search("P30")
+        self.app.update()
+        self.assertEqual((self.app.selected_kind, self.app.selected_id), ("pipe", "P30"))
+        ok_fb = self.app.controls._search_feedback.cget("text")
+        self.assertIn("P30", ok_fb)
+
+    def test_slider_and_visor_buttons_states(self) -> None:
+        self.assertIsInstance(self.app._scale, tk.Scale)
+        self.assertEqual(str(self.app._scale.cget("state")), "normal")
+
+        self.app.go_to_step(0)
+        self.app.update()
+        self.assertEqual(str(self.app._btn_step_back.cget("state")), "disabled")
+
+        self.app._on_slider_move("10")
+        self.app.update()
+        self.assertEqual(self.app.current_step, 10)
+        self.assertEqual(str(self.app._btn_step_back.cget("state")), "normal")
+
+        self.app.clear_traversal()
+        self.app.update()
+        for btn in (
+            self.app.controls._btn_first,
+            self.app.controls._btn_prev,
+            self.app.controls._btn_play,
+            self.app.controls._btn_next,
+        ):
+            self.assertEqual(str(btn.cget("state")), "disabled")
+        self.assertIn("¿Cómo funciona?", self.app.controls._rule_label.cget("text"))
+
+        self.app._action_traversal("BFS", "17", "31", animate=False)
+        self.app.update()
+        self.assertGreater(len(self.app.traversal_frames), 0)
+        self.assertEqual(str(self.app.controls._btn_play.cget("state")), "normal")
+        self.assertEqual(str(self.app.controls._btn_prev.cget("state")), "normal")
+        self.assertIn("Cola FIFO", self.app.controls._rule_label.cget("text"))
+        self.app._anim_first()
+        self.app.update()
+        self.assertEqual(self.app.anim_idx, 0)
 
 
 if __name__ == "__main__":

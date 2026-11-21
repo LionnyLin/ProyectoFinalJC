@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List, Optional, Tuple
 
-from src.algorithms import TraversalFrame, TraversalResult, bfs, dfs, search_entity, trace_downstream, trace_upstream
+from src.algorithms import TraversalFrame, TraversalResult, bfs, dfs, search_entity, trace_downstream, trace_upstream_result
 from src.io.data_loader import DataLoadError, NetworkDataset, export_to_csv_dir, load_dataset
 from src.simulation import (
     MODEL_ASSUMPTIONS_TEXT, ScenarioSummary, SewerSimulationEngine, SimulationConfig,
@@ -56,6 +56,14 @@ class BicentenarioSewerApp(tk.Tk):
         self._traversal_result: Optional[TraversalResult] = None
         self._base_compare_key: Optional[Tuple[float, float, float, str, str, float]] = None
         self._last_chart_pipe: Optional[str] = None; self._updating_slider = False
+        self._btn_styles: Dict[tk.Button, Tuple[str, str, str]] = {}
+        self._slider_dragging = False
+        self._slider_restore_pending = False
+        self._slider_after_id: Optional[str] = None
+        self._pending_slider_step: Optional[int] = None
+        self._traversal_mode: Optional[str] = None
+        self._traversal_origin: Optional[str] = None
+        self._traversal_banner: str = ""
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -67,8 +75,23 @@ class BicentenarioSewerApp(tk.Tk):
         bg, hov, fg, bdr, fk = _BTN_PAL[style]
         b = tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg, activebackground=hov, activeforeground=fg,
                       relief="flat", bd=0, padx=padx, pady=pady, font=self.fonts[fk], cursor="hand2", highlightthickness=1, highlightbackground=bdr)
-        b.bind("<Enter>", lambda _e, w=b, h=hov: w.configure(bg=h)); b.bind("<Leave>", lambda _e, w=b, c=bg: w.configure(bg=c))
+        self._btn_styles[b] = (bg, hov, fg)
+        b.bind("<Enter>", lambda _e, w=b, h=hov: w.configure(bg=h) if str(w.cget("state")) != "disabled" else None)
+        b.bind("<Leave>", lambda _e, w=b, c=bg: w.configure(bg=c) if str(w.cget("state")) != "disabled" else None)
         return b
+
+    def _set_btn_enabled(self, btn: tk.Button, enabled: bool) -> None:
+        bg, _hov, fg = self._btn_styles.get(btn, (theme.PAPER_SUBTLE, theme.PAPER_HOVER, theme.INK_PRIMARY))
+        if enabled:
+            btn.configure(state="normal", cursor="hand2", bg=bg, fg=fg)
+        else:
+            btn.configure(
+                state="disabled",
+                cursor="arrow",
+                bg=theme.DISABLED_BG,
+                fg=theme.DISABLED_FG,
+                disabledforeground=theme.DISABLED_FG,
+            )
 
     def _build_ui(self) -> None:
         self.topbar = tk.Frame(self, bg=theme.SHELL_BG); self.topbar.pack(side=tk.TOP, fill=tk.X)
@@ -98,7 +121,8 @@ class BicentenarioSewerApp(tk.Tk):
             "load_excel": lambda: self._pick_and_load(False), "load_csv": lambda: self._pick_and_load(True), "export_csv": self._action_export_csv,
             "run_simulation": self.run_simulation, "search": self._action_search, "run_traversal": self._action_traversal,
             "trace_downstream": lambda s: self._action_trace(s, False), "trace_upstream": lambda s: self._action_trace(s, True),
-            "clear_traversal": self.clear_traversal, "anim_prev": lambda: self.step_traversal_animation(-1),
+            "clear_traversal": self.clear_traversal, "anim_first": self._anim_first,
+            "anim_prev": lambda: self.step_traversal_animation(-1),
             "anim_toggle": self.toggle_traversal_animation, "anim_next": lambda: self.step_traversal_animation(1),
         })
         self.paned.add(self.controls, width=290, minsize=240, stretch="never")
@@ -108,18 +132,34 @@ class BicentenarioSewerApp(tk.Tk):
         self.network_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         pbar = tk.Frame(center, bg=theme.PAPER_SUBTLE, padx=8, pady=5); pbar.pack(side=tk.TOP, fill=tk.X)
         self._btn_play = self._btn(pbar, "▶ Iniciar", self.toggle_play, "primary", padx=9); self._btn_play.pack(side=tk.LEFT, padx=(0, 4))
-        for text, cmd in (("◀ Paso", self.step_backward), ("Paso ▶", self.step_forward), ("↺ Reiniciar", self._reset_playback)):
-            self._btn(pbar, text, cmd, padx=6).pack(side=tk.LEFT, padx=(0, 4))
+        self._btn_step_back = self._btn(pbar, "◀ Paso", self.step_backward, padx=6); self._btn_step_back.pack(side=tk.LEFT, padx=(0, 4))
+        self._btn_step_fwd = self._btn(pbar, "Paso ▶", self.step_forward, padx=6); self._btn_step_fwd.pack(side=tk.LEFT, padx=(0, 4))
+        self._btn_reset = self._btn(pbar, "↺ Reiniciar", self._reset_playback, padx=6); self._btn_reset.pack(side=tk.LEFT, padx=(0, 4))
+        self._set_btn_enabled(self._btn_step_back, False)
+        self._set_btn_enabled(self._btn_step_fwd, False)
+        self._set_btn_enabled(self._btn_reset, False)
         self._speed_var = tk.StringVar(value="1x")
         scb = ttk.Combobox(pbar, textvariable=self._speed_var, values=tuple(_SPEED_MS), state="readonly", width=4, font=self.fonts["mono"])
         scb.pack(side=tk.LEFT, padx=(2, 8)); scb.bind("<<ComboboxSelected>>", lambda _e: setattr(self, "play_speed_ms", _SPEED_MS.get(self._speed_var.get(), 250)))
         self._time_lbl = tk.Label(pbar, text="t = 0.0 / 90.0 min", bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY, font=self.fonts["mono_bold"])
         self._time_lbl.pack(side=tk.RIGHT, padx=(8, 0))
-        self._scale = ttk.Scale(pbar, from_=0, to=0, orient=tk.HORIZONTAL, command=self._on_slider_move); self._scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._scale_min_lbl = tk.Label(pbar, text="0m", bg=theme.PAPER_SUBTLE, fg=theme.INK_MUTED, font=self.fonts["mono"])
+        self._scale_min_lbl.pack(side=tk.LEFT, padx=(0, 4))
+        self._scale = tk.Scale(
+            pbar, from_=0, to=0, resolution=1, orient=tk.HORIZONTAL, showvalue=False,
+            sliderrelief="flat", sliderlength=18, troughcolor=theme.DOCK_BG,
+            bg=theme.PAPER_SUBTLE, activebackground=theme.ACCENT_HOVER,
+            highlightthickness=0, bd=0, state="disabled", command=self._on_slider_move,
+        )
+        self._scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._scale.bind("<ButtonPress-1>", self._on_slider_press)
+        self._scale.bind("<ButtonRelease-1>", self._on_slider_release)
+        self._scale_max_lbl = tk.Label(pbar, text="90m", bg=theme.PAPER_SUBTLE, fg=theme.INK_MUTED, font=self.fonts["mono"])
+        self._scale_max_lbl.pack(side=tk.LEFT, padx=(4, 0))
 
         kbar = tk.Frame(center, bg=theme.SHELL_BG, padx=10, pady=5); kbar.pack(side=tk.TOP, fill=tk.X)
         self._kpi_labels = {k: tk.Label(kbar, text=t, bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, font=self.fonts["mono"])
-                            for k, t in (("inflow", "Entrada: 0.000 m³/s"), ("sink", "PTAR 31: 0.000 m³/s"), ("crit", "Crít./Sobr.: 0 / 0"), ("mass", "Error masa: 0.00e+00 m³"))}
+                            for k, t in (("inflow", "Entrada: 0.000 m³/s"), ("sink", "PTAR 31: 0.000 m³/s"), ("crit", "Crít. (>75–100%): 0 · Sobr. (>100%): 0"), ("mass", "Error masa: 0.00e+00 m³"))}
         for lbl in self._kpi_labels.values(): lbl.pack(side=tk.LEFT, padx=(0, 14))
         self.paned.add(center, minsize=340, stretch="always")
 
@@ -172,9 +212,12 @@ class BicentenarioSewerApp(tk.Tk):
             self.cached_comparisons = None; self.comparison_panel.invalidate()
         self._base_compare_key = key
         res = SewerSimulationEngine(self.dataset.graph, self.dataset.basin).run(cfg)
-        self.result, self.current_step, self._updating_slider = res, 0, True
-        try: self._scale.configure(from_=0, to=max(0, len(res.snapshots) - 1)); self._scale.set(0)
-        finally: self._updating_slider = False
+        self.result, self.current_step = res, 0
+        snaps = res.snapshots
+        self._scale.configure(state=("normal" if len(snaps) > 1 else "disabled"), from_=0, to=max(0, len(snaps) - 1))
+        self._scale_min_lbl.configure(text="0m")
+        self._scale_max_lbl.configure(text=f"{snaps[-1].time_min:g}m" if snaps else "0m")
+        self._sync_slider_programmatic(0)
         self._btn_play.configure(text="▶ Iniciar")
         self._last_chart_pipe = self.selected_id if self.selected_kind == "pipe" else None
         self.charts_panel.set_result(res, self._last_chart_pipe, is_visible=self._active_tab() == 2)
@@ -182,14 +225,16 @@ class BicentenarioSewerApp(tk.Tk):
         self._status_lbl.configure(text=f"Esc. {cfg.scenario_id} ({theme.translate_scenario_name(cfg.scenario_name)}) en {res.execution_time_ms:.1f} ms")
         return res
 
-    def go_to_step(self, idx: int) -> None:
+    def go_to_step(self, idx: int, from_slider: bool = False) -> None:
         if not self.result or not self.result.snapshots or self.dataset is None: return
         snaps = self.result.snapshots
         self.current_step = max(0, min(int(idx), len(snaps) - 1))
         snap = snaps[self.current_step]
-        self._updating_slider = True
-        try: self._scale.set(self.current_step)
-        finally: self._updating_slider = False
+        if not from_slider and not self._slider_dragging:
+            self._sync_slider_programmatic(self.current_step)
+        self._set_btn_enabled(self._btn_step_back, self.current_step > 0)
+        self._set_btn_enabled(self._btn_step_fwd, self.current_step < len(snaps) - 1)
+        self._set_btn_enabled(self._btn_reset, self.current_step > 0 or self.is_playing)
         self._time_lbl.configure(text=f"t = {snap.time_min:.1f} / {snaps[-1].time_min:.1f} min")
         self.network_canvas.set_snapshot(snap)
         tab = self._active_tab()
@@ -202,12 +247,69 @@ class BicentenarioSewerApp(tk.Tk):
             if 0 <= ps.category.tier_index < len(counts): counts[ps.category.tier_index] += 1
         for (rng, lbl), cnt in zip(self._legend_labels, counts): lbl.configure(text=f"{rng}: {cnt}")
         for k, txt in (("inflow", f"Entrada: {snap.total_source_inflow_m3s:.4f} m³/s"), ("sink", f"PTAR 31: {snap.total_sink_discharge_m3s:.4f} m³/s"),
-                       ("crit", f"Crít./Sobr.: {len(snap.critical_pipe_ids)} / {len(snap.overloaded_pipe_ids)}"), ("mass", f"Error masa: {snap.mass_balance_error_m3:.2e} m³")):
+                       ("crit", f"Crít. (>75–100%): {len(snap.near_capacity_pipe_ids)} · Sobr. (>100%): {len(snap.overloaded_pipe_ids)}"), ("mass", f"Error masa: {snap.mass_balance_error_m3:.2e} m³")):
             self._kpi_labels[k].configure(text=txt)
 
+    def _sync_slider_programmatic(self, step: int) -> None:
+        self._updating_slider = True
+        self._scale.configure(command="")
+        self._scale.set(step)
+        if not self._slider_restore_pending:
+            self._slider_restore_pending = True
+            self.after_idle(self._restore_slider_command)
+
+    def _restore_slider_command(self) -> None:
+        self._slider_restore_pending = False
+        self._updating_slider = False
+        try:
+            self._scale.configure(command=self._on_slider_move)
+        except tk.TclError:
+            pass
+
+    def _on_slider_press(self, e: tk.Event) -> Optional[str]:
+        if str(self._scale.cget("state")) == "disabled" or not self.result or not self.result.snapshots:
+            return None
+        self._slider_dragging = True
+        self._stop_playback(True)
+        if self._scale.identify(e.x, e.y) in ("trough1", "trough2"):
+            w = max(1, self._scale.winfo_width())
+            snaps = self.result.snapshots
+            target = max(0, min(int(round((e.x / w) * (len(snaps) - 1))), len(snaps) - 1))
+            self._sync_slider_programmatic(target)
+            self.go_to_step(target, from_slider=True)
+            return "break"
+        return None
+
+    def _on_slider_release(self, _e: tk.Event) -> None:
+        self._slider_dragging = False
+        self._cancel_timer("_slider_after_id")
+        self._pending_slider_step = None
+        if not self.result or not self.result.snapshots:
+            return
+        idx = int(round(float(self._scale.get())))
+        if idx != self.current_step:
+            self.go_to_step(idx, from_slider=True)
+
     def _on_slider_move(self, value: str) -> None:
-        if not self._updating_slider and self.result and (idx := int(round(float(value)))) != self.current_step:
-            self._stop_playback(True); self.go_to_step(idx)
+        if self._updating_slider or not self.result or not self.result.snapshots:
+            return
+        idx = int(round(float(value)))
+        if idx == self.current_step:
+            return
+        self._stop_playback(True)
+        if self._slider_dragging:
+            self._pending_slider_step = idx
+            if self._slider_after_id is None:
+                self._slider_after_id = self.after(16, self._flush_slider_step)
+        else:
+            self.go_to_step(idx, from_slider=True)
+
+    def _flush_slider_step(self) -> None:
+        self._slider_after_id = None
+        if self._pending_slider_step is not None:
+            step = self._pending_slider_step
+            self._pending_slider_step = None
+            self.go_to_step(step, from_slider=True)
     def step_forward(self) -> None: self._stop_playback(True); self.go_to_step(self.current_step + 1)
     def step_backward(self) -> None: self._stop_playback(True); self.go_to_step(self.current_step - 1)
     def _reset_playback(self) -> None: self._stop_playback(False); self.go_to_step(0)
@@ -244,9 +346,21 @@ class BicentenarioSewerApp(tk.Tk):
     def _action_search(self, query: str) -> None:
         if self.dataset is None: return
         kind, eid = search_entity(self.dataset.graph, query)
-        if not kind or not eid: self._status_lbl.configure(text=f"No se encontró «{query}» en la red"); return
+        if not kind or not eid:
+            g = self.dataset.graph
+            sample_n = ", ".join(sorted(g.node_ids())[:2]) or "—"
+            sample_p = ", ".join(sorted(g.pipe_ids())[:2]) or "—"
+            self.controls.show_search_feedback(f"No existe «{query}» en la red. Ej: nodos {sample_n} o tuberías {sample_p}.", is_error=True)
+            self._status_lbl.configure(text=f"No encontrado: «{query}»", fg="#FCA5A5")
+            messagebox.showwarning(
+                "Elemento no encontrado",
+                f"No se encontró ningún nodo ni tubería con el identificador «{query}».\n\nEjemplos válidos: nodos ({sample_n}) o tuberías ({sample_p}).",
+                parent=self,
+            )
+            return
+        self.controls.show_search_feedback(f"Encontrado: {'Tubería' if kind == 'pipe' else 'Nodo'} {eid}", is_error=False)
+        self._status_lbl.configure(text=f"Encontrado O(1): {'Tubería' if kind == 'pipe' else 'Nodo'} {eid}", fg=theme.SHELL_TEXT_MUTED)
         self.select_entity(kind, eid); self.notebook.select(0)
-        self._status_lbl.configure(text=f"Encontrado O(1): {'Tubería' if kind == 'pipe' else 'Nodo'} {eid}")
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
         tab = self._active_tab()
@@ -262,27 +376,65 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _action_traversal(self, algo: str, start_id: str, target_id: Optional[str], animate: bool) -> None:
         if self.dataset is None: return
+        if not start_id or not self.dataset.graph.has_node(start_id):
+            msg = f"Nodo de inicio «{start_id or '—'}» no encontrado en la red."
+            self.controls.update_traversal_view(None, summary_text=msg, playing=False, has_frames=False)
+            self._status_lbl.configure(text=msg, fg="#FCA5A5")
+            messagebox.showwarning("Nodo no encontrado", msg, parent=self)
+            return
         self._stop_traversal()
-        res = (bfs if algo.upper() == "BFS" else dfs)(self.dataset.graph, start_id, target_id, record_frames=animate)
-        self._traversal_result, self.traversal_frames, self.anim_idx = res, res.frames if animate else [], 0
+        res = (bfs if algo.upper() == "BFS" else dfs)(self.dataset.graph, start_id, target_id, record_frames=True)
+        self._traversal_mode = algo.lower()
+        self._traversal_origin = start_id
+        self._traversal_banner = (
+            f"{'BFS (Cola FIFO)' if algo.upper() == 'BFS' else 'DFS (Pila LIFO)'} · Inicio {start_id} → Destino {target_id}"
+            if target_id else
+            f"{'BFS (Cola FIFO)' if algo.upper() == 'BFS' else 'DFS (Pila LIFO)'} · Desde {start_id}"
+        )
+        self._traversal_result, self.traversal_frames = res, res.frames
+        msg = f"{res.algorithm}: {len(res.visited_order)} nodos" + (f" · Ruta ({len(res.path_pipes)}): {' → '.join(res.path_nodes)}" if (target_id and res.target_reached) else (f" · Sin ruta a {target_id}" if target_id else ""))
         if animate:
             if not self.traversal_frames: return
-            self.anim_playing = True; self._render_traversal_frame()
+            self.anim_idx = 0
+            self.anim_playing = True
+            self._render_traversal_frame()
             if len(self.traversal_frames) > 1: self._anim_after_id = self.after(_ANIM_MS, self._anim_tick)
             else: self._stop_traversal()
             return
-        self.network_canvas.set_traversal_highlight(res.visited_order, res.traversed_edges, res.path_nodes, res.path_pipes, res.target_node if res.target_reached else res.start_node)
-        msg = f"{res.algorithm}: {len(res.visited_order)} nodos" + (f" · Ruta ({len(res.path_pipes)}): {' → '.join(res.path_nodes)}" if (target_id and res.target_reached) else (f" · Sin ruta a {target_id}" if target_id else ""))
-        self.controls.update_traversal_view(None, summary_text=msg, playing=False); self._status_lbl.configure(text=msg)
+        self.anim_idx = max(0, len(self.traversal_frames) - 1)
+        self.anim_playing = False
+        self._render_traversal_frame(summary_override=msg)
+        self._status_lbl.configure(text=msg, fg=theme.SHELL_TEXT_MUTED)
 
     def start_traversal_animation(self, algo: str, start_id: str, target_id: Optional[str] = None) -> None:
         self._action_traversal(algo, start_id, target_id, animate=True)
 
-    def _render_traversal_frame(self) -> None:
+    def _anim_first(self) -> None:
+        if not self.traversal_frames: return
+        self._stop_traversal(); self.anim_idx = 0; self._render_traversal_frame()
+
+    def _render_traversal_frame(self, summary_override: str = "") -> None:
+        if not self.traversal_frames:
+            self.network_canvas.set_traversal_highlight(
+                mode=self._traversal_mode, origin_node=self._traversal_origin, banner_text=self._traversal_banner
+            )
+            self.controls.update_traversal_view(
+                None, summary_text=summary_override, playing=self.anim_playing,
+                mode=self._traversal_mode, has_frames=False,
+            )
+            return
         f = self.traversal_frames[self.anim_idx]
         lr = self._traversal_result if self.anim_idx == len(self.traversal_frames) - 1 else None
-        self.network_canvas.set_traversal_highlight(f.visited_nodes, f.visited_edges, lr.path_nodes if lr else None, lr.path_pipes if lr else None, f.current_node, f.active_edge)
-        self.controls.update_traversal_view(f, playing=self.anim_playing)
+        self.network_canvas.set_traversal_highlight(
+            f.visited_nodes, f.visited_edges,
+            lr.path_nodes if lr else None, lr.path_pipes if lr else None,
+            f.current_node, f.active_edge,
+            mode=self._traversal_mode, origin_node=self._traversal_origin, banner_text=self._traversal_banner,
+        )
+        self.controls.update_traversal_view(
+            f, summary_text=summary_override, playing=self.anim_playing,
+            mode=self._traversal_mode, has_frames=bool(self.traversal_frames),
+        )
 
     def _anim_tick(self) -> None:
         self._anim_after_id = None
@@ -302,17 +454,47 @@ class BicentenarioSewerApp(tk.Tk):
         self.anim_playing = True; self._render_traversal_frame(); self._anim_after_id = self.after(_ANIM_MS, self._anim_tick)
 
     def _action_trace(self, start_id: str, upstream: bool) -> None:
-        if self.dataset is None or not start_id: return
+        if self.dataset is None: return
+        g = self.dataset.graph
+        if not start_id or not g.has_node(start_id):
+            msg = f"Nodo «{start_id or '—'}» no encontrado en la red."
+            self.controls.update_traversal_view(None, summary_text=msg, playing=False, has_frames=False)
+            self._status_lbl.configure(text=msg, fg="#FCA5A5")
+            messagebox.showwarning("Nodo no encontrado", msg, parent=self)
+            return
         self._stop_traversal()
-        nodes, pipes = trace_upstream(self.dataset.graph, start_id) if upstream else ((r := trace_downstream(self.dataset.graph, start_id)).visited_order, r.traversed_edges)
-        self._traversal_result, self.traversal_frames, self.anim_idx = None, [], 0
-        self.network_canvas.set_traversal_highlight(visited_nodes=nodes, visited_edges=pipes, current_node=start_id)
-        msg = f"Aguas {'arriba de' if upstream else 'abajo desde'} {start_id}: {len(nodes)} nodos, {len(pipes)} tuberías"
-        self.controls.update_traversal_view(None, summary_text=msg, playing=False); self._status_lbl.configure(text=msg)
+        res = trace_upstream_result(g, start_id, record_frames=True) if upstream else trace_downstream(g, start_id, record_frames=True)
+        self._traversal_mode = "upstream" if upstream else "downstream"
+        self._traversal_origin = start_id
+        self._traversal_result = res
+        self.traversal_frames = res.frames
+        self.anim_idx = max(0, len(res.frames) - 1)
+        self.anim_playing = False
+        n_cnt, p_cnt = len(res.visited_order), len(res.traversed_edges)
+        if upstream:
+            self._traversal_banner = f"Aguas arriba · Aportes hacia {start_id} ({n_cnt} nodos, {p_cnt} tuberías)"
+            if p_cnt == 0:
+                msg = f"Aguas arriba de {start_id}: nodo fuente inicial sin aportes aguas arriba (0 tuberías entrantes). Pruebe con un pozo o PTAR 31."
+            else:
+                msg = f"Aguas arriba de {start_id}: {n_cnt} nodos, {p_cnt} tuberías"
+        else:
+            self._traversal_banner = f"Aguas abajo · Descarga desde {start_id} ({n_cnt} nodos, {p_cnt} tuberías)"
+            if p_cnt == 0:
+                msg = f"Aguas abajo desde {start_id}: sumidero / PTAR final sin tuberías salientes (0 tuberías)."
+            else:
+                msg = f"Aguas abajo desde {start_id}: {n_cnt} nodos, {p_cnt} tuberías"
+        self._render_traversal_frame(summary_override=msg)
+        self._status_lbl.configure(text=msg, fg=theme.SHELL_TEXT_MUTED)
 
     def clear_traversal(self) -> None:
-        self._stop_traversal(); self._traversal_result, self.traversal_frames, self.anim_idx = None, [], 0
-        self.network_canvas.clear_traversal_highlight(); self.controls.update_traversal_view(None)
+        self._stop_traversal()
+        self._traversal_result, self.traversal_frames, self.anim_idx = None, [], 0
+        self._traversal_mode = None
+        self._traversal_origin = None
+        self._traversal_banner = ""
+        self.network_canvas.clear_traversal_highlight()
+        self.controls.update_traversal_view(None, has_frames=False)
+        self._status_lbl.configure(text="Recorrido limpiado", fg=theme.SHELL_TEXT_MUTED)
 
     # ── Comparación, I/O, reportes y cierre ──────────────────────────────────
 
@@ -354,7 +536,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._btn(win, "Cerrar", win.destroy, "primary", padx=14, pady=4).pack(pady=(0, 12))
 
     def _on_close(self) -> None:
-        self._stop_playback(); self._stop_traversal()
+        self._stop_playback(); self._stop_traversal(); self._cancel_timer("_slider_after_id")
         self.network_canvas.cancel_pending(); self.charts_panel._cancel_cursor_timer()
         try: self.destroy()
         except tk.TclError: pass

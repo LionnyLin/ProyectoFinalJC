@@ -9,6 +9,7 @@ from .queries import (
     search_entity,
     trace_downstream,
     trace_upstream,
+    trace_upstream_result,
 )
 from .analysis import (
     UTILIZATION_LEVELS,
@@ -32,6 +33,7 @@ __all__ = [
     "get_pipe_details",
     "trace_downstream",
     "trace_upstream",
+    "trace_upstream_result",
     "UTILIZATION_SCALE",
     "UTILIZATION_LEVELS",
     "UtilizationCategory",

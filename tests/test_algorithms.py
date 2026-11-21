@@ -4,7 +4,7 @@ import os, unittest
 from src.algorithms import (
     UTILIZATION_LEVELS, UTILIZATION_SCALE, bfs, classify_utilization, dfs,
     get_node_details, get_pipe_details, rank_critical_pipes, search_entity,
-    topological_sort, trace_downstream, trace_upstream,
+    topological_sort, trace_downstream, trace_upstream, trace_upstream_result,
 )
 from src.io.data_loader import load_dataset
 
@@ -98,6 +98,39 @@ class TestAlgorithms(unittest.TestCase):
         self.assertEqual(([r.pipe_id for r in crit], [r.rank for r in crit]), (["P30", "P5", "P1"], [1, 2, 3]))
         self.assertEqual([r.pipe_id for r in over], ["P30", "P5"])
         self.assertTrue(all(r.excess_flow_m3s > 0.0 for r in over))
+
+    def test_trace_upstream_result_downstream_frames_and_strict_75_100(self) -> None:
+        up = trace_upstream_result(self.graph, "31", record_frames=True)
+        self.assertEqual(up.algorithm, "UPSTREAM")
+        self.assertEqual(up.start_node, "31")
+        self.assertEqual(len(up.frames[-1].visited_edges), 59)
+        self.assertTrue(set(self.graph.source_ids()).issubset(set(up.visited_order)))
+        self.assertGreater(len(up.frames), 0)
+        for idx, frame in enumerate(up.frames):
+            self.assertEqual(frame.structure_name, "Queue")
+            self.assertEqual(frame.step_index, idx)
+            self.assertEqual(frame.total_steps, len(up.frames))
+
+        with self.assertRaises(KeyError):
+            trace_upstream_result(self.graph, "NO_EXISTE")
+
+        down = trace_downstream(self.graph, "6", record_frames=True)
+        self.assertGreater(len(down.frames), 0)
+        self.assertTrue(all(f.structure_name == "Queue" for f in down.frames))
+
+        flows = {p.pipe_id: 0.01 for p in self.graph.pipes()}
+        utils = {p.pipe_id: 10.0 for p in self.graph.pipes()}
+        utils.update({"P30": 140.0, "P1": 85.0, "P2": 100.0, "P3": 75.0, "P5": 115.0})
+        strict_crit = rank_critical_pipes(
+            self.graph,
+            flows,
+            utils,
+            min_utilization_pct=75.0,
+            max_utilization_pct=100.0,
+            exclusive_min=True,
+        )
+        self.assertEqual([r.pipe_id for r in strict_crit], ["P2", "P1"])
+        self.assertTrue(all(75.0 < r.utilization_pct <= 100.0 for r in strict_crit))
 
 
 if __name__ == "__main__":

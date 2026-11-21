@@ -49,12 +49,18 @@ class NetworkCanvas(tk.Canvas):
         self._selected_kind, self._selected_id, self._show_pipe_labels, self._show_util_labels = None, None, True, True
         self._visited_nodes, self._visited_edges, self._path_nodes, self._path_edges = set(), set(), set(), set()
         self._current_node, self._active_edge = None, None
+        self._traversal_mode: Optional[str] = None
+        self._origin_node: Optional[str] = None
+        self._banner_text: str = ""
         self._zoom, self._pan_x, self._pan_y = 1.0, 0.0, 0.0
         self._drag_start, self._drag_pan_origin = None, (0.0, 0.0)
         self._dragged, self._resize_after, self._last_size = False, None, (0, 0)
 
         # Registro de ítems del Canvas (Fase A) y cachés de estilo (Fase B)
         self._pipe_lines, self._pipe_labels, self._node_ovals, self._node_texts, self._node_rings = {}, {}, {}, {}, {}
+        self._node_coords: Dict[str, Tuple[float, float]] = {}
+        self._node_radii: Dict[str, float] = {}
+        self._origin_ring: Optional[int] = None
         self._badge_items: List[int] = []
         self._item_to_entity: Dict[int, Tuple[str, str]] = {}
         self._pipe_cache, self._pipe_label_cache, self._node_cache, self._ring_cache = {}, {}, {}, {}
@@ -65,6 +71,9 @@ class NetworkCanvas(tk.Canvas):
             justify="left", anchor="w", padx=8, pady=5, bd=0, highlightthickness=1, highlightbackground=theme.ACCENT_PRIMARY,
         )
         self._hover_entity: Optional[Tuple[str, str]] = None
+        self._banner_lbl = tk.Label(
+            self, text="", font=self._fonts["label"], padx=10, pady=4, bd=0, highlightthickness=2,
+        )
 
         for seq, cb in (
             ("<Configure>", self._on_configure), ("<MouseWheel>", self._on_mouse_wheel),
@@ -96,15 +105,20 @@ class NetworkCanvas(tk.Canvas):
         self, visited_nodes: Optional[Iterable[str]] = None, visited_edges: Optional[Iterable[object]] = None,
         path_nodes: Optional[Iterable[str]] = None, path_edges: Optional[Iterable[object]] = None,
         current_node: Optional[str] = None, active_edge: Optional[object] = None,
+        mode: Optional[str] = None, origin_node: Optional[str] = None, banner_text: str = "",
     ) -> None:
         self._visited_nodes = set(visited_nodes) if visited_nodes else set()
         self._visited_edges = {_edge_id(e) for e in visited_edges} if visited_edges else set()
         self._path_nodes = set(path_nodes) if path_nodes else set()
         self._path_edges = {_edge_id(e) for e in path_edges} if path_edges else set()
         self._current_node, self._active_edge = current_node, (_edge_id(active_edge) if active_edge is not None else None)
+        self._traversal_mode = mode.lower() if mode else None
+        self._origin_node = origin_node
+        self._banner_text = banner_text or ""
         self.update_visuals()
 
-    def clear_traversal_highlight(self) -> None: self.set_traversal_highlight()
+    def clear_traversal_highlight(self) -> None:
+        self.set_traversal_highlight()
 
     def set_label_options(self, show_pipe_labels: bool = True, show_util_labels: bool = True) -> None:
         self._show_pipe_labels, self._show_util_labels = bool(show_pipe_labels), bool(show_util_labels)
@@ -152,6 +166,9 @@ class NetworkCanvas(tk.Canvas):
         for d in (self._pipe_lines, self._pipe_labels, self._node_ovals, self._node_texts, self._node_rings,
                   self._item_to_entity, self._pipe_cache, self._pipe_label_cache, self._node_cache, self._ring_cache):
             d.clear()
+        self._node_coords.clear()
+        self._node_radii.clear()
+        self._origin_ring = None
         self._badge_items.clear()
         w, h = self._canvas_dims()
         self._draw_grid(w, h)
@@ -163,6 +180,8 @@ class NetworkCanvas(tk.Canvas):
         nodes = self._graph.nodes()
         coords = {n.node_id: self._project(n.x, n.y, w, h) for n in nodes}
         radii = {n.node_id: r_map.get(n.node_type, r_man) for n in nodes}
+        self._node_coords, self._node_radii = coords, radii
+        self._origin_ring = self.create_oval(0, 0, 0, 0, fill="", outline=theme.TRAV_BFS_EDGE, width=3.6, state="hidden")
         arr = max(0.85, min(1.35, scale))
         arrowshape = (round(8 * arr, 1), round(10 * arr, 1), round(3.8 * arr, 1))
         lbl_off = max(9.0, 10.5 * min(1.35, self._zoom ** 0.35))
@@ -225,15 +244,56 @@ class NetworkCanvas(tk.Canvas):
         nstates = self._snapshot.node_states if self._snapshot else None
         sel_k, sel_id = self._selected_kind, self._selected_id
 
+        has_trav = bool(
+            self._traversal_mode or self._visited_nodes or self._visited_edges
+            or self._path_nodes or self._path_edges or self._current_node or self._origin_node
+        )
+        mode = self._traversal_mode
+        if mode == "downstream":
+            edge_col, node_fill, node_out, path_col, edge_dash = (
+                theme.TRAV_DOWNSTREAM_EDGE, theme.TRAV_DOWNSTREAM_NODE, theme.TRAV_DOWNSTREAM_OUTLINE,
+                theme.TRAV_DOWNSTREAM_EDGE, (),
+            )
+            b_bg, b_fg, b_bd = "#E0F2FE", "#0369A1", theme.TRAV_DOWNSTREAM_EDGE
+        elif mode == "upstream":
+            edge_col, node_fill, node_out, path_col, edge_dash = (
+                theme.TRAV_UPSTREAM_EDGE, theme.TRAV_UPSTREAM_NODE, theme.TRAV_UPSTREAM_OUTLINE,
+                theme.TRAV_UPSTREAM_EDGE, (8, 4),
+            )
+            b_bg, b_fg, b_bd = "#F3E8FF", "#5B21B6", theme.TRAV_UPSTREAM_EDGE
+        elif mode == "dfs":
+            edge_col, node_fill, node_out, path_col, edge_dash = (
+                theme.TRAV_DFS_EDGE, theme.TRAV_DFS_NODE, theme.TRAV_DFS_OUTLINE,
+                theme.TRAV_DFS_PATH, (6, 3),
+            )
+            b_bg, b_fg, b_bd = "#E0E7FF", "#3730A3", theme.TRAV_DFS_EDGE
+        else:
+            edge_col, node_fill, node_out, path_col, edge_dash = (
+                theme.TRAV_BFS_EDGE, theme.TRAV_BFS_NODE, theme.TRAV_BFS_OUTLINE,
+                theme.TRAV_BFS_PATH, (6, 3),
+            )
+            b_bg, b_fg, b_bd = "#CCFBF1", "#0F766E", theme.TRAV_BFS_EDGE
+
         for pid, lid in self._pipe_lines.items():
             ps = pstates.get(pid) if pstates else None
-            color = ps.category.color_hex if ps else theme.PIPE_IDLE_COLOR
-            width = (3.2 if ps.utilization_pct > 100.0 else (2.6 if ps.utilization_pct > 75.0 else 2.0)) if ps else 1.8
-            dash: Tuple[int, ...] = ()
-            if pid == self._active_edge: color, width = theme.SELECTED_HALO, 4.2
-            elif pid in self._path_edges: color, width = theme.HIGHLIGHT_PATH_COLOR, 3.8
-            elif pid in self._visited_edges: color, width, dash = (theme.ACCENT_HOVER if ps is None else color), max(width, 2.8), (6, 3)
-            if sel_k == "pipe" and sel_id == pid: color, width, dash = theme.SELECTED_HALO, max(width, 4.4), ()
+            is_active = pid == self._active_edge
+            is_path = pid in self._path_edges
+            is_visited = pid in self._visited_edges
+            if has_trav:
+                if is_active:
+                    color, width, dash = theme.TRAV_ACTIVE_COLOR, 4.6, ()
+                elif is_path:
+                    color, width, dash = path_col, 4.2, ()
+                elif is_visited:
+                    color, width, dash = edge_col, 3.5, edge_dash
+                else:
+                    color, width, dash = theme.TRAV_DIM_PIPE, 1.2, ()
+            else:
+                color = ps.category.color_hex if ps else theme.PIPE_IDLE_COLOR
+                width = (3.2 if ps.utilization_pct > 100.0 else (2.6 if ps.utilization_pct > 75.0 else 2.0)) if ps else 1.8
+                dash = ()
+            if sel_k == "pipe" and sel_id == pid:
+                color, width, dash = theme.SELECTED_HALO, max(width, 4.4), ()
             spec = (color, width, dash)
             if force or self._pipe_cache.get(pid) != spec:
                 self.itemconfigure(lid, fill=color, width=width, dash=dash)
@@ -243,8 +303,12 @@ class NetworkCanvas(tk.Canvas):
             if lbl_id is not None:
                 ut = f"{ps.utilization_pct:.0f}%" if (self._show_util_labels and ps) else ""
                 lt = f"{pid} · {ut}" if (self._show_pipe_labels and ut) else (pid if self._show_pipe_labels else ut)
-                lf = theme.SELECTED_HALO if (sel_k == "pipe" and sel_id == pid) else (
-                    theme.TIER_TEXT_ON_LIGHT.get(ps.category.color_hex.lower(), theme.INK_PRIMARY) if ps else theme.INK_MUTED)
+                if sel_k == "pipe" and sel_id == pid:
+                    lf = theme.SELECTED_HALO
+                elif has_trav and not (is_active or is_path or is_visited):
+                    lf = theme.TRAV_DIM_TEXT
+                else:
+                    lf = theme.TIER_TEXT_ON_LIGHT.get(ps.category.color_hex.lower(), theme.INK_PRIMARY) if ps else theme.INK_MUTED
                 lspec = (lt, lf, "normal" if lt else "hidden")
                 if force or self._pipe_label_cache.get(pid) != lspec:
                     self.itemconfigure(lbl_id, text=lt, fill=lf, state=lspec[2])
@@ -255,16 +319,23 @@ class NetworkCanvas(tk.Canvas):
             if oid is None: continue
             fill, out, tfill, w = _NODE_BASE_STYLE.get(node.node_type, _NODE_BASE_STYLE["manhole"])
             is_man = node.node_type == "manhole"
-            if nid == self._current_node:
-                out, w = theme.SELECTED_HALO, 3.5
-                if is_man: fill, tfill = theme.ACCENT_PRIMARY, theme.ACCENT_INK
-            elif nid in self._path_nodes:
-                out, w = theme.HIGHLIGHT_PATH_COLOR, 3.0
-                if is_man: fill, tfill = theme.ACCENT_SOFT, theme.INK_PRIMARY
-            elif nid in self._visited_nodes:
-                out, w = theme.HIGHLIGHT_PATH_COLOR, 2.4
-                if is_man: fill, tfill = theme.PAPER_HOVER, theme.INK_PRIMARY
-            if sel_k == "node" and sel_id == nid: out, w = theme.SELECTED_HALO, 3.6
+            if has_trav:
+                if nid == self._current_node:
+                    out, w = theme.TRAV_ACTIVE_COLOR, 3.8
+                    if is_man: fill, tfill = theme.TRAV_ACTIVE_COLOR, "#FFFFFF"
+                elif nid in self._path_nodes:
+                    out, w = path_col, 3.2
+                    if is_man: fill, tfill = node_fill, theme.INK_PRIMARY
+                elif nid in self._visited_nodes:
+                    out, w = node_out, (2.8 if is_man else 3.4)
+                    if is_man: fill, tfill = node_fill, theme.INK_PRIMARY
+                else:
+                    if is_man:
+                        fill, out, w, tfill = theme.TRAV_DIM_NODE, theme.TRAV_DIM_OUTLINE, 1.1, theme.TRAV_DIM_TEXT
+                    else:
+                        out = theme.TRAV_DIM_OUTLINE
+            if sel_k == "node" and sel_id == nid:
+                out, w = theme.SELECTED_HALO, 3.6
             nspec = (fill, out, w, tfill)
             if force or self._node_cache.get(nid) != nspec:
                 self.itemconfigure(oid, fill=fill, outline=out, width=w)
@@ -281,6 +352,21 @@ class NetworkCanvas(tk.Canvas):
                 if force or self._ring_cache.get(nid) != rspec:
                     self.itemconfigure(rid, state=rspec[0], outline=rspec[1], width=rspec[2])
                     self._ring_cache[nid] = rspec
+
+        if self._origin_ring is not None:
+            if has_trav and self._origin_node and self._origin_node in self._node_coords:
+                ox, oy = self._node_coords[self._origin_node]
+                orr = self._node_radii[self._origin_node] + 6.5
+                self.coords(self._origin_ring, ox - orr, oy - orr, ox + orr, oy + orr)
+                self.itemconfigure(self._origin_ring, outline=edge_col, width=3.6, state="normal")
+            else:
+                self.itemconfigure(self._origin_ring, state="hidden")
+
+        if has_trav and self._banner_text:
+            self._banner_lbl.configure(text=self._banner_text, bg=b_bg, fg=b_fg, highlightbackground=b_bd)
+            self._banner_lbl.place(x=10, y=10)
+        else:
+            self._banner_lbl.place_forget()
 
     # ── Interacción: zoom, pan, selección, resize y tooltip ──────────────────
 
@@ -348,7 +434,9 @@ class NetworkCanvas(tk.Canvas):
             self._hover_entity = hit
             self._tooltip_lbl.configure(text=self._format_tooltip(*hit))
         w, h = self._canvas_dims()
-        self._tooltip_lbl.place(x=min(max(8, e.x + 14), max(8, int(w) - 210)), y=min(max(8, e.y + 14), max(8, int(h) - 86)))
+        tw = max(160, self._tooltip_lbl.winfo_reqwidth())
+        th = max(50, self._tooltip_lbl.winfo_reqheight())
+        self._tooltip_lbl.place(x=min(max(8, e.x + 14), max(8, int(w) - tw)), y=min(max(8, e.y + 14), max(8, int(h) - th)))
 
     def _hide_tooltip(self) -> None:
         if self._hover_entity is not None:
