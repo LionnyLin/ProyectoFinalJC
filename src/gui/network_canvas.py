@@ -280,10 +280,11 @@ class NetworkCanvas(tk.Canvas):
             txt = f"PLANO HIDRÁULICO · {n_nodes} NODOS · {n_pipes} TRAMOS"
         else:
             t_min = self.snapshot.time_min
+            dur_lbl = f"0–{self._total_duration_min:.0f} min"
             if self._map_mode == "peak":
-                txt = f"PICO MÁXIMO ACUMULADO · HASTA t = {t_min:.1f} min"
+                txt = f"PICO MÁXIMO ACUMULADO · {dur_lbl}"
             elif self._map_mode == "overload_minutes":
-                txt = f"MINUTOS EN SOBRECARGA (>100%) · HASTA t = {t_min:.1f} min"
+                txt = f"MINUTOS EN SOBRECARGA (>100%) · {dur_lbl}"
             else:
                 txt = f"PLANO HIDRÁULICO · {n_nodes} NODOS · {n_pipes} TRAMOS · t = {t_min:.1f} min"
         self._stamp_lbl.configure(text=txt)
@@ -706,6 +707,7 @@ class NetworkCanvas(tk.Canvas):
             return False
         n_rings = 1 if surcharge_vol < 5.0 else (2 if surcharge_vol < 60.0 else 3)
         max_extra = min(14.5, 2.6 + 3.4 * math.log10(1.0 + surcharge_vol)) * sf * sqrt_z
+        max_extra = min(max_extra, max(2.8, r * 1.15))
         for k in range(n_rings, 0, -1):
             ring_r = r + (max_extra * k / n_rings)
             is_inner_intense = k == 1 and surcharge_vol >= 25.0
@@ -928,8 +930,62 @@ class NetworkCanvas(tk.Canvas):
 
     def _compute_padding(self, w: int, h: int) -> Tuple[float, float]:
         pad_x = max(28.0, min(68.0, w * 0.08))
-        pad_y = max(32.0, min(64.0, h * 0.11))
+        pad_y = max(34.0, min(64.0, h * 0.11))
         return pad_x, pad_y
+
+    def _overlay_boxes(self, w: int, h: int) -> List[Tuple[float, float, float, float]]:
+        boxes: List[Tuple[float, float, float, float]] = []
+        for widget in (self._stamp_lbl, self._zoom_bar, self._hint_bar):
+            try:
+                if widget.winfo_ismapped():
+                    wx = float(widget.winfo_x())
+                    wy = float(widget.winfo_y())
+                    ww = float(widget.winfo_width() or widget.winfo_reqwidth())
+                    wh = float(widget.winfo_height() or widget.winfo_reqheight())
+                    if ww > 2.0 and wh > 2.0:
+                        boxes.append((wx - 4.0, wy - 4.0, wx + ww + 4.0, wy + wh + 4.0))
+            except tk.TclError:
+                pass
+        return boxes
+
+    @staticmethod
+    def _boxes_overlap(
+        a: Tuple[float, float, float, float],
+        b: Tuple[float, float, float, float],
+    ) -> bool:
+        return not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3])
+
+    @staticmethod
+    def _box_hits_segment(
+        box: Tuple[float, float, float, float],
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> bool:
+        bx0, by0, bx1, by1 = box
+        if max(x1, x2) < bx0 or min(x1, x2) > bx1 or max(y1, y2) < by0 or min(y1, y2) > by1:
+            return False
+        dx = x2 - x1
+        dy = y2 - y1
+        t0, t1 = 0.0, 1.0
+        for p, q in ((-dx, x1 - bx0), (dx, bx1 - x1), (-dy, y1 - by0), (dy, by1 - y1)):
+            if abs(p) < 1e-9:
+                if q < 0.0:
+                    return False
+            else:
+                r = q / p
+                if p < 0.0:
+                    if r > t1:
+                        return False
+                    if r > t0:
+                        t0 = r
+                else:
+                    if r < t0:
+                        return False
+                    if r < t1:
+                        t1 = r
+        return t0 <= t1
 
     def _world_to_screen(self, nx: float, ny: float) -> Tuple[float, float]:
         w = max(200, self.winfo_width())
@@ -1100,14 +1156,14 @@ class NetworkCanvas(tk.Canvas):
                     lines.append(
                         f"Demanda: {ps.demand_flow_m3s:.4f} m³/s ({ps.utilization_pct / 100.0:.2f}× Qmax)  ·  Exceso: {ps.excess_flow_m3s:.4f} m³/s"
                     )
+        dur_lbl = f"0–{self._total_duration_min:.0f} min"
         if self.snapshot and pipe.pipe_id in self._peak_util_map:
             pk = self._peak_util_map[pipe.pipe_id]
-            lines.append(f"Pico hasta t = {self.snapshot.time_min:.0f} min: {pk:.1f}%")
+            lines.append(f"Pico máximo ({dur_lbl}): {pk:.1f}%")
         if pipe.pipe_id in self._overload_minutes_map:
             ov_min = self._overload_minutes_map[pipe.pipe_id]
             _, _, ov_desc = classify_overload_persistence(ov_min, self._total_duration_min)
-            t_lbl = f" (t ≤ {self.snapshot.time_min:.0f}m)" if self.snapshot else ""
-            lines.append(f"Sobrecarga acumulada{t_lbl}: {ov_min:.0f} min >100% ({ov_desc})")
+            lines.append(f"Sobrecarga total ({dur_lbl}): {ov_min:.0f} min >100% ({ov_desc})")
         return "\n".join(lines)
 
     def _show_tooltip(self, x_root: int, y_root: int, text: str) -> None:
@@ -1220,19 +1276,20 @@ class NetworkCanvas(tk.Canvas):
             for node in self.graph.nodes()
         }
 
-        min_edge_dist = 999.0
-        for pipe in self.graph.pipes():
-            p1 = positions.get(pipe.from_node)
-            p2 = positions.get(pipe.to_node)
-            if p1 is not None and p2 is not None:
-                d = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-                if d > 1e-3:
-                    min_edge_dist = min(min_edge_dist, d)
+        min_node_dist = 999.0
+        pos_list = list(positions.values())
+        for i in range(len(pos_list)):
+            x1, y1 = pos_list[i]
+            for j in range(i + 1, len(pos_list)):
+                x2, y2 = pos_list[j]
+                d = math.hypot(x2 - x1, y2 - y1)
+                if d > 1e-3 and d < min_node_dist:
+                    min_node_dist = d
 
         dpi_r_boost = min(1.30, self.dpi_scale)
         base_radius = 10.4 * scale_factor * math.sqrt(self._zoom) * dpi_r_boost
-        max_safe_r = max(5.2, min_edge_dist * 0.24) if min_edge_dist < 900.0 else 16.5
-        node_radius = max(5.2, min(16.5, base_radius, max_safe_r))
+        max_safe_r = (min_node_dist * 0.30) if min_node_dist < 900.0 else 16.5
+        node_radius = max(2.8, min(16.5, base_radius, max_safe_r))
         dense_mode = (w < 500 or self._zoom < 0.78)
 
         anim = self._traversal_frame
@@ -1242,6 +1299,7 @@ class NetworkCanvas(tk.Canvas):
             or bool(self.highlight_node_ids)
         )
         label_queue = []
+        pipe_segments: List[Tuple[float, float, float, float]] = []
 
         # Identificar nodos frontera del corte topológico (aguas arriba de tramos cerrados 100%)
         cut_boundary_nodes: Set[str] = set()
@@ -1266,10 +1324,13 @@ class NetworkCanvas(tk.Canvas):
                 continue
             ux, uy = dx / dist, dy / dist
 
-            sx1 = x1 + ux * (node_radius + 1.5)
-            sy1 = y1 + uy * (node_radius + 1.5)
-            sx2 = x2 - ux * (node_radius + 3.0)
-            sy2 = y2 - uy * (node_radius + 3.0)
+            start_gap = min(1.5, node_radius * 0.14)
+            end_gap = min(3.0, node_radius * 0.24)
+            sx1 = x1 + ux * (node_radius + start_gap)
+            sy1 = y1 + uy * (node_radius + start_gap)
+            sx2 = x2 - ux * (node_radius + end_gap)
+            sy2 = y2 - uy * (node_radius + end_gap)
+            pipe_segments.append((x1, y1, x2, y2))
 
             inv = self._interventions.get(pipe.pipe_id)
             is_closed = inv is not None and inv.is_closed
@@ -1350,17 +1411,25 @@ class NetworkCanvas(tk.Canvas):
                 self._item_to_pipe[glow_id] = pipe.pipe_id
 
             seg_len = math.hypot(sx2 - sx1, sy2 - sy1)
-            draw_width = width
-            draw_arrow = (8, 10, 3.8)
+            arrow_scale = max(0.38, min(1.0, seg_len / 14.0, node_radius / 8.0))
+            def _scaled_arrow(a: float, b: float, c: float) -> Tuple[float, float, float]:
+                return (
+                    max(3.2, round(a * arrow_scale, 1)),
+                    max(4.0, round(b * arrow_scale, 1)),
+                    max(1.5, round(c * arrow_scale, 1)),
+                )
+
+            draw_width = max(1.0, min(width, max(1.2, node_radius * 0.42)))
+            draw_arrow = _scaled_arrow(8.0, 10.0, 3.8)
             if is_dimmed_context:
-                draw_width = max(1.3, geom_width * 0.72)
-                draw_arrow = (6, 8, 2.8)
+                draw_width = max(1.0, min(draw_width, geom_width * 0.72))
+                draw_arrow = _scaled_arrow(6.0, 8.0, 2.8)
             elif is_anim_visited and not is_focus_pipe and not is_selected:
-                draw_width = max(1.8, geom_width * 0.92)
-                draw_arrow = (7, 9, 3.2)
+                draw_width = max(1.3, min(draw_width, geom_width * 0.92))
+                draw_arrow = _scaled_arrow(7.0, 9.0, 3.2)
             elif is_focus_pipe or is_selected:
-                draw_width = max(2.6, width + (0.6 if is_focus_pipe else 0.0))
-                draw_arrow = (9, 11, 4.2) if is_focus_pipe else (8, 10, 3.8)
+                draw_width = max(1.8, min(width + (0.6 if is_focus_pipe else 0.0), max(2.0, node_radius * 0.50)))
+                draw_arrow = _scaled_arrow(9.0, 11.0, 4.2) if is_focus_pipe else _scaled_arrow(8.0, 10.0, 3.8)
 
             if (is_selected or is_focus_pipe or is_anim_visited) and seg_len > 6.0:
                 trim_tip = min(seg_len * 0.45, 7.5)
@@ -1418,10 +1487,11 @@ class NetworkCanvas(tk.Canvas):
             line_kw = {
                 "fill": line_fill,
                 "width": draw_width,
-                "arrow": tk.LAST,
-                "arrowshape": draw_arrow,
                 "capstyle": tk.ROUND,
             }
+            if seg_len > 2.5:
+                line_kw["arrow"] = tk.LAST
+                line_kw["arrowshape"] = draw_arrow
             if line_dash:
                 line_kw["dash"] = line_dash
             line_id = self.create_line(sx1, sy1, sx2, sy2, **line_kw)
@@ -1504,27 +1574,99 @@ class NetworkCanvas(tk.Canvas):
                             (priority, util_pct, pipe.pipe_id, lx, ly, mx, is_vert, side, lbl_full, prefix_parts, is_selected, is_overloaded, is_focus_pipe, has_mark, has_ov_badge, is_closed, nx_perp, ny_perp)
                         )
 
-        r_box = max(4.0, node_radius * 0.78)
-        placed_boxes = [
+        r_box = max(3.0, node_radius * 0.80)
+        r_badge_box = max(3.2, node_radius + 1.5)
+        node_circle_boxes = [
+            (nx - r_badge_box, ny - r_badge_box, nx + r_badge_box, ny + r_badge_box)
+            for nx, ny in positions.values()
+        ]
+        node_label_boxes = [
             (nx - r_box, ny - r_box, nx + r_box, ny + r_box)
             for nx, ny in positions.values()
         ]
+        overlay_boxes = self._overlay_boxes(w, h)
+        placed_boxes: List[Tuple[float, float, float, float]] = list(node_label_boxes) + list(overlay_boxes)
+
+        def _measure_badge(text: str, font_spec: Tuple[str, int, str], px_pad: float, py_pad: float) -> Tuple[float, float]:
+            tid = self.create_text(0, 0, text=text, font=font_spec)
+            bb = self.bbox(tid)
+            self.delete(tid)
+            if bb is None:
+                return (len(text) * 6.5 + px_pad * 2.0, 14.0 + py_pad * 2.0)
+            return ((bb[2] - bb[0]) + px_pad * 2.0, (bb[3] - bb[1]) + py_pad * 2.0)
+
+        resolved_sink_badges: Dict[str, Tuple[float, float, str, int]] = {}
+        resolved_source_badges: Dict[str, Tuple[float, float, int]] = {}
+        ptar_font_px = max(8, min(11, int(round(10.5 * scale_factor * min(1.12, math.sqrt(self._zoom))))))
+        src_font_px = max(7, min(10, int(round(9.0 * scale_factor * min(1.08, math.sqrt(self._zoom))))))
+        sink_extra_r = min(3.5, max(1.4, node_radius * 0.26))
+
         for node in self.graph.nodes():
             nx, ny = positions[node.node_id]
+            is_dimmed_node = (
+                (self._basin_active and (node.node_id not in self._basin_nodes))
+                or (self._tour_active and (node.node_id not in self._tour_nodes))
+            )
             if node.node_type == "sink":
-                px = max(68.0, nx)
-                py = ny - node_radius - 15
-                placed_boxes.append((px - 70, py - 10, px + 70, py + 10))
-            elif node.node_type == "source" and not dense_mode:
-                ty = (ny - node_radius - 12) if node.y < 0.2 else (ny + node_radius + 12)
-                placed_boxes.append((nx - 26, ty - 8, nx + 26, ty + 8))
+                r_sink = node_radius + sink_extra_r
+                ptar_spec = (self.ui_font, -ptar_font_px, "bold")
+                chosen_sink: Optional[Tuple[float, float, str, Tuple[float, float, float, float]]] = None
+                fallback_sink: Optional[Tuple[float, float, str, Tuple[float, float, float, float]]] = None
+                for cand_txt in ("PTAR Punta Canoa · 31", "PTAR · 31"):
+                    bw, bh = _measure_badge(cand_txt, ptar_spec, 5.0, 2.0)
+                    cx = max(bw / 2.0 + 6.0, min(w - bw / 2.0 - 6.0, nx))
+                    for cy in (ny - r_sink - bh / 2.0 - 4.0, ny + r_sink + bh / 2.0 + 4.0):
+                        cy_c = max(bh / 2.0 + 4.0, min(h - bh / 2.0 - 4.0, cy))
+                        cbox = (cx - bw / 2.0, cy_c - bh / 2.0, cx + bw / 2.0, cy_c + bh / 2.0)
+                        if fallback_sink is None or cand_txt == "PTAR · 31":
+                            fallback_sink = (cx, cy_c, cand_txt, cbox)
+                        hits_node = any(self._boxes_overlap(cbox, nb) for nb in node_circle_boxes)
+                        hits_ov = any(self._boxes_overlap(cbox, ob) for ob in overlay_boxes)
+                        if not hits_node and not hits_ov:
+                            chosen_sink = (cx, cy_c, cand_txt, cbox)
+                            break
+                    if chosen_sink is not None:
+                        break
+                pick = chosen_sink or fallback_sink
+                if pick is not None:
+                    resolved_sink_badges[node.node_id] = (pick[0], pick[1], pick[2], ptar_font_px)
+                    placed_boxes.append(pick[3])
+            elif node.node_type == "source" and not dense_mode and not is_dimmed_node and node_radius >= 6.0:
+                src_spec = (self.ui_font, -src_font_px, "bold")
+                bw, bh = _measure_badge("Fuente", src_spec, 4.0, 1.0)
+                if node.y < 0.30:
+                    cands = [
+                        (nx, ny - node_radius - bh / 2.0 - 3.0),
+                        (nx + node_radius + bw / 2.0 + 4.0, ny),
+                        (nx - node_radius - bw / 2.0 - 4.0, ny),
+                        (nx, ny + node_radius + bh / 2.0 + 3.0),
+                    ]
+                else:
+                    cands = [
+                        (nx, ny + node_radius + bh / 2.0 + 3.0),
+                        (nx + node_radius + bw / 2.0 + 4.0, ny),
+                        (nx - node_radius - bw / 2.0 - 4.0, ny),
+                        (nx, ny - node_radius - bh / 2.0 - 3.0),
+                    ]
+                for cx, cy in cands:
+                    cbox = (cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0)
+                    if cbox[0] < 4.0 or cbox[2] > w - 4.0 or cbox[1] < 4.0 or cbox[3] > h - 4.0:
+                        continue
+                    if any(self._boxes_overlap(cbox, pb) for pb in placed_boxes):
+                        continue
+                    if any(self._box_hits_segment(cbox, sx_a, sy_a, sx_b, sy_b) for sx_a, sy_a, sx_b, sy_b in pipe_segments):
+                        continue
+                    resolved_source_badges[node.node_id] = (cx, cy, src_font_px)
+                    placed_boxes.append(cbox)
+                    break
 
         label_queue.sort(
             key=lambda item: (item[0], item[1], self._peak_util_map.get(item[2], 0.0)),
             reverse=True,
         )
 
-        font_sz = 7 if (self._zoom < 1.15 or dense_mode) else 8
+        pipe_font_px = max(8, min(11, int(round((9.2 if (self._zoom < 1.15 or dense_mode) else 10.6) * min(1.12, max(0.86, scale_factor))))))
+        font_sz = -pipe_font_px
         for priority, _u, pid, lx, ly, mx, is_vert, side, text_lbl, prefix_parts, is_sel, is_over, is_hl, has_mark, has_ov_badge, is_closed, nx_perp, ny_perp in label_queue:
             if has_ov_badge and not is_sel:
                 fg = theme.SHELL_TEXT
@@ -1617,7 +1759,7 @@ class NetworkCanvas(tk.Canvas):
             is_anim_backtrack = anim is not None and (node.node_id in anim.backtracked_nodes)
 
             if node.node_type == "sink":
-                r += 3.5
+                r += sink_extra_r
                 fill = theme.NODE_SINK_FILL
                 outline = theme.NODE_SINK_BORDER
                 txt_fill = theme.NODE_SINK_TEXT
@@ -1680,11 +1822,12 @@ class NetworkCanvas(tk.Canvas):
                 )
 
             if is_anim_wave or is_anim_cursor:
-                radar_r = r + (5.5 if is_anim_cursor else 4.2)
+                radar_pad = max(2.2, min(5.5 if is_anim_cursor else 4.2, r * 0.45))
+                radar_r = r + radar_pad
                 radar_ring = self.create_oval(
                     x - radar_r, y - radar_r, x + radar_r, y + radar_r,
                     outline=theme.ACCENT_PRIMARY,
-                    width=2.8 if is_anim_cursor else 2.2,
+                    width=max(1.5, min(2.8 if is_anim_cursor else 2.2, r * 0.28)),
                     tags=("node_layer",),
                 )
                 self._item_to_node[radar_ring] = node.node_id
@@ -1697,18 +1840,20 @@ class NetworkCanvas(tk.Canvas):
                     if node.node_id == self.selected_node_id
                     else theme.PIPE_HIGHLIGHT_PATH
                 )
+                ring_pad = max(1.8, min(3.5, r * 0.32))
                 ring2 = self.create_oval(
-                    x - r - 3.5, y - r - 3.5, x + r + 3.5, y + r + 3.5,
+                    x - r - ring_pad, y - r - ring_pad, x + r + ring_pad, y + r + ring_pad,
                     outline=sel_col,
-                    width=2.6,
+                    width=max(1.5, min(2.6, r * 0.25)),
                     tags=("node_layer",),
                 )
                 self._item_to_node[ring2] = node.node_id
 
+            node_outline_w = max(1.1, min(2.0, r * 0.18))
             oval_kw = {
                 "fill": fill,
                 "outline": outline,
-                "width": 2.0,
+                "width": node_outline_w,
                 "tags": ("node_layer",),
             }
             if is_isolated and not is_dimmed_basin:
@@ -1716,26 +1861,29 @@ class NetworkCanvas(tk.Canvas):
             oval_id = self.create_oval(x - r, y - r, x + r, y + r, **oval_kw)
             self._item_to_node[oval_id] = node.node_id
 
-            txt_id = self.create_text(
-                x,
-                y,
-                text=node.node_id,
-                fill=txt_fill,
-                font=(self.ui_font, 7 if dense_mode else (8 if self._zoom < 1.2 else 9), "bold"),
-                tags=("node_layer",),
-            )
-            self._item_to_node[txt_id] = node.node_id
+            if node_radius >= 5.6 or node.node_type == "sink" or node.node_id == self.selected_node_id:
+                node_font_px = max(7, min(14, int(round(r * 1.12))))
+                txt_id = self.create_text(
+                    x,
+                    y,
+                    text=node.node_id,
+                    fill=txt_fill,
+                    font=(self.ui_font, -node_font_px, "bold"),
+                    tags=("node_layer",),
+                )
+                self._item_to_node[txt_id] = node.node_id
 
             if is_isolated and not is_dimmed_basin and (
                 node.node_id in cut_boundary_nodes or node.node_id == self.selected_node_id
             ):
-                iso_y = y - r - 13
+                iso_font_px = max(8, min(10, src_font_px))
+                iso_y = max(12.0, y - r - 12.0)
                 iso_txt = self.create_text(
                     x,
                     iso_y,
                     text="[AISLADO DE 31]",
                     fill=theme.INK_PRIMARY,
-                    font=(self.mono_font, 7, "bold"),
+                    font=(self.mono_font, -iso_font_px, "bold"),
                 )
                 ib = self.bbox(iso_txt)
                 if ib is not None:
@@ -1749,15 +1897,15 @@ class NetworkCanvas(tk.Canvas):
                     self._item_to_node[ibg] = node.node_id
                 self._item_to_node[iso_txt] = node.node_id
 
-            if node.node_type == "sink":
-                ptar_x = max(68.0, x)
-                ptar_y = y - r - 15
+            if node.node_type == "sink" and node.node_id in resolved_sink_badges:
+                ptar_x, ptar_y, ptar_txt, ptar_px = resolved_sink_badges[node.node_id]
                 ptar_id = self.create_text(
                     ptar_x,
                     ptar_y,
-                    text="PTAR Punta Canoa · 31",
+                    text=ptar_txt,
                     fill=theme.SHELL_TEXT,
-                    font=(self.ui_font, 8, "bold"),
+                    font=(self.ui_font, -ptar_px, "bold"),
+                    tags=("node_layer",),
                 )
                 pb = self.bbox(ptar_id)
                 if pb is not None:
@@ -1766,18 +1914,20 @@ class NetworkCanvas(tk.Canvas):
                         fill=theme.SHELL_BG,
                         outline=theme.ACCENT_PRIMARY,
                         width=1.5,
+                        tags=("node_layer",),
                     )
                     self.tag_lower(pbg, ptar_id)
                     self._item_to_node[pbg] = node.node_id
                 self._item_to_node[ptar_id] = node.node_id
-            elif node.node_type == "source" and not dense_mode and not is_dimmed_basin:
-                tag_y = (y - r - 12) if node.y < 0.2 else (y + r + 12)
+            elif node.node_type == "source" and node.node_id in resolved_source_badges:
+                sx_tag, sy_tag, src_px = resolved_source_badges[node.node_id]
                 src_tag = self.create_text(
-                    x,
-                    tag_y,
+                    sx_tag,
+                    sy_tag,
                     text="Fuente",
                     fill=theme.INK_MUTED if is_isolated else theme.INK_PRIMARY,
-                    font=(self.ui_font, 7, "bold"),
+                    font=(self.ui_font, -src_px, "bold"),
+                    tags=("node_layer",),
                 )
                 sb = self.bbox(src_tag)
                 if sb is not None:
@@ -1786,6 +1936,7 @@ class NetworkCanvas(tk.Canvas):
                         fill=theme.DOCK_BG,
                         outline=theme.DOCK_DIVIDER if is_isolated else theme.INK_PRIMARY,
                         width=1,
+                        tags=("node_layer",),
                     )
                     self.tag_lower(sbg, src_tag)
                     self._item_to_node[sbg] = node.node_id
