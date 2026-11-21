@@ -4,7 +4,7 @@ import math
 import os
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from src.algorithms import (
@@ -66,7 +66,7 @@ _COMMERCIAL_DIAMETERS_IN = [
 
 
 class _ScenarioMenuButton(tk.Menubutton):
-    """Selector de escenarios basado en tk.Menubutton + tk.Menu (inmune al popdown en blanco de clam)."""
+    """Selector desplegable basado en tk.Menubutton + tk.Menu (inmune al popdown y selección en blanco de clam)."""
 
     def __init__(
         self,
@@ -75,28 +75,34 @@ class _ScenarioMenuButton(tk.Menubutton):
         textvariable: tk.StringVar,
         on_select: Callable[[], None],
         on_before_open: Optional[Callable[[], None]] = None,
+        values: Sequence[str] = (),
+        width: Optional[int] = None,
+        padx: int = 8,
+        pady: int = 5,
         ui_font: str = "Segoe UI",
     ) -> None:
-        super().__init__(
-            master,
-            textvariable=textvariable,
-            indicatoron=True,
-            anchor="w",
-            justify="left",
-            bg=theme.PAPER_BG,
-            fg=theme.INK_PRIMARY,
-            activebackground=theme.PAPER_SUBTLE,
-            activeforeground=theme.INK_PRIMARY,
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=theme.DOCK_BORDER,
-            highlightcolor=theme.ACCENT_PRIMARY,
-            padx=8,
-            pady=5,
-            font=(ui_font, 9),
-            cursor="hand2",
-        )
+        kw: Dict[str, object] = {
+            "textvariable": textvariable,
+            "indicatoron": True,
+            "anchor": "w",
+            "justify": "left",
+            "bg": theme.PAPER_BG,
+            "fg": theme.INK_PRIMARY,
+            "activebackground": theme.PAPER_SUBTLE,
+            "activeforeground": theme.INK_PRIMARY,
+            "relief": "flat",
+            "bd": 0,
+            "highlightthickness": 1,
+            "highlightbackground": theme.DOCK_BORDER,
+            "highlightcolor": theme.ACCENT_PRIMARY,
+            "padx": padx,
+            "pady": pady,
+            "font": (ui_font, 9),
+            "cursor": "hand2",
+        }
+        if width is not None:
+            kw["width"] = width
+        super().__init__(master, **kw)
         self._var = textvariable
         self._on_select = on_select
         self._on_before_open = on_before_open
@@ -113,6 +119,8 @@ class _ScenarioMenuButton(tk.Menubutton):
             postcommand=self._handle_postcommand,
         )
         self.configure(menu=self._menu)
+        if values:
+            self.set_values(values)
         self.bind("<ButtonPress-1>", lambda _e: self._handle_postcommand(), add="+")
         self.bind("<<ComboboxSelected>>", lambda _e: self._on_select(), add="+")
 
@@ -203,8 +211,6 @@ class BicentenarioSewerApp(tk.Tk):
         self._is_animating_traversal: bool = False
         self._map_mode: str = "instant"
         self._map_mode_buttons: Dict[str, tk.Button] = {}
-        self._prefix_peak_util: List[Dict[str, float]] = []
-        self._prefix_overload_min: List[Dict[str, float]] = []
         self._tour_active: bool = False
         self._tour_step: int = 0
         self._source_attribution: Optional[SourceAttributionResult] = None
@@ -430,6 +436,14 @@ class BicentenarioSewerApp(tk.Tk):
         )
         style.configure(
             "Light.Vertical.TScrollbar",
+            background=theme.DOCK_BG,
+            troughcolor=theme.PAPER_SUBTLE,
+            bordercolor=theme.PAPER_BORDER,
+            arrowcolor=theme.INK_PRIMARY,
+            relief="flat",
+        )
+        style.configure(
+            "Light.Horizontal.TScrollbar",
             background=theme.DOCK_BG,
             troughcolor=theme.PAPER_SUBTLE,
             bordercolor=theme.PAPER_BORDER,
@@ -1144,7 +1158,6 @@ class BicentenarioSewerApp(tk.Tk):
             ui_font=self.ui_font,
         )
         self.combo_scenario.pack(fill=tk.X, pady=(0, 8))
-        self.combo_scenario.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=False))
 
         grid = tk.Frame(sec_sim, bg=theme.PAPER_BG)
         grid.pack(fill=tk.X)
@@ -1216,16 +1229,18 @@ class BicentenarioSewerApp(tk.Tk):
             fg=theme.INK_PRIMARY,
             font=(self.ui_font, 8),
         ).pack(side=tk.LEFT)
-        self.combo_split_rule = ttk.Combobox(
+        self.combo_split_rule = _ScenarioMenuButton(
             row_rules,
             textvariable=self.var_split_rule_es,
             values=list(theme.SPLIT_RULE_TO_ES.values()),
-            state="readonly",
-            width=14,
-            style="Light.TCombobox",
+            on_select=lambda: self._on_simulation_option_changed(mark_comp=True),
+            on_before_open=self._player_pause,
+            width=15,
+            padx=6,
+            pady=3,
+            ui_font=self.ui_font,
         )
         self.combo_split_rule.pack(side=tk.RIGHT)
-        self.combo_split_rule.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
 
         row_hyeto = tk.Frame(sec_sim, bg=theme.PAPER_BG)
         row_hyeto.pack(fill=tk.X, pady=3)
@@ -1236,16 +1251,18 @@ class BicentenarioSewerApp(tk.Tk):
             fg=theme.INK_PRIMARY,
             font=(self.ui_font, 8),
         ).pack(side=tk.LEFT)
-        self.combo_hyetograph = ttk.Combobox(
+        self.combo_hyetograph = _ScenarioMenuButton(
             row_hyeto,
             textvariable=self.var_hyetograph_es,
             values=list(theme.HYETOGRAPH_TO_ES.values()),
-            state="readonly",
-            width=14,
-            style="Light.TCombobox",
+            on_select=lambda: self._on_simulation_option_changed(mark_comp=True),
+            on_before_open=self._player_pause,
+            width=15,
+            padx=6,
+            pady=3,
+            ui_font=self.ui_font,
         )
         self.combo_hyetograph.pack(side=tk.RIGHT)
-        self.combo_hyetograph.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
 
         row_src_dist = tk.Frame(sec_sim, bg=theme.PAPER_BG)
         row_src_dist.pack(fill=tk.X, pady=3)
@@ -1256,16 +1273,18 @@ class BicentenarioSewerApp(tk.Tk):
             fg=theme.INK_PRIMARY,
             font=(self.ui_font, 8),
         ).pack(side=tk.LEFT)
-        self.combo_source_dist = ttk.Combobox(
+        self.combo_source_dist = _ScenarioMenuButton(
             row_src_dist,
             textvariable=self.var_source_dist_es,
             values=list(theme.SOURCE_DIST_TO_ES.values()),
-            state="readonly",
-            width=14,
-            style="Light.TCombobox",
+            on_select=lambda: self._on_simulation_option_changed(mark_comp=True),
+            on_before_open=self._player_pause,
+            width=15,
+            padx=6,
+            pady=3,
+            ui_font=self.ui_font,
         )
         self.combo_source_dist.pack(side=tk.RIGHT)
-        self.combo_source_dist.bind("<<ComboboxSelected>>", lambda _e: self._on_simulation_option_changed(mark_comp=True))
 
         self.btn_run_sim = self._make_btn(
             sec_sim,
@@ -1584,6 +1603,7 @@ class BicentenarioSewerApp(tk.Tk):
         row_metrics.pack(fill=tk.X, padx=0, pady=0)
 
         self._kpi_cards: Dict[str, tk.Label] = {}
+        self._kpi_captions: Dict[str, tk.Label] = {}
         kpi_defs = [
             ("max_util", "UTILIZACIÓN MÁX.", "-"),
             ("critical", "CRÍTICAS (>75–100%)", "-"),
@@ -1601,7 +1621,7 @@ class BicentenarioSewerApp(tk.Tk):
             )
             row_metrics.columnconfigure(idx, weight=1, uniform="kpi")
             tk.Frame(cell, bg=theme.ACCENT_PRIMARY, height=2).pack(fill=tk.X)
-            tk.Label(
+            cap_lbl = tk.Label(
                 cell,
                 text=caption,
                 bg=theme.PAPER_BG,
@@ -1609,7 +1629,8 @@ class BicentenarioSewerApp(tk.Tk):
                 font=(self.ui_font, 7, "bold"),
                 anchor="w",
                 padx=8,
-            ).pack(anchor="w", pady=(4, 0))
+            )
+            cap_lbl.pack(anchor="w", pady=(4, 0))
             val_lbl = tk.Label(
                 cell,
                 text=initial,
@@ -1620,6 +1641,7 @@ class BicentenarioSewerApp(tk.Tk):
                 padx=8,
             )
             val_lbl.pack(anchor="w", pady=(0, 5))
+            self._kpi_captions[key] = cap_lbl
             self._kpi_cards[key] = val_lbl
 
         # Barra de reproducción temporal (empaquetada abajo antes del canvas expandible)
@@ -2270,25 +2292,58 @@ class BicentenarioSewerApp(tk.Tk):
         )
         self.lbl_comp_hint.pack(side=tk.RIGHT, padx=8)
 
-        comp_cols = ("esc", "int", "max_u", "crit_p", "n_crit", "n_over", "ptar", "flood")
-        self._comp_tree_compact: Optional[bool] = None
-        self.tree_comp = ttk.Treeview(tab_comp, columns=comp_cols, show="headings", height=5)
+        comp_font = tkfont.Font(family=self.ui_font, size=9)
+        self._comp_col_specs: List[Tuple[str, str, str, int]] = [
+            ("esc", "Escenario", "w", max(155, comp_font.measure("E3 Lluvia moderada") + 24)),
+            ("int", "mm/h", "center", max(52, comp_font.measure("mm/h") + 18)),
+            ("max_u", "Máx %", "e", max(68, comp_font.measure("1000.0%") + 18)),
+            ("crit_p", "Crítica", "center", max(56, comp_font.measure("Crítica") + 18)),
+            ("n_crit", ">75–100%", "center", max(74, comp_font.measure(">75–100%") + 18)),
+            ("n_over", ">100%", "center", max(62, comp_font.measure(">100%") + 18)),
+            ("ptar", "Pico PTAR", "e", max(80, comp_font.measure("Pico PTAR") + 18)),
+            ("flood", "Rebose (m³)", "e", max(92, comp_font.measure("Rebose (m³)") + 18)),
+        ]
+        comp_cols = tuple(cid for cid, _, _, _ in self._comp_col_specs)
+        self._comp_tree_compact: Optional[bool] = False
+
+        comp_table_wrap = tk.Frame(tab_comp, bg=theme.PAPER_BG)
+        comp_table_wrap.pack(fill=tk.X, padx=6, pady=(4, 4))
+        comp_table_wrap.columnconfigure(0, weight=1)
+        comp_table_wrap.rowconfigure(0, weight=1)
+
+        self.tree_comp = ttk.Treeview(
+            comp_table_wrap, columns=comp_cols, show="headings", height=5
+        )
         self.tree_comp.tag_configure("odd", background=theme.PAPER_ALT_ROW)
-        for cid, htext in [
-            ("esc", "Escenario"),
-            ("int", "mm/h"),
-            ("max_u", "Máx %"),
-            ("crit_p", "Crítica"),
-            ("n_crit", ">75-100"),
-            ("n_over", ">100%"),
-            ("ptar", "Pico PTAR"),
-            ("flood", "Rebose m³"),
-        ]:
+        for cid, htext, anchor, min_w in self._comp_col_specs:
             self.tree_comp.heading(cid, text=htext)
-            self.tree_comp.column(cid, width=54, minwidth=30, anchor="center")
-        self.tree_comp.pack(fill=tk.X, padx=6, pady=(4, 4))
+            self.tree_comp.column(
+                cid, width=min_w, minwidth=min_w, stretch=False, anchor=anchor
+            )
+
+        self.comp_yscroll = ttk.Scrollbar(
+            comp_table_wrap,
+            orient=tk.VERTICAL,
+            command=self.tree_comp.yview,
+            style="Light.Vertical.TScrollbar",
+        )
+        self.comp_xscroll = ttk.Scrollbar(
+            comp_table_wrap,
+            orient=tk.HORIZONTAL,
+            command=self.tree_comp.xview,
+            style="Light.Horizontal.TScrollbar",
+        )
+        self.tree_comp.configure(
+            xscrollcommand=self.comp_xscroll.set,
+            yscrollcommand=self.comp_yscroll.set,
+        )
+        self.tree_comp.grid(row=0, column=0, sticky="nsew")
+        self.comp_yscroll.grid(row=0, column=1, sticky="ns")
+        self.comp_xscroll.grid(row=1, column=0, sticky="ew")
+
         self.tree_comp.bind("<Double-1>", self._on_comparison_row_activate)
         self.tree_comp.bind("<Configure>", self._resize_comp_columns)
+        self.tree_comp.bind("<Shift-MouseWheel>", self._on_comp_shift_wheel)
 
         self.comparison_charts = ComparisonChartsPanel(tab_comp, dpi=self._mpl_dpi)
         self.comparison_charts.pack(fill=tk.BOTH, expand=True)
@@ -2347,59 +2402,24 @@ class BicentenarioSewerApp(tk.Tk):
             self.tree_critical.column(cid, width=max(min_w, int(w * ratio)))
 
     def _resize_comp_columns(self, event: tk.Event) -> None:
-        w = max(220, event.width - 4)
-        compact = w < 385
-        if compact != self._comp_tree_compact:
-            self._comp_tree_compact = compact
-            if compact:
-                self.tree_comp["displaycolumns"] = ("esc", "int", "max_u", "crit_p", "n_over", "ptar")
-                for cid, htext in [
-                    ("esc", "Escenario"),
-                    ("int", "mm"),
-                    ("max_u", "Máx %"),
-                    ("crit_p", "Crít."),
-                    ("n_over", ">100"),
-                    ("ptar", "PTAR"),
-                ]:
-                    self.tree_comp.heading(cid, text=htext)
-            else:
-                self.tree_comp["displaycolumns"] = "#all"
-                for cid, htext in [
-                    ("esc", "Escenario"),
-                    ("int", "mm/h"),
-                    ("max_u", "Máx %"),
-                    ("crit_p", "Crít."),
-                    ("n_crit", ">75-100"),
-                    ("n_over", ">100%"),
-                    ("ptar", "PTAR"),
-                    ("flood", "Rebose m³"),
-                ]:
-                    self.tree_comp.heading(cid, text=htext)
-            if self.comparisons:
-                self._populate_comp_tree()
+        if not hasattr(self, "_comp_col_specs"):
+            return
+        avail_w = max(220, event.width - 2)
+        total_min = sum(min_w for _, _, _, min_w in self._comp_col_specs)
+        extra = max(0, avail_w - total_min)
+        for cid, _htext, anchor, min_w in self._comp_col_specs:
+            share = int(extra * (min_w / total_min)) if extra > 0 else 0
+            col_w = min_w + share
+            self.tree_comp.column(
+                cid, width=col_w, minwidth=min_w, stretch=False, anchor=anchor
+            )
 
-        if compact:
-            weights = [
-                ("esc", 0.28, 96),
-                ("int", 0.09, 28),
-                ("max_u", 0.18, 50),
-                ("crit_p", 0.11, 36),
-                ("n_over", 0.13, 38),
-                ("ptar", 0.21, 54),
-            ]
-        else:
-            weights = [
-                ("esc", 0.27, 128),
-                ("int", 0.08, 34),
-                ("max_u", 0.12, 50),
-                ("crit_p", 0.09, 38),
-                ("n_crit", 0.09, 44),
-                ("n_over", 0.09, 42),
-                ("ptar", 0.12, 54),
-                ("flood", 0.14, 62),
-            ]
-        for cid, ratio, min_w in weights:
-            self.tree_comp.column(cid, width=max(min_w, int(w * ratio)))
+    def _on_comp_shift_wheel(self, event: tk.Event) -> str:
+        delta = getattr(event, "delta", 0)
+        if delta != 0:
+            steps = int(-1 * (delta / 120)) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
+            self.tree_comp.xview_scroll(steps, "units")
+        return "break"
 
     def _on_right_configure(self, event: tk.Event) -> None:
         if not hasattr(self, "notebook"):
@@ -2425,9 +2445,10 @@ class BicentenarioSewerApp(tk.Tk):
             if event.width < 365:
                 self.lbl_comp_hint.pack_forget()
             else:
-                self.lbl_comp_hint.configure(text="Doble clic para activar escenario")
+                if not self.comparisons and self._comparisons_dirty:
+                    self.lbl_comp_hint.configure(text="Doble clic para activar escenario")
                 if not self.lbl_comp_hint.winfo_ismapped():
-                    self.lbl_comp_hint.pack(side=tk.RIGHT, padx=4)
+                    self.lbl_comp_hint.pack(side=tk.RIGHT, padx=8)
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
         if self.dataset is None:
@@ -2512,8 +2533,6 @@ class BicentenarioSewerApp(tk.Tk):
         self._active_route_pipes = []
         self._last_attr_key = None
         self._source_attribution = None
-        self._prefix_peak_util = []
-        self._prefix_overload_min = []
         for item in self.tree_comp.get_children():
             self.tree_comp.delete(item)
         self.comparison_charts.update_comparison([])
@@ -2758,18 +2777,17 @@ class BicentenarioSewerApp(tk.Tk):
             self._previous_result = None
 
         self.result = self.engine.run(cfg)
-        self._build_prefix_stress_maps(self.result)
         self._last_attr_key = None
         n_snaps = len(self.result.snapshots)
         if auto_play and self._map_mode != "instant":
             self._map_mode = "instant"
             self._apply_map_mode_button_styles("instant")
-        peak0, ov0, dur0 = self._stress_maps_for_step(0)
+        peak_all, ov_all, dur_total = self._global_stress_maps()
         self.network_canvas.set_map_mode(
             self._map_mode,
-            peak_util=peak0,
-            overload_minutes=ov0,
-            total_duration_min=dur0,
+            peak_util=peak_all,
+            overload_minutes=ov_all,
+            total_duration_min=dur_total,
         )
         self._updating_slider = True
         try:
@@ -2797,53 +2815,20 @@ class BicentenarioSewerApp(tk.Tk):
             f"en {self.result.execution_time_ms:.1f} ms ({n_snaps} instantes)"
         )
 
-    def _build_prefix_stress_maps(self, result: SimulationResult) -> None:
-        """Precalcula pico máximo y minutos de sobrecarga acumulados hasta cada paso t."""
-        pipe_ids = self.dataset.graph.pipe_ids() if self.dataset is not None else []
-        cur_peak: Dict[str, float] = {pid: 0.0 for pid in pipe_ids}
-        cur_ov: Dict[str, float] = {pid: 0.0 for pid in pipe_ids}
-        dt_min = max(0.1, float(result.config.dt_min))
-        dur_min = (
-            float(result.snapshots[-1].time_min)
-            if result.snapshots
-            else max(dt_min, float(result.config.duration_min))
-        )
-        self._prefix_peak_util = []
-        self._prefix_overload_min = []
-        for snap in result.snapshots:
-            for pid, ps in snap.pipe_states.items():
-                if ps.utilization_pct > cur_peak.get(pid, 0.0):
-                    cur_peak[pid] = ps.utilization_pct
-            if snap.step_index > 0:
-                for pid in snap.overloaded_pipe_ids:
-                    cur_ov[pid] = min(dur_min, cur_ov.get(pid, 0.0) + dt_min)
-            self._prefix_peak_util.append(dict(cur_peak))
-            self._prefix_overload_min.append(dict(cur_ov))
-
-    def _stress_maps_for_step(
-        self, step_idx: int
-    ) -> Tuple[Dict[str, float], Dict[str, float], float]:
-        """Retorna (peak_util_hasta_t, overload_min_hasta_t, duracion_referencia) para un paso."""
+    def _global_stress_maps(self) -> Tuple[Dict[str, float], Dict[str, float], float]:
+        """Retorna (peak_util_global, overload_min_global, duracion_total_min) de la simulación."""
         if self.result is None or not self.result.snapshots:
             return ({}, {}, 90.0)
-        idx = max(0, min(len(self.result.snapshots) - 1, step_idx))
-        snap = self.result.snapshots[idx]
-        peak = (
-            self._prefix_peak_util[idx]
-            if idx < len(self._prefix_peak_util)
-            else self.result.peak_pipe_utilization
+        dur_total = max(
+            1.0,
+            float(self.result.snapshots[-1].time_min),
+            float(self.result.config.duration_min),
         )
-        ov = (
-            self._prefix_overload_min[idx]
-            if idx < len(self._prefix_overload_min)
-            else self.result.pipe_overloaded_minutes
+        return (
+            self.result.peak_pipe_utilization,
+            self.result.pipe_overloaded_minutes,
+            dur_total,
         )
-        dur_ref = (
-            max(float(self.result.config.dt_min), float(snap.time_min))
-            if snap.time_min > 0.0
-            else max(1.0, float(self.result.config.duration_min))
-        )
-        return (peak, ov, dur_ref)
 
     def _resolve_active_route(self) -> List[PipeEdge]:
         if self.dataset is None:
@@ -2898,32 +2883,16 @@ class BicentenarioSewerApp(tk.Tk):
             self._slider_restore_pending = True
             self.after_idle(self._restore_slider_command)
 
-        peak_step, ov_step, dur_step = self._stress_maps_for_step(step_idx)
+        peak_all, ov_all, dur_total = self._global_stress_maps()
         self.network_canvas.set_stress_maps(
-            peak_util=peak_step,
-            overload_minutes=ov_step,
-            total_duration_min=dur_step,
+            peak_util=peak_all,
+            overload_minutes=ov_all,
+            total_duration_min=dur_total,
         )
-        self.network_canvas.set_snapshot(snap)
+        canvas_snap = snap if self._map_mode == "instant" else self.result.snapshots[-1]
+        self.network_canvas.set_snapshot(canvas_snap)
         self._update_clock_label(snap)
-
-        max_u = max((ps.utilization_pct for ps in snap.pipe_states.values()), default=0.0)
-        tier_idx = 0 if max_u <= 25 else (1 if max_u <= 50 else (2 if max_u <= 75 else (3 if max_u <= 100 else 4)))
-        self._kpi_cards["max_util"].configure(
-            text=f"{max_u:.1f}%", fg=theme.TIER_TEXT_ON_LIGHT[tier_idx]
-        )
-        self._kpi_cards["critical"].configure(
-            text=str(len(snap.near_capacity_pipe_ids)),
-            fg=theme.STATUS_ERR_LIGHT if snap.near_capacity_pipe_ids else theme.INK_PRIMARY,
-        )
-        self._kpi_cards["overloaded"].configure(
-            text=str(len(snap.overloaded_pipe_ids)),
-            fg=theme.TIER_TEXT_ON_LIGHT[4] if snap.overloaded_pipe_ids else theme.INK_PRIMARY,
-        )
-        self._kpi_cards["ptar"].configure(
-            text=f"{snap.total_sink_discharge_m3s:.4f} m³/s", fg=theme.ACCENT_TEXT_ON_LIGHT
-        )
-
+        self._update_kpi_cards(snap)
         self._update_mass_audit_label(snap)
         self._update_legend_counts(snap)
 
@@ -2955,6 +2924,106 @@ class BicentenarioSewerApp(tk.Tk):
         else:
             self._charts_tab_dirty = True
 
+    def _update_kpi_cards(self, snap: Optional[TimeStepSnapshot] = None) -> None:
+        if self.result is None or not self.result.snapshots:
+            return
+        if snap is None:
+            snap = self.result.snapshots[self.current_step]
+        peak_all, ov_all, dur_total = self._global_stress_maps()
+        if self._map_mode == "peak":
+            captions = {
+                "max_util": "PICO MÁX. UTIL.",
+                "critical": "CRÍTICAS PICO (>75–100%)",
+                "overloaded": "SOBRECARGA PICO (>100%)",
+                "ptar": "PICO DESCARGA PTAR 31",
+            }
+            for k, txt in captions.items():
+                if k in self._kpi_captions:
+                    self._kpi_captions[k].configure(text=txt)
+            max_u = max((peak_all.get(pid, 0.0) for pid in snap.pipe_states), default=0.0)
+            tier_idx = classify_utilization(max_u).tier_index
+            crit_cnt = sum(
+                1 for pid in snap.pipe_states if classify_utilization(peak_all.get(pid, 0.0)).tier_index == 3
+            )
+            over_cnt = sum(
+                1 for pid in snap.pipe_states if classify_utilization(peak_all.get(pid, 0.0)).tier_index == 4
+            )
+            self._kpi_cards["max_util"].configure(
+                text=f"{max_u:.1f}%", fg=theme.TIER_TEXT_ON_LIGHT[tier_idx]
+            )
+            self._kpi_cards["critical"].configure(
+                text=str(crit_cnt),
+                fg=theme.STATUS_ERR_LIGHT if crit_cnt else theme.INK_PRIMARY,
+            )
+            self._kpi_cards["overloaded"].configure(
+                text=str(over_cnt),
+                fg=theme.TIER_TEXT_ON_LIGHT[4] if over_cnt else theme.INK_PRIMARY,
+            )
+            self._kpi_cards["ptar"].configure(
+                text=f"{self.result.peak_sink_discharge_m3s:.4f} m³/s",
+                fg=theme.ACCENT_TEXT_ON_LIGHT,
+            )
+        elif self._map_mode == "overload_minutes":
+            captions = {
+                "max_util": "MÁX. SOBREC. ACUM.",
+                "critical": "TUBERÍAS >0 min >100%",
+                "overloaded": "COLAPSO CRÓNICO (>75%)",
+                "ptar": "VOLUMEN PTAR 31",
+            }
+            for k, txt in captions.items():
+                if k in self._kpi_captions:
+                    self._kpi_captions[k].configure(text=txt)
+            max_ov = max((ov_all.get(pid, 0.0) for pid in snap.pipe_states), default=0.0)
+            tier_ov, _, _ = classify_overload_persistence(max_ov, dur_total)
+            any_ov_cnt = sum(1 for pid in snap.pipe_states if ov_all.get(pid, 0.0) >= 0.5)
+            chronic_cnt = sum(
+                1
+                for pid in snap.pipe_states
+                if classify_overload_persistence(ov_all.get(pid, 0.0), dur_total)[0] == 4
+            )
+            self._kpi_cards["max_util"].configure(
+                text=f"{max_ov:.0f} / {dur_total:.0f}m",
+                fg=theme.TIER_TEXT_ON_LIGHT[tier_ov],
+            )
+            self._kpi_cards["critical"].configure(
+                text=str(any_ov_cnt),
+                fg=theme.STATUS_ERR_LIGHT if any_ov_cnt else theme.INK_PRIMARY,
+            )
+            self._kpi_cards["overloaded"].configure(
+                text=str(chronic_cnt),
+                fg=theme.TIER_TEXT_ON_LIGHT[4] if chronic_cnt else theme.INK_PRIMARY,
+            )
+            self._kpi_cards["ptar"].configure(
+                text=f"{self.result.total_sink_discharge_m3:.1f} m³",
+                fg=theme.ACCENT_TEXT_ON_LIGHT,
+            )
+        else:
+            captions = {
+                "max_util": "UTILIZACIÓN MÁX.",
+                "critical": "CRÍTICAS (>75–100%)",
+                "overloaded": "SOBRECARGA (>100%)",
+                "ptar": "DESCARGA PTAR 31",
+            }
+            for k, txt in captions.items():
+                if k in self._kpi_captions:
+                    self._kpi_captions[k].configure(text=txt)
+            max_u = max((ps.utilization_pct for ps in snap.pipe_states.values()), default=0.0)
+            tier_idx = 0 if max_u <= 25 else (1 if max_u <= 50 else (2 if max_u <= 75 else (3 if max_u <= 100 else 4)))
+            self._kpi_cards["max_util"].configure(
+                text=f"{max_u:.1f}%", fg=theme.TIER_TEXT_ON_LIGHT[tier_idx]
+            )
+            self._kpi_cards["critical"].configure(
+                text=str(len(snap.near_capacity_pipe_ids)),
+                fg=theme.STATUS_ERR_LIGHT if snap.near_capacity_pipe_ids else theme.INK_PRIMARY,
+            )
+            self._kpi_cards["overloaded"].configure(
+                text=str(len(snap.overloaded_pipe_ids)),
+                fg=theme.TIER_TEXT_ON_LIGHT[4] if snap.overloaded_pipe_ids else theme.INK_PRIMARY,
+            )
+            self._kpi_cards["ptar"].configure(
+                text=f"{snap.total_sink_discharge_m3s:.4f} m³/s", fg=theme.ACCENT_TEXT_ON_LIGHT
+            )
+
     def _update_clock_label(self, snap: Optional[TimeStepSnapshot] = None) -> None:
         if self.result is None or not self.result.snapshots:
             return
@@ -2964,7 +3033,26 @@ class BicentenarioSewerApp(tk.Tk):
         scen_es = theme.translate_scenario_name(
             cfg.scenario_name, compact=bool(self._player_compact)
         )
-        if self._player_compact:
+        _, _, dur_total = self._global_stress_maps()
+        if self._map_mode == "peak":
+            if self._player_compact:
+                self.lbl_clock.configure(
+                    text=f"Pico 0–{dur_total:.0f}m · {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+                )
+            else:
+                self.lbl_clock.configure(
+                    text=f"Pico máximo · 0–{dur_total:.0f} min  ·  {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+                )
+        elif self._map_mode == "overload_minutes":
+            if self._player_compact:
+                self.lbl_clock.configure(
+                    text=f"Sobrecarga 0–{dur_total:.0f}m · {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+                )
+            else:
+                self.lbl_clock.configure(
+                    text=f"Sobrecarga acumulada · 0–{dur_total:.0f} min  ·  {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+                )
+        elif self._player_compact:
             self.lbl_clock.configure(
                 text=f"t={snap.time_min:.0f}/{cfg.duration_min:.0f}m · {scen_es} ({snap.rain_intensity_mm_h:.0f} mm/h)"
             )
@@ -3001,41 +3089,48 @@ class BicentenarioSewerApp(tk.Tk):
     def _set_map_mode(self, mode: str) -> None:
         if mode not in ("instant", "peak", "overload_minutes"):
             return
+        if mode in ("peak", "overload_minutes"):
+            self._player_pause()
         self._map_mode = mode
         self._apply_map_mode_button_styles(mode)
-        if self.result is not None:
-            peak_step, ov_step, dur_step = self._stress_maps_for_step(self.current_step)
+        if self.result is not None and self.result.snapshots:
+            peak_all, ov_all, dur_total = self._global_stress_maps()
+            snap_cur = self.result.snapshots[self.current_step]
+            canvas_snap = snap_cur if mode == "instant" else self.result.snapshots[-1]
+            self.network_canvas.snapshot = canvas_snap
             self.network_canvas.set_map_mode(
                 mode,
-                peak_util=peak_step,
-                overload_minutes=ov_step,
-                total_duration_min=dur_step,
+                peak_util=peak_all,
+                overload_minutes=ov_all,
+                total_duration_min=dur_total,
             )
-            self._update_legend_counts(self.result.snapshots[self.current_step])
+            self._update_clock_label(snap_cur)
+            self._update_kpi_cards(snap_cur)
+            self._update_legend_counts(snap_cur)
         else:
             self.network_canvas.set_map_mode(mode)
 
     def _update_legend_counts(self, snap: TimeStepSnapshot) -> None:
         counts = [0, 0, 0, 0, 0]
-        peak_step, ov_step, dur_step = self._stress_maps_for_step(self.current_step)
+        peak_all, ov_all, dur_total = self._global_stress_maps()
         if self._map_mode == "overload_minutes" and self.result is not None:
             if self._legend_header_label is not None:
                 self._legend_header_label.configure(
-                    text=f"Sobrecarga acumulada · t ≤ {snap.time_min:.0f} min"
+                    text=f"Sobrecarga acumulada · 0–{dur_total:.0f} min"
                 )
             for idx, (rng, _col, desc) in enumerate(OVERLOAD_PERSISTENCE_LEVELS):
                 if idx < len(self._legend_text_labels):
                     self._legend_text_labels[idx].configure(text=f"{rng} · {desc}")
             for pid in snap.pipe_states:
-                ov_m = ov_step.get(pid, 0.0)
-                tier, _, _ = classify_overload_persistence(ov_m, dur_step)
+                ov_m = ov_all.get(pid, 0.0)
+                tier, _, _ = classify_overload_persistence(ov_m, dur_total)
                 counts[tier] += 1
         else:
             if self._legend_header_label is not None:
                 title = (
                     f"Escala oficial · t = {snap.time_min:.0f} min"
                     if self._map_mode == "instant"
-                    else f"Pico máximo · hasta t = {snap.time_min:.0f} min"
+                    else f"Pico máximo · 0–{dur_total:.0f} min"
                 )
                 self._legend_header_label.configure(text=title)
             short_desc = {"Cercana a capacidad máxima": "Cercana a cap. máx."}
@@ -3046,7 +3141,7 @@ class BicentenarioSewerApp(tk.Tk):
                     )
             if self._map_mode == "peak" and self.result is not None:
                 for pid in snap.pipe_states:
-                    u = peak_step.get(pid, 0.0)
+                    u = peak_all.get(pid, 0.0)
                     counts[classify_utilization(u).tier_index] += 1
             else:
                 for ps in snap.pipe_states.values():
@@ -3059,6 +3154,11 @@ class BicentenarioSewerApp(tk.Tk):
         if self._updating_slider or step == self.current_step:
             return
         self._player_pause()
+        if self._map_mode != "instant":
+            self._map_mode = "instant"
+            self._apply_map_mode_button_styles("instant")
+            self.network_canvas._map_mode = "instant"
+            self.network_canvas._fast_cache_valid = False
         self._set_step(step)
 
     def toggle_play_pause(self) -> None:
@@ -3121,10 +3221,20 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _player_reset(self) -> None:
         self._player_pause()
+        if self._map_mode != "instant":
+            self._map_mode = "instant"
+            self._apply_map_mode_button_styles("instant")
+            self.network_canvas._map_mode = "instant"
+            self.network_canvas._fast_cache_valid = False
         self._set_step(0)
 
     def _player_step(self, delta: int) -> None:
         self._player_pause()
+        if self._map_mode != "instant":
+            self._map_mode = "instant"
+            self._apply_map_mode_button_styles("instant")
+            self.network_canvas._map_mode = "instant"
+            self.network_canvas._fast_cache_valid = False
         self._set_step(self.current_step + delta)
 
     def _schedule_next_frame(self) -> None:
@@ -3979,9 +4089,8 @@ class BicentenarioSewerApp(tk.Tk):
     def _populate_comp_tree(self) -> None:
         for item in self.tree_comp.get_children():
             self.tree_comp.delete(item)
-        compact = bool(self._comp_tree_compact)
         for idx, s in enumerate(self.comparisons):
-            cond = theme.translate_scenario_name(s.condition, compact=compact)
+            cond = theme.translate_scenario_name(s.condition, compact=False)
             self.tree_comp.insert(
                 "",
                 tk.END,
