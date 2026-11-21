@@ -1,6 +1,6 @@
 # Plan Final de Correcciones — Simulación Red de Alcantarillado Ciudad Bicentenario
 
-> **Estado: COMPLETADO Y VERIFICADO** — Las 5 fases del plan han sido ejecutadas e integradas con **40/40 pruebas unitarias aprobadas** (`python -m unittest discover -s tests -v`) y exportación CLI verificada.
+> **Estado: COMPLETADO Y VERIFICADO** — Las 5 fases del plan han sido ejecutadas e integradas con **41/41 pruebas unitarias aprobadas** (`python -m unittest discover -s tests -v`) y exportación CLI verificada.
 
 Plan técnico definitivo ejecutado para resolver los **25 hallazgos** documentados en [AUDITORIA_ERRORES.md](<AUDITORIA_ERRORES.md>) (`E1–E4`, `M1–M10`, `U1–U4`, `D1–D4`), alineando el motor hidráulico, la ingesta de datos, la interfaz gráfica, los reportes y las pruebas con [GuiaDocente.md](<GuiaDocente.md>).
 
@@ -121,6 +121,12 @@ Fase 5: Reportes, pruebas automatizadas, documentación y entrega (reporter.py, 
   - Dibujar tuberías cerradas al 100 % (`is_closed`) con estilo gris punteado y etiqueta `CERRADA`.
   - Unificar el código de color de `>100 %` entre `analysis.py`, `theme.py` y `network_canvas.py`.
 
+### 3.3 Auto-escala proporcional del grafo en pantallas compactas y HiDPI (Opción A)
+- En `src/gui/network_canvas.py`:
+  - Calcular `min_node_dist` entre todos los pares de nodos y eliminar el piso fijo `5.2 px` (`max_safe_r = min_node_dist * 0.30`, piso mínimo `2.8 px`), escalando también grosores de borde, anillos de selección/inundación (`_draw_flood_rings`), separación de extremos y `arrowshape` para evitar solapamientos incluso en ventanas bajas o con zoom alejado (ej. 55 %).
+  - Usar tamaños de fuente en **píxeles exactos** (tamaño negativo en Tkinter) ligados al `node_radius` real en nodos (`-node_font_px`, ocultando el ID interno cuando `node_radius < 5.6 px` manteniendo tooltips), etiquetas de tuberías (`-pipe_font_px`) y placas (`-ptar_font_px`, `-src_font_px`), evitando que el escalado DPI de Windows desborde los textos fuera de los círculos.
+  - Añadir detección de colisiones (`_overlay_boxes`, `_boxes_overlap`, `_box_hits_segment`) para reubicar automáticamente `PTAR Punta Canoa · 31` (o `PTAR · 31`) y las placas `Fuente` sin invadir nodos vecinos, tuberías ni las barras flotantes superior/inferior, reservando sus cajas en `placed_boxes` antes de colocar etiquetas de tuberías.
+
 ---
 
 ## Fase 4 — Correcciones de Interfaz Gráfica (`U1`, `U2`, `U3`, `U4`, `E2` GUI)
@@ -139,9 +145,9 @@ Fase 5: Reportes, pruebas automatizadas, documentación y entrega (reporter.py, 
 - **No modificar** el panel izquierdo **Recorridos** (mantiene limpieza explícita con el botón `Limpiar`).
 
 ### 4.3 Botón y tabla de la pestaña `Comparación` (`U2`)
-- Añadir etiqueta de estado (`Al día · HH:MM:SS (X.XX s)` vs. `Desactualizado`).
+- Añadir etiqueta de estado (`Al día · HH:MM:SS (X.XX s)` vs. `Desactualizado`) y evitar que `_on_right_configure` sobrescriba ese texto cuando ya existen resultados calculados.
 - Sincronizar el botón con `self._comparisons_dirty`: neutro (`Recalcular 5 Escenarios`) cuando está al día, y `primary` (`Recalcular 5 Escenarios *`) cuando cambiaron parámetros; al pulsar, forzar recálculo con feedback inmediato.
-- Añadir columna `Rebose (m³)` y ajustar `_resize_comp_columns` para que `Escenario` nunca recorte `"E3 Lluvia moderada"` ni `"E5 Lluvia extrema"`.
+- Añadir columna `Rebose (m³)` y envolver `tree_comp` en `comp_table_wrap` con scrollbars horizontal (`Light.Horizontal.TScrollbar`) y vertical (`Light.Vertical.TScrollbar`), soporte `<Shift-MouseWheel>` y columnas con `stretch=False` medidas con `tkfont.Font.measure` para mostrar siempre las 8 columnas y nombres completos (`"E3 Lluvia moderada"`, `"E5 Lluvia extrema"`) sin compresión ni recortes.
 
 ### 4.4 Filtros excluyentes y anchos en `Tuberías Críticas` (`U3`)
 - Reemplazar filtros por 4 categorías mutuamente excluyentes alineadas con [GuiaDocente.md](<GuiaDocente.md>):
@@ -151,9 +157,15 @@ Fase 5: Reportes, pruebas automatizadas, documentación y entrega (reporter.py, 
   - `Sobrec. (>100%)`
 - Ampliar columna `Estado` en `_resize_critical_columns` y usar etiquetas completas sin recorte (`Cap. excedida`, `Cercana máx.`, `Alta`, `Moderada`, `Baja`, `Cerrada`).
 
-### 4.5 Selector `Escenario de precipitación` robusto (`U4`)
-- Reemplazar `ttk.Combobox` por un **`tk.Menubutton` + `tk.Menu` estilizado** (visualmente coherente con la paleta `Light`, 100 % libre del bug de `ComboboxPopdownFrame` en blanco en Windows `clam` + HiDPI).
-- Pausar reproducción si `is_playing` está activo al abrir el menú y proteger `<Leave>` de `left_panel` mientras el menú esté desplegado.
+### 4.5 Selectores desplegables robustos (`U4` + ajuste posterior)
+- Reemplazar `ttk.Combobox` por **`_ScenarioMenuButton` (`tk.Menubutton` + `tk.Menu` estilizado)** no solo en `Escenario de precipitación`, sino también en los 3 selectores de opciones de simulación (`Bifurcación`, `Hietograma` y `Reparto fuentes`), eliminando el bug de caja/texto en blanco al hacer doble clic sin seleccionar opción bajo Windows `clam` + HiDPI.
+- Pausar reproducción si `is_playing` está activo al abrir cualquiera de estos menús y proteger `<Leave>` de `left_panel` mientras el menú esté desplegado.
+
+### 4.6 Vistas congeladas globales en `Pico Máximo` y `Minutos en Sobrecarga`
+- En `src/gui/app.py` (`_set_map_mode`, `_global_stress_maps`, `_update_kpi_cards`, `_update_clock_label`, `_update_legend_counts`) y `src/gui/network_canvas.py` (`_update_stamp_label`, tooltips):
+  - Desacoplar `Pico Máximo` y `Minutos en Sobrecarga` del minuto actual del reproductor: al seleccionarlos, **pausan automáticamente** la reproducción (`_player_pause`) y muestran de inmediato el resumen global dinámico calculado por el motor para toda la simulación (`0–duración total`, con `snapshots[-1]`, `result.peak_pipe_utilization` y `result.pipe_overloaded_minutes`), sin obligar a esperar al final de la animación ni perder datos al volver a `t = 0`.
+  - Conservar intacto `current_step` para restaurar exactamente el instante previo al volver a `Instantáneo O(t)`, y retornar automáticamente a `Instantáneo O(t)` al mover el slider o usar `Inicio`, `-1`, `+1` o `Reproducir`.
+  - Sincronizar el reloj superior, las tarjetas KPI, la leyenda izquierda, el sello del canvas y los tooltips con los rótulos y valores globales (`0–90 min`).
 
 ---
 

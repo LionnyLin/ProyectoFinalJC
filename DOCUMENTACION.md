@@ -89,7 +89,7 @@ NetworkDataset (DirectedGraph[46 nodos, 59 aristas] + DrainageBasin + 5 Precipit
 
 ## 2. Análisis Exhaustivo de la Interfaz Gráfica (UI/UX)
 
-La interfaz está construida sobre Tkinter/ttk (`src/gui/app.py`, 4,677 líneas) con gráficos Matplotlib embebidos (`src/gui/charts_panel.py`), un lienzo cartográfico propio (`src/gui/network_canvas.py`), sistema de tokens cromáticos/tipográficos (`src/gui/theme.py`) e iconos vectoriales rasterizados con Pillow (`src/gui/icons.py`).
+La interfaz está construida sobre Tkinter/ttk (`src/gui/app.py`, 4,964 líneas) con gráficos Matplotlib embebidos (`src/gui/charts_panel.py`), un lienzo cartográfico propio (`src/gui/network_canvas.py`), sistema de tokens cromáticos/tipográficos (`src/gui/theme.py`) e iconos vectoriales rasterizados con Pillow (`src/gui/icons.py`).
 
 ### 2.1 Sistema Visual, Tipografía, DPI e Iconografía (`theme.py`, `icons.py`)
 
@@ -128,12 +128,12 @@ Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`
        - `Ingreso pluvial (%)`: rango `0.5–100.0`, inc `0.5`, default `100.0`.
        - `Caudal sanitario (m³/s)`: rango `0.0–0.05`, inc `0.001`, default `0.000`.
      - Botones preset rápidos: `Oficial Guía (100%)` ($\to 100.0\%,\; Q_{\text{san}}=0.0$) y `Calibrado (2.5% + Q_san)` ($\to 2.5\%,\; Q_{\text{san}}=0.003$).
-     - 3 `ttk.Combobox` de modo del modelo (mapeados ES $\leftrightarrow$ clave interna vía `theme.py:185-204`):
-       - `Bifurcación`: `"Proporcional a cap."` (`proportional`) | `"Equitativa"` (`equal`).
-       - `Hietograma`: `"Uniforme (bloque)"` (`uniform`) | `"Triangular"` (`triangular`).
+     - 3 selectores `_ScenarioMenuButton` (`tk.Menubutton` + `tk.Menu` estilizado, inmunes al bug de popdown en blanco bajo Windows `clam` + HiDPI al hacer doble clic sin elegir opción, mapeados ES $\leftrightarrow$ clave interna vía `theme.py:185-204`):
+       - `Bifurcación`: `"Proporcional"` (`proportional`) | `"Equitativa"` (`equal`).
+       - `Hietograma`: `"Uniforme"` (`uniform`) | `"Triangular"` (`triangular`).
        - `Reparto fuentes`: `"Por capacidad"` (`capacity`) | `"Uniforme (1/8)"` (`equal`).
      - Botón primario `Ejecutar simulación`: ejecuta `run_simulation(..., auto_play=True)` y arranca la reproducción desde `t = 0`.
-  2. **Lámina dinámica de Leyenda (`sec_leg`):** muestra los 5 rangos cromáticos y un contador en tiempo real de tuberías por banda. En modos `instant` y `peak` usa `theme.COLOR_SCALE_LEGEND`; en modo `overload_minutes` cambia encabezado a `Sobrecarga acumulada · t ≤ X min` y usa `OVERLOAD_PERSISTENCE_LEVELS`.
+  2. **Lámina dinámica de Leyenda (`sec_leg`):** muestra los 5 rangos cromáticos y un contador de tuberías por banda. En `instant` muestra `Escala oficial · t = X min` (`theme.COLOR_SCALE_LEGEND`); en las vistas congeladas globales muestra `Pico máximo · 0–X min` (`theme.COLOR_SCALE_LEGEND`) y `Sobrecarga acumulada · 0–X min` (`OVERLOAD_PERSISTENCE_LEVELS`).
 
 - **Pestaña `Recorridos` (`app.py:1234-1443`):**
   1. **Lámina *Búsqueda y recorridos*:** entrada `entry_search` (`Ctrl+F`, busca por ID/etiqueta/nota con `search_entities` y centra/selecciona el resultado), `combo_bfs_start` (default `"6"`), `combo_bfs_target` (default `"31"`), botones `BFS`, `DFS`, `Limpiar`, `Animar recorrido` (animación paso a paso: `560 ms` BFS, `340 ms` DFS), `Aguas abajo` (`trace_downstream`) y `Aguas arriba` (`trace_upstream`).
@@ -141,9 +141,9 @@ Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`
 
 #### B. Panel Central (`center_panel`, `app.py:1444-1795`)
 1. **Franja de telemetría (`kpi_header`):**
-   - Fila superior: reloj en píldora oscura (`t = X.X / 90 min · Escenario (mm/h)`) y checkboxes `% Util.` e `IDs` (controlan `show_util_labels` y `show_pipe_labels` en `NetworkCanvas`).
-   - Fila de 4 tarjetas KPI: `UTILIZACIÓN MÁX.`, `CRÍTICAS (>75–100%)`, `SOBRECARGA (>100%)` y `DESCARGA PTAR 31` (en $\text{m}^3/\text{s}$).
-2. **Selector de modo cartográfico (`map_mode_bar`):** selector segmentado de 3 botones (`Instantáneo O(t)`, `Pico Máximo`, `Minutos en Sobrecarga`) con adaptación de texto en 3 anchos (`>=660`, `>=480`, `<480`).
+   - Fila superior: píldora oscura de contexto (`t = X.X / 90 min · Escenario` en `Instantáneo O(t)`, o `Pico máximo · 0–90 min` / `Sobrecarga acumulada · 0–90 min` en vistas globales) y checkboxes `% Util.` e `IDs` (controlan `show_util_labels` y `show_pipe_labels` en `NetworkCanvas`).
+   - Fila de 4 tarjetas KPI sincronizadas con el modo activo: en `Instantáneo O(t)` muestran `UTILIZACIÓN MÁX.`, `CRÍTICAS (>75–100%)`, `SOBRECARGA (>100%)` y `DESCARGA PTAR 31` ($	ext{m}^3/	ext{s}$); en `Pico Máximo` muestran los picos globales `0–duración total` (`PICO MÁX. UTIL.`, `CRÍTICAS PICO`, `SOBRECARGA PICO`, `PICO DESCARGA PTAR 31`); y en `Minutos en Sobrecarga` muestran `MÁX. SOBREC. ACUM.`, `TUBERÍAS >0 min >100%`, `COLAPSO CRÓNICO (>75%)` y `VOLUMEN PTAR 31` ($	ext{m}^3$).
+2. **Selector de modo cartográfico (`map_mode_bar`):** selector segmentado de 3 botones (`Instantáneo O(t)`, `Pico Máximo`, `Minutos en Sobrecarga`) con adaptación de texto en 3 anchos (`>=660`, `>=480`, `<480`). `Pico Máximo` y `Minutos en Sobrecarga` operan como **vistas diagnósticas congeladas globales (`0–duración total`)**: al seleccionarlos pausan automáticamente la reproducción, muestran de inmediato los resultados completos calculados por el motor (`peak_pipe_utilization`, `pipe_overloaded_minutes`, `snapshots[-1]`) sin depender del minuto actual del slider ni perder datos al volver a `t = 0`, y conservan `current_step` para restaurarlo al regresar a `Instantáneo O(t)` (o automáticamente al usar `Inicio`, `-1`, `+1`, `Reproducir` o el slider).
 3. **Lienzo `NetworkCanvas` + Ficha flotante `_tour_card`:** esta última implementa el **Recorrido Guiado (4 Hallazgos)** (`_build_tour_stops`, `app.py:4145-4649`): define 4 paradas temporales adaptadas a cada escenario (`t = 5, 25, 40/50, 65 min`), resalta el subgrafo relevante, atenúa el resto, enfoca la cámara evitando la ficha (`left_reserve_px`) y muestra métricas clave con botones `Anterior`, `Siguiente hallazgo` y `Cerrar`.
 4. **Reproductor temporal (`player_frame`):** botones `Inicio` (`Home`), `-1` (`←`), `Reproducir/Pausar` (`Espacio`), `+1` (`→`), selector `Velocidad` (`1x: 420 ms`, `2x: 210 ms`, `5x: 85 ms`, `10x: 40 ms`), indicador `Balance masa OK · Err X.XXe-XX m³`, y `timeline_slider` horizontal (`0` a `n_snaps - 1`).
 
@@ -155,11 +155,11 @@ Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`
    - Área `txt_inspector`: ficha técnica del nodo o tubería seleccionado + bloque `RESUMEN DEL ESCENARIO`.
 2. **Pestaña `Tuberías Críticas`:** 4 radiobuttons mutuamente excluyentes `Todas`, `Resto (≤75%)`, `Críticas (>75–100%)` y `Sobrec. (>100%)`; `ttk.Treeview` (`tree_critical`) alimentada por `rank_critical_pipes()`. Soporta selección bidireccional con el grafo y doble clic para centrar cámara.
 3. **Pestaña `Evolución`:** aloja `TemporalChartsPanel`.
-4. **Pestaña `Comparación`:** botón con estado de sincronización `Recalcular 5 Escenarios` (se resalta cuando cambian parámetros, muestra timestamp y duración en `lbl_comp_hint`, y también se ejecuta automáticamente al entrar a la pestaña si `_comparisons_dirty`), tabla `tree_comp` con columna `Rebose (m³)` (doble clic activa el escenario en la simulación principal) y panel `ComparisonChartsPanel`.
+4. **Pestaña `Comparación`:** botón con estado de sincronización `Recalcular 5 Escenarios` (se resalta cuando cambian parámetros, conserva timestamp y duración en `lbl_comp_hint` sin sobrescribirse al redimensionar, y también se ejecuta automáticamente al entrar a la pestaña si `_comparisons_dirty`), tabla `tree_comp` envuelta en `comp_table_wrap` con scrollbars horizontal (`Light.Horizontal.TScrollbar`) y vertical (`Light.Vertical.TScrollbar`), soporte `<Shift-MouseWheel>` y columnas `stretch=False` medidas con `tkfont.Font.measure` para mostrar las 8 columnas (incluyendo `Rebose (m³)`) y nombres completos de escenario sin recortes (doble clic activa el escenario en la simulación principal), más el panel `ComparisonChartsPanel`.
 
 ### 2.4 Renderizado del Grafo (`src/gui/network_canvas.py`)
 
-`NetworkCanvas` (1,785 líneas) hereda de `tk.Canvas` sobre fondo `#FFFFE3`.
+`NetworkCanvas` (1,947 líneas) hereda de `tk.Canvas` sobre fondo `#FFFFE3`.
 
 - **Proyección de coordenadas (`_world_to_screen`, `network_canvas.py:928-937`):**
   Con ancho `w`, alto `h`, márgenes adaptativos `pad_x = max(28, min(68, 0.08 * w))` y `pad_y = max(32, min(64, 0.11 * h))`, factor `scale = min(w - 2*pad_x, h - 2*pad_y)` y offsets centrados `off_x`, `off_y`, cada coordenada normalizada $(x, y) \in [0, 1]^2$ se transforma mediante:
@@ -167,8 +167,8 @@ Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`
   $$y_s = \left(\text{off}_y + y \cdot \text{scale} - \frac{h}{2}\right) \cdot \text{zoom} + \frac{h}{2} + \text{pan}_y$$
   con `zoom` acotado en `[0.55, 4.5]`.
 - **Dibujo de nodos y rebose/almacenamiento (`network_canvas.py:1594-1781`):**
-  - Radio dinámico: $r_{\text{node}} = \max\bigl(5.2, \min(16.5,\; 10.4 \cdot s \cdot \sqrt{\text{zoom}} \cdot \text{dpi\_boost},\; 0.24 \cdot d_{\min})\bigr)$, incrementado en `+3.5 px` para el sumidero (`node_type == "sink"`).
-  - Colores base: **Fuente** (`#6D8196`, borde `#3E4F60`, texto `#FFFFE3`, etiqueta `"Fuente"`), **Pozo** (`#FFFFE3`, borde `#4A4A4A`, texto `#4A4A4A`), **Sumidero PTAR** (`#4A4A4A`, borde `#6D8196`, texto `#FFFFE3`, insignia `"PTAR Punta Canoa · 31"`).
+  - Radio dinámico proporcional sin piso rígido: calcula `min_node_dist` ($d_{\min}$) entre todo par de nodos y fija $r_{\text{node}} = \max\bigl(2.8, \min(16.5,\; 10.4 \cdot s \cdot \sqrt{\text{zoom}} \cdot \text{dpi\_boost},\; 0.30 \cdot d_{\min})\bigr)$ (incrementado proporcionalmente en el sumidero `node_type == "sink"`), escalando también grosores, anillos, separación de extremos y `arrowshape`. Los textos internos de nodos, tuberías y placas usan tamaños en **píxeles exactos** (negativos en Tkinter) inmunes al escalado DPI de Windows, ocultando el ID interno cuando $r_{\text{node}} < 5.6\;\text{px}$ (salvo sumidero o nodo seleccionado) manteniendo siempre el tooltip.
+  - Colores base y placas sin colisión: **Fuente** (`#6D8196`, borde `#3E4F60`, texto `#FFFFE3`, insignia `"Fuente"`), **Pozo** (`#FFFFE3`, borde `#4A4A4A`, texto `#4A4A4A`), **Sumidero PTAR** (`#4A4A4A`, borde `#6D8196`, texto `#FFFFE3`, insignia `"PTAR Punta Canoa · 31"` con respaldo compacto `"PTAR · 31"`). Las placas se ubican mediante detección de colisiones (`_overlay_boxes`, `_boxes_overlap`, `_box_hits_segment`) evitando nodos vecinos, tuberías y barras flotantes antes de colocar etiquetas de tuberías.
   - **Saturación / rebose nodal (`_draw_flood_rings`, `network_canvas.py:854-888`):** cuando `surcharge_vol = stored_volume_m3 + surface_flooding_m3 > 1e-3`, dibuja **1 o 2 anillos concéntricos** (`flood_ring`) alrededor del pozo con radio creciente logarítmicamente `extra = min(14.0, (4.5 + 3.6 * log10(1.0 + surcharge_vol)) * scale * sqrt(zoom))`: tono naranja `#f97316` si el volumen es moderado ($\le 0.5\;\text{m}^3$ sin rebose superficial), o rojo `#ef4444` / doble anillo `#dc2626` + `#FCA5A5` cuando hay rebose superficial o sobrecarga severa.
 - **Dibujo de aristas dirigidas e intervenciones (`network_canvas.py:1244-1592`):**
   - Se dibujan como líneas con flecha terminal (`arrow=tk.LAST`) recortadas en ambos extremos por `node_radius + 1.5` y `node_radius + 3.0`.
@@ -225,7 +225,7 @@ Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`
 5. **Presets de ingreso y calibración en GUI:**
    - `Oficial Guía (100%)` *(predeterminado)*: `ingress_factor = 1.0`, `dry_weather_flow_per_source_m3s = 0.0`.
    - `Calibrado (2.5% + Q_san)` *(análisis de sensibilidad)*: `ingress_factor = 0.025`, `dry_weather_flow_per_source_m3s = 0.003`.
-6. **Modos de lectura cartográfica (`network_canvas.py`):** `"instant"` (utilización en $t$), `"peak"` (máximo histórico hasta $t$) y `"overload_minutes"` (minutos acumulados con utilización $> 100%$ hasta $t$).
+6. **Modos de lectura cartográfica (`network_canvas.py`):** `"instant"` (utilización instantánea en $t$), `"peak"` (vista congelada global del pico máximo en $0\text{–}t_{\text{total}}$) y `"overload_minutes"` (vista congelada global de minutos acumulados con utilización $> 100\%$ en $0\text{–}t_{\text{total}}$).
 7. **Intervenciones en vivo (`PipeIntervention`):** obstrucción parcial/total ($0\%–100\%$) y cambio de diámetro comercial por tubería sin mutar el `DirectedGraph` base.
 8. **Modos de ejecución:** aplicación interactiva GUI (por defecto en `main.py`) o generación batch por CLI (`--report`, `--report-docx`, `--technical-docx`).
 
