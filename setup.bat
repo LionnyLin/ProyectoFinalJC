@@ -48,7 +48,7 @@ if errorlevel 1 (
 )
 
 echo [3/3] Verificando modulos del entorno...
-"%VENV_PY%" -c "import tkinter, openpyxl, matplotlib, docx, lxml, PIL; print('Dependencias verificadas correctamente.')"
+"%VENV_PY%" -c "import tkinter, openpyxl, matplotlib, docx; print('Dependencias verificadas correctamente.')"
 if errorlevel 1 (
     echo [ERROR] Faltan modulos requeridos ^(verifica tkinter o dependencias^).
     exit /b 1

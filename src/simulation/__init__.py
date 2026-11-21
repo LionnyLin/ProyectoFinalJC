@@ -1,31 +1,30 @@
-"""Paquete de simulación temporal, comparación de escenarios y reportes."""
+"""Motor de simulación temporal, comparación multiescenario y reportes RF12."""
 
 from .models import (
-    SimulationConfig,
-    PipeIntervention,
-    PipeStepState,
     NodeStepState,
-    TimeStepSnapshot,
+    PipeStepState,
+    SimulationConfig,
     SimulationResult,
-    resolve_pipe_hydraulics,
+    TimeStepSnapshot,
 )
 from .engine import SewerSimulationEngine
 from .comparison import ScenarioSummary, compare_all_scenarios
-from .reporter import generate_markdown_report
-from .docx_exporter import generate_docx_report, generate_technical_document_docx
+from .reporter import (
+    MODEL_ASSUMPTIONS_TEXT,
+    generate_docx_report,
+    generate_markdown_report,
+)
 
 __all__ = [
     "SimulationConfig",
-    "PipeIntervention",
     "PipeStepState",
     "NodeStepState",
     "TimeStepSnapshot",
     "SimulationResult",
-    "resolve_pipe_hydraulics",
     "SewerSimulationEngine",
     "ScenarioSummary",
     "compare_all_scenarios",
+    "MODEL_ASSUMPTIONS_TEXT",
     "generate_markdown_report",
     "generate_docx_report",
-    "generate_technical_document_docx",
 ]

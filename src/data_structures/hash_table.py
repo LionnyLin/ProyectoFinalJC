@@ -1,16 +1,12 @@
-"""Tabla hash propia con encadenamiento separado y redimensionamiento dinámico."""
+"""Tabla hash propia con encadenamiento separado y capacidad potencia de 2."""
 
-from typing import Any, Generic, Iterator, List, Optional, Tuple, TypeVar
+from typing import Any, Generic, Iterator, List, Tuple, TypeVar
 
 K = TypeVar("K")
 V = TypeVar("V")
 
-_SENTINEL = object()
-
 
 class _Entry(Generic[K, V]):
-    """Par clave-valor almacenado en un bucket de la tabla hash."""
-
     __slots__ = ("key", "value")
 
     def __init__(self, key: K, value: V) -> None:
@@ -18,60 +14,75 @@ class _Entry(Generic[K, V]):
         self.value = value
 
 
+def _next_power_of_two(n: int) -> int:
+    cap = 16
+    while cap < n:
+        cap <<= 1
+    return cap
+
+
 class HashTable(Generic[K, V]):
-    """Tabla hash implementada desde cero para consulta O(1) promedio por identificador."""
+    """Tabla hash desde cero (capacidad 2^k, máscara de bits) O(1) promedio."""
 
     DEFAULT_CAPACITY = 16
     LOAD_FACTOR_THRESHOLD = 0.75
+    __slots__ = ("_buckets", "_mask", "_size")
 
     def __init__(self, initial_capacity: int = DEFAULT_CAPACITY) -> None:
-        capacity = max(8, initial_capacity)
+        capacity = _next_power_of_two(initial_capacity)
         self._buckets: List[List[_Entry[K, V]]] = [[] for _ in range(capacity)]
-        self._size = 0
-
-    def _bucket_index(self, key: K, capacity: Optional[int] = None) -> int:
-        cap = capacity if capacity is not None else len(self._buckets)
-        return (hash(key) & 0x7FFFFFFF) % cap
+        self._mask: int = capacity - 1
+        self._size: int = 0
 
     def _rehash(self, new_capacity: int) -> None:
+        new_mask = new_capacity - 1
         new_buckets: List[List[_Entry[K, V]]] = [[] for _ in range(new_capacity)]
         for bucket in self._buckets:
             for entry in bucket:
-                idx = self._bucket_index(entry.key, new_capacity)
-                new_buckets[idx].append(entry)
+                new_buckets[hash(entry.key) & new_mask].append(entry)
         self._buckets = new_buckets
+        self._mask = new_mask
+
+    def _append_new(self, bucket: List[_Entry[K, V]], key: K, value: V) -> None:
+        if (self._size + 1) > len(self._buckets) * self.LOAD_FACTOR_THRESHOLD:
+            self._rehash(len(self._buckets) << 1)
+            bucket = self._buckets[hash(key) & self._mask]
+        bucket.append(_Entry(key, value))
+        self._size += 1
 
     def put(self, key: K, value: V) -> None:
-        """Inserta o actualiza el valor asociado a `key`."""
-        if (self._size + 1) / len(self._buckets) > self.LOAD_FACTOR_THRESHOLD:
-            self._rehash(len(self._buckets) * 2)
-
-        idx = self._bucket_index(key)
-        bucket = self._buckets[idx]
+        bucket = self._buckets[hash(key) & self._mask]
         for entry in bucket:
             if entry.key == key:
                 entry.value = value
                 return
-        bucket.append(_Entry(key, value))
-        self._size += 1
+        self._append_new(bucket, key, value)
+
+    def add(self, key: K, delta: float) -> float:
+        """Incrementa un acumulador numérico (o lo crea) en una sola búsqueda de bucket."""
+        bucket = self._buckets[hash(key) & self._mask]
+        for entry in bucket:
+            if entry.key == key:
+                new_val = entry.value + delta  # type: ignore[operator]
+                entry.value = new_val
+                return new_val
+        self._append_new(bucket, key, delta)  # type: ignore[arg-type]
+        return delta
 
     def get(self, key: K, default: Any = None) -> Any:
-        """Retorna el valor asociado a `key` o `default` si no existe."""
-        idx = self._bucket_index(key)
-        for entry in self._buckets[idx]:
+        for entry in self._buckets[hash(key) & self._mask]:
             if entry.key == key:
                 return entry.value
         return default
 
     def contains(self, key: K) -> bool:
-        """Indica si `key` está presente en la tabla."""
-        idx = self._bucket_index(key)
-        return any(entry.key == key for entry in self._buckets[idx])
+        for entry in self._buckets[hash(key) & self._mask]:
+            if entry.key == key:
+                return True
+        return False
 
     def remove(self, key: K) -> V:
-        """Elimina `key` y retorna su valor; lanza KeyError si no existe."""
-        idx = self._bucket_index(key)
-        bucket = self._buckets[idx]
+        bucket = self._buckets[hash(key) & self._mask]
         for i, entry in enumerate(bucket):
             if entry.key == key:
                 bucket.pop(i)
@@ -79,48 +90,33 @@ class HashTable(Generic[K, V]):
                 return entry.value
         raise KeyError(key)
 
-    def clear(self) -> None:
-        """Vacía la tabla hash conservando una capacidad base."""
-        self._buckets = [[] for _ in range(self.DEFAULT_CAPACITY)]
-        self._size = 0
-
-    def keys(self) -> List[K]:
-        """Retorna todas las claves almacenadas."""
-        return [entry.key for bucket in self._buckets for entry in bucket]
-
-    def values(self) -> List[V]:
-        """Retorna todos los valores almacenados."""
-        return [entry.value for bucket in self._buckets for entry in bucket]
-
-    def items(self) -> List[Tuple[K, V]]:
-        """Retorna pares (clave, valor)."""
-        return [(entry.key, entry.value) for bucket in self._buckets for entry in bucket]
-
     def setdefault(self, key: K, default: V) -> V:
-        """Retorna el valor de `key` si existe; en caso contrario inserta y retorna `default`."""
-        existing = self.get(key, _SENTINEL)
-        if existing is not _SENTINEL:
-            return existing
-        self.put(key, default)
+        bucket = self._buckets[hash(key) & self._mask]
+        for entry in bucket:
+            if entry.key == key:
+                return entry.value
+        self._append_new(bucket, key, default)
         return default
 
+    def clear(self) -> None:
+        self._buckets = [[] for _ in range(self.DEFAULT_CAPACITY)]
+        self._mask = self.DEFAULT_CAPACITY - 1
+        self._size = 0
+
+    def keys(self) -> List[K]: return [e.key for b in self._buckets for e in b]
+    def values(self) -> List[V]: return [e.value for b in self._buckets for e in b]
+    def items(self) -> List[Tuple[K, V]]: return [(e.key, e.value) for b in self._buckets for e in b]
+    def __len__(self) -> int: return self._size
+    def __contains__(self, key: object) -> bool: return self.contains(key)  # type: ignore[arg-type]
+
     def __getitem__(self, key: K) -> V:
-        val = self.get(key, _SENTINEL)
-        if val is _SENTINEL:
-            raise KeyError(key)
-        return val
+        for entry in self._buckets[hash(key) & self._mask]:
+            if entry.key == key:
+                return entry.value
+        raise KeyError(key)
 
-    def __setitem__(self, key: K, value: V) -> None:
-        self.put(key, value)
-
-    def __delitem__(self, key: K) -> None:
-        self.remove(key)
-
-    def __contains__(self, key: object) -> bool:
-        return self.contains(key)  # type: ignore[arg-type]
-
-    def __len__(self) -> int:
-        return self._size
+    def __setitem__(self, key: K, value: V) -> None: self.put(key, value)
+    def __delitem__(self, key: K) -> None: self.remove(key)
 
     def __iter__(self) -> Iterator[K]:
         for bucket in self._buckets:

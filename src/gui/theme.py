@@ -1,275 +1,166 @@
-"""Sistema de diseño visual — Lámina Cartográfica de Archivo Hidráulico (#4A4A4A, #CBCBCB, #FFFFE3, #6D8196)."""
+"""Sistema de diseño visual — Lámina Cartográfica de Archivo Hidráulico."""
+
+from __future__ import annotations
 
 import ctypes
 import os
 import tkinter as tk
-from tkinter import font as tkfont
-from typing import Dict, Tuple
+from tkinter import font as tkfont, ttk
+from typing import Dict, List, Tuple
 
-# Paleta principal solicitada
-PALETTE_GRAPHITE = "#4A4A4A"
-PALETTE_SILVER = "#CBCBCB"
-PALETTE_IVORY = "#FFFFE3"
-PALETTE_SLATE = "#6D8196"
+# Paleta base
+PALETTE_GRAPHITE, PALETTE_SILVER, PALETTE_IVORY, PALETTE_SLATE = "#4A4A4A", "#CBCBCB", "#FFFFE3", "#6D8196"
 
-# Superficies del Shell superior y consola de bitácora (Grafito #4A4A4A)
-SHELL_BG = PALETTE_GRAPHITE
-SHELL_SURFACE = "#3D3D3D"
-SHELL_ELEVATED = "#595959"
-SHELL_HOVER = "#666666"
-SHELL_BORDER = "#383838"
-SHELL_TEXT = PALETTE_IVORY
-SHELL_TEXT_SECONDARY = "#EFEFD2"
-SHELL_TEXT_MUTED = PALETTE_SILVER
+# Superficies
+SHELL_BG, SHELL_SURFACE, SHELL_ELEVATED, SHELL_HOVER, SHELL_BORDER = "#4A4A4A", "#3D3D3D", "#595959", "#666666", "#383838"
+SHELL_TEXT, SHELL_TEXT_SECONDARY, SHELL_TEXT_MUTED = "#FFFFE3", "#EFEFD2", "#CBCBCB"
+DOCK_BG, DOCK_HOVER, DOCK_BORDER, DOCK_DIVIDER = "#CBCBCB", "#BCBCBC", "#4A4A4A", "#AFAFAF"
+PAPER_BG, PAPER_SUBTLE, PAPER_ALT_ROW, PAPER_HOVER = "#FFFFE3", "#F2F2D5", "#F7F7DA", "#E6E8DA"
+PAPER_BORDER, PAPER_RULE, INK_PRIMARY, INK_MUTED = "#CBCBCB", "#4A4A4A", "#4A4A4A", "#5A6570"
+ACCENT_PRIMARY, ACCENT_HOVER, ACCENT_TEXT, ACCENT_SOFT, ACCENT_INK = "#6D8196", "#5A6C80", "#495B6E", "#E4E8DF", "#FFFFE3"
+CANVAS_BG, CANVAS_GRID_MINOR, CANVAS_GRID_MAJOR = "#FFFFE3", "#F1F1D3", "#DADABD"
 
-# Superficie estructural de muelles y marcos (Plata Mineral #CBCBCB)
-DOCK_BG = PALETTE_SILVER
-DOCK_HOVER = "#BCBCBC"
-DOCK_BORDER = PALETTE_GRAPHITE
-DOCK_DIVIDER = "#AFAFAF"
+# Nodos y tuberías
+NODE_SOURCE_FILL, NODE_SOURCE_OUTLINE, NODE_SOURCE_TEXT = "#4A4A4A", "#6D8196", "#FFFFE3"
+NODE_SINK_FILL, NODE_SINK_OUTLINE, NODE_SINK_TEXT = "#6D8196", "#4A4A4A", "#FFFFE3"
+NODE_MANHOLE_FILL, NODE_MANHOLE_OUTLINE, NODE_MANHOLE_TEXT = "#FFFFE3", "#4A4A4A", "#4A4A4A"
+PIPE_IDLE_COLOR, HIGHLIGHT_PATH_COLOR, SELECTED_HALO = "#6D8196", "#6D8196", "#4A4A4A"
+OVERLOAD_RING_COLOR, OVERLOAD_RING_SEVERE = "#EF4444", "#991B1B"
 
-# Superficie de dibujo técnico (Lienzo del grafo en Vitela #FFFFE3)
-CANVAS_BG = PALETTE_IVORY
-CANVAS_GRID_MINOR = "#F1F1D3"
-CANVAS_GRID_MAJOR = "#DADABD"
-CANVAS_BORDER = PALETTE_GRAPHITE
-CANVAS_FLOAT_BG = PALETTE_GRAPHITE
-CANVAS_FLOAT_FG = PALETTE_IVORY
-CANVAS_FLOAT_HOVER = "#5E5E5E"
-CANVAS_FLOAT_BORDER = PALETTE_SLATE
-
-# Superficies de lámina editorial (Tarjetas, inspector, tablas, reproductor, gráficas)
-PAPER_BG = PALETTE_IVORY
-PAPER_SUBTLE = "#F2F2D5"
-PAPER_ALT_ROW = "#F7F7DA"
-PAPER_HOVER = "#E6E8DA"
-PAPER_BORDER = PALETTE_SILVER
-PAPER_RULE = PALETTE_GRAPHITE
-INK_PRIMARY = PALETTE_GRAPHITE
-INK_SECONDARY = "#4A4A4A"
-INK_MUTED = "#5A6570"
-
-# Azul Pizarra (#6D8196) — Foco interactivo, CTA primario, pestaña activa y rutas BFS/DFS
-ACCENT_PRIMARY = PALETTE_SLATE
-ACCENT_HOVER = "#5A6C80"           # >= 4.9:1 con texto #FFFFE3
-ACCENT_TEXT_ON_LIGHT = "#495B6E"     # >= 6.2:1 sobre #FFFFE3
-ACCENT_SOFT = "#E4E8DF"              # Tinte suave pizarra sobre vitela
-ACCENT_INK = PALETTE_IVORY
-ACCENT_ON_DARK = PALETTE_SLATE
-ACCENT_ON_DARK_HOVER = "#7D91A6"
-ACCENT_ON_DARK_INK = PALETTE_IVORY
-
-# Nodos y aristas del grafo
-NODE_SOURCE_FILL = PALETTE_GRAPHITE
-NODE_SOURCE_BORDER = PALETTE_SLATE
-NODE_SOURCE_TEXT = PALETTE_IVORY
-NODE_SINK_FILL = PALETTE_SLATE
-NODE_SINK_BORDER = PALETTE_GRAPHITE
-NODE_SINK_TEXT = PALETTE_IVORY
-NODE_MANHOLE_FILL = PALETTE_IVORY
-NODE_MANHOLE_BORDER = PALETTE_GRAPHITE
-NODE_MANHOLE_TEXT = PALETTE_GRAPHITE
-NODE_SURCHARGE_RING = "#EF4444"
-NODE_SURCHARGE_RING_DEEP = "#991B1B"
-
-PIPE_IDLE_COLOR = PALETTE_SLATE
-PIPE_HIGHLIGHT_PATH = PALETTE_SLATE
-PIPE_HIGHLIGHT_HALO = PALETTE_SILVER
-PIPE_SELECTED_HALO = PALETTE_GRAPHITE
-PIPE_OVERLOAD_HALO = "#FCA5A5"
-
-STATUS_OK_LIGHT = "#15803D"
-STATUS_OK_DARK = "#86EFAC"
-STATUS_WARN_LIGHT = "#9A3412"
-STATUS_ERR_LIGHT = "#B91C1C"
-
-# Escala oficial de utilización (Sección 7 — preservada intacta)
-COLOR_SCALE_LEGEND = [
-    ("0–25 %", "#22c55e", "Baja utilización"),
-    (">25–50 %", "#eab308", "Utilización moderada"),
-    (">50–75 %", "#f97316", "Utilización alta"),
-    (">75–100 %", "#ef4444", "Cercana a capacidad máxima"),
-    (">100 %", "#991b1b", "Capacidad excedida"),
+# Escala oficial 5 colores (PDF Sección 7)
+COLOR_SCALE_LEGEND: List[Tuple[str, str, str]] = [
+    ("0–25 %", "#22c55e", "Baja"),
+    (">25–50 %", "#eab308", "Moderada"),
+    (">50–75 %", "#f97316", "Alta"),
+    (">75–100 %", "#ef4444", "Cercana máx."),
+    (">100 %", "#991b1b", "Excedida"),
 ]
+TIER_TEXT_ON_LIGHT: Dict[str, str] = {
+    "#22c55e": "#15803d", "#eab308": "#854d0e", "#f97316": "#c2410c",
+    "#ef4444": "#dc2626", "#991b1b": "#991b1b",
+}
 
-# Colores de texto legibles sobre fondo vitela #FFFFE3 por nivel de utilización
-TIER_TEXT_ON_LIGHT = [
-    "#15803d",
-    "#854d0e",
-    "#c2410c",
-    "#dc2626",
-    "#991b1b",
-]
-
-# Umbrales responsivos de ventana
-BREAKPOINT_COMPACT = 940
-BREAKPOINT_MEDIUM = 1220
-BREAKPOINT_SHORT = 650
-
-# Diccionarios de localización integral al español para la capa GUI
+# Traducciones al español
 SCENARIO_ES_MAP: Dict[str, str] = {
-    "Dry weather": "Tiempo seco",
-    "Light rain": "Lluvia ligera",
-    "Moderate rain": "Lluvia moderada",
-    "Heavy rain": "Lluvia fuerte",
-    "Extreme rain": "Lluvia extrema",
+    "Dry weather": "Tiempo seco", "Light rain": "Lluvia ligera",
+    "Moderate rain": "Lluvia moderada", "Heavy rain": "Lluvia fuerte", "Extreme rain": "Lluvia extrema",
 }
-
-SCENARIO_ES_SHORT_MAP: Dict[str, str] = {
-    "Dry weather": "Seco",
-    "Light rain": "Ligera",
-    "Moderate rain": "Mod.",
-    "Heavy rain": "Fuerte",
-    "Extreme rain": "Extrema",
+SCENARIO_SHORT_ES: Dict[str, str] = {
+    "Dry weather": "Seco", "Light rain": "Ligera",
+    "Moderate rain": "Mod.", "Heavy rain": "Fuerte", "Extreme rain": "Extrema",
 }
+SPLIT_RULE_TO_ES: Dict[str, str] = {"proportional": "Proporcional", "equal": "Equitativa"}
+SPLIT_RULE_FROM_ES: Dict[str, str] = {"Proporcional": "proportional", "Equitativa": "equal"}
+SOURCE_DIST_TO_ES: Dict[str, str] = {"capacity": "Por capacidad", "equal": "Uniforme (1/8)"}
+SOURCE_DIST_FROM_ES: Dict[str, str] = {"Por capacidad": "capacity", "Uniforme (1/8)": "equal"}
 
-SPLIT_RULE_TO_ES: Dict[str, str] = {
-    "proportional": "Proporcional",
-    "equal": "Equitativa",
-}
-ES_TO_SPLIT_RULE: Dict[str, str] = {v: k for k, v in SPLIT_RULE_TO_ES.items()}
-
-HYETOGRAPH_TO_ES: Dict[str, str] = {
-    "uniform": "Uniforme",
-    "triangular": "Triangular",
-}
-ES_TO_HYETOGRAPH: Dict[str, str] = {v: k for k, v in HYETOGRAPH_TO_ES.items()}
-
-SOURCE_DIST_TO_ES: Dict[str, str] = {
-    "capacity": "Por capacidad",
-    "equal": "Uniforme (1/8)",
-}
-ES_TO_SOURCE_DIST: Dict[str, str] = {v: k for k, v in SOURCE_DIST_TO_ES.items()}
-
-
-def translate_scenario_name(condition: str, compact: bool = False) -> str:
-    """Traduce el nombre del escenario del dataset al español para la interfaz."""
-    mapping = SCENARIO_ES_SHORT_MAP if compact else SCENARIO_ES_MAP
-    return mapping.get(condition, condition)
-
-
-def format_scenario_display(scenario_id: int, condition: str, intensity_mm_h: float) -> str:
-    """Formatea la etiqueta visible del escenario en español."""
-    es_name = translate_scenario_name(condition, compact=False)
-    return f"Esc. {scenario_id}: {es_name} ({intensity_mm_h:.0f} mm/h)"
-
-
-# Aliases de compatibilidad
-BG_DARK = SHELL_BG
-BG_PANEL = PAPER_BG
-BG_CARD = DOCK_BG
-BG_CANVAS = CANVAS_BG
-BORDER_COLOR = PAPER_RULE
-ACCENT_BLUE = ACCENT_PRIMARY
-ACCENT_GOLD = ACCENT_ON_DARK
-TEXT_PRIMARY = INK_PRIMARY
-TEXT_SECONDARY = INK_SECONDARY
-TEXT_MUTED = INK_MUTED
-
-_FONTS_REGISTERED = False
 _DPI_AWARENESS_SET = False
+_FONTS_REGISTERED = False
+
+
+def translate_scenario_name(condition: str, short: bool = False) -> str:
+    """Traduce la condición climática del dataset al español."""
+    return (SCENARIO_SHORT_ES if short else SCENARIO_ES_MAP).get(condition, condition)
+
+
+def format_scenario_label(scenario_id: int, condition: str, intensity_mm_h: float) -> str:
+    """Formatea la etiqueta visible del escenario en español."""
+    return f"Esc. {scenario_id}: {translate_scenario_name(condition)} ({intensity_mm_h:g} mm/h)"
 
 
 def enable_dpi_awareness() -> None:
-    """Activa DPI awareness nativo en Windows antes de crear Tk para evitar escalado borroso."""
+    """Activa DPI awareness nativo en Windows sin afectar Linux/macOS."""
     global _DPI_AWARENESS_SET
     if _DPI_AWARENESS_SET or os.name != "nt":
         return
     _DPI_AWARENESS_SET = True
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
+    for fn in (lambda: ctypes.windll.shcore.SetProcessDpiAwareness(1),
+               lambda: ctypes.windll.user32.SetProcessDPIAware()):
         try:
-            ctypes.windll.user32.SetProcessDPIAware()
+            fn()
+            return
         except Exception:
-            pass
+            continue
 
 
-def resolve_dpi_scale(root: tk.Misc) -> float:
-    """Retorna el factor de escala DPI respecto a 96 DPI base (mínimo 1.0)."""
-    try:
-        dpi = float(root.winfo_fpixels("1i"))
-        if dpi > 0.0:
-            return max(1.0, min(3.0, dpi / 96.0))
-    except Exception:
-        pass
-    return 1.0
-
-
-def _register_local_inter_fonts() -> bool:
-    """Registra archivos de fuentes en assets/fonts/ para títulos en Windows y Matplotlib."""
+def register_local_fonts() -> None:
+    """Registra fuentes locales en assets/fonts/ para Matplotlib y Win32 GDI."""
     global _FONTS_REGISTERED
-    fonts_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "assets", "fonts")
-    )
     if _FONTS_REGISTERED:
-        return os.path.isdir(fonts_dir)
+        return
     _FONTS_REGISTERED = True
-
+    fonts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "assets", "fonts"))
     if not os.path.isdir(fonts_dir):
-        return False
-
-    FR_PRIVATE = 0x10
+        return
     try:
         from matplotlib import font_manager
     except Exception:
         font_manager = None
-
-    registered = False
-    for fname in os.listdir(fonts_dir):
-        if fname.lower().endswith((".ttf", ".otf")):
-            fpath = os.path.join(fonts_dir, fname)
-            if os.name == "nt":
-                try:
-                    ctypes.windll.gdi32.AddFontResourceExW(fpath, FR_PRIVATE, 0)
-                    registered = True
-                except Exception:
-                    pass
-            if font_manager is not None:
-                try:
-                    font_manager.fontManager.addfont(fpath)
-                    registered = True
-                except Exception:
-                    pass
-    return registered
+    for fname in sorted(os.listdir(fonts_dir)):
+        if not fname.lower().endswith((".ttf", ".otf")):
+            continue
+        fpath = os.path.join(fonts_dir, fname)
+        if os.name == "nt":
+            try:
+                ctypes.windll.gdi32.AddFontResourceExW(fpath, 0x10, 0)
+            except Exception:
+                pass
+        if font_manager is not None:
+            try:
+                font_manager.fontManager.addfont(fpath)
+            except Exception:
+                pass
 
 
-def resolve_display_font(root: tk.Misc) -> str:
-    """Resuelve la fuente para títulos principales (`Inter` 500/SemiBold si está disponible)."""
-    _register_local_inter_fonts()
-    available = {f.lower(): f for f in tkfont.families(root)}
-    for candidate in ("inter medium", "inter semibold", "inter", "segoe ui variable display", "segoe ui"):
-        if candidate in available:
-            return available[candidate]
-    return "Segoe UI"
+def resolve_fonts(root: tk.Misc) -> Dict[str, Tuple[str, int, str]]:
+    """Elige tipografías disponibles en Tk y devuelve el mapa estándar de roles."""
+    register_local_fonts()
+    avail = {f.lower(): f for f in tkfont.families(root)}
+    ui = next((avail[c] for c in ("inter", "segoe ui", "dejavu sans", "arial") if c in avail), "TkDefaultFont")
+    mono = next(
+        (avail[c] for c in ("cascadia mono", "consolas", "dejavu sans mono", "courier new") if c in avail),
+        "TkFixedFont",
+    )
+    return {
+        "headline": (ui, 13, "bold"), "title": (ui, 10, "bold"), "body": (ui, 9, "normal"),
+        "label": (ui, 9, "bold"), "mono": (mono, 9, "normal"), "mono_bold": (mono, 9, "bold"),
+        "small": (ui, 8, "normal"),
+    }
 
 
-def resolve_fonts(root: tk.Misc) -> Tuple[str, str, bool]:
-    """Resuelve familia sans estándar de UI (`Segoe UI`) y familia monoespaciada.
-
-    Retorna `(ui_font_family, mono_font_family, inter_available)`.
-    """
-    _register_local_inter_fonts()
-    available = {f.lower(): f for f in tkfont.families(root)}
-    inter_available = any("inter" in k for k in available)
-
-    ui_family = "Segoe UI"
-    for candidate in ("segoe ui variable text", "segoe ui", "arial"):
-        if candidate in available:
-            ui_family = available[candidate]
-            break
-
-    mono_family = "Consolas"
-    for candidate in (
-        "jetbrainsmono nerd font",
-        "jetbrains mono",
-        "cascadia mono",
-        "firacode nerd font",
-        "consolas",
-        "courier new",
-    ):
-        if candidate in available:
-            mono_family = available[candidate]
-            break
-
-    return ui_family, mono_family, inter_available
+def apply_ttk_theme(root: tk.Misc, fonts: Dict[str, Tuple[str, int, str]]) -> ttk.Style:
+    """Configura el tema 'clam' plano con la paleta cartográfica oficial."""
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    cfg, mp = style.configure, style.map
+    cfg(".", background=PAPER_BG, foreground=INK_PRIMARY, font=fonts["body"], bordercolor=PAPER_BORDER, focuscolor=ACCENT_PRIMARY)
+    cfg("TFrame", background=PAPER_BG)
+    cfg("TLabel", background=PAPER_BG, foreground=INK_PRIMARY, font=fonts["body"])
+    cfg("TNotebook", background=DOCK_BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+    cfg("TNotebook.Tab", background=DOCK_BG, foreground=INK_PRIMARY, font=fonts["label"],
+        padding=(10, 5), borderwidth=1, lightcolor=DOCK_BORDER, darkcolor=DOCK_BORDER, bordercolor=DOCK_BORDER)
+    mp("TNotebook.Tab", background=[("selected", PAPER_BG), ("active", DOCK_HOVER)], foreground=[("selected", ACCENT_TEXT)])
+    cfg("Treeview", background=PAPER_BG, fieldbackground=PAPER_BG, foreground=INK_PRIMARY,
+        font=fonts["mono"], rowheight=22, borderwidth=1, relief="flat")
+    mp("Treeview", background=[("selected", ACCENT_PRIMARY)], foreground=[("selected", ACCENT_INK)])
+    cfg("Treeview.Heading", background=DOCK_BG, foreground=INK_PRIMARY, font=fonts["label"], relief="flat", borderwidth=1)
+    mp("Treeview.Heading", background=[("active", DOCK_HOVER)])
+    cfg("TCombobox", fieldbackground=PAPER_BG, background=DOCK_BG, foreground=INK_PRIMARY,
+        selectbackground=ACCENT_PRIMARY, selectforeground=ACCENT_INK, arrowcolor=INK_PRIMARY,
+        bordercolor=PAPER_RULE, lightcolor=PAPER_RULE, darkcolor=PAPER_RULE, padding=(5, 3))
+    mp("TCombobox", fieldbackground=[("readonly", PAPER_BG)], foreground=[("readonly", INK_PRIMARY)], background=[("active", DOCK_HOVER)])
+    for opt, val in (("background", PAPER_BG), ("foreground", INK_PRIMARY), ("selectBackground", ACCENT_PRIMARY), ("selectForeground", ACCENT_INK)):
+        root.option_add(f"*TCombobox*Listbox.{opt}", val)
+    cfg("TScrollbar", background=DOCK_BG, troughcolor=PAPER_SUBTLE, arrowcolor=INK_PRIMARY,
+        bordercolor=PAPER_BORDER, lightcolor=DOCK_BG, darkcolor=DOCK_BG, relief="flat", width=11)
+    mp("TScrollbar", background=[("active", ACCENT_PRIMARY), ("pressed", ACCENT_HOVER)])
+    cfg("TScale", background=ACCENT_PRIMARY, troughcolor=DOCK_BG, bordercolor=PAPER_RULE,
+        lightcolor=ACCENT_PRIMARY, darkcolor=ACCENT_PRIMARY, sliderlength=14, sliderrelief="flat")
+    mp("TScale", background=[("active", ACCENT_HOVER)])
+    cfg("TCheckbutton", background=PAPER_BG, foreground=INK_PRIMARY, font=fonts["body"],
+        indicatorcolor=PAPER_BG, indicatorrelief="flat", focuscolor=ACCENT_PRIMARY)
+    mp("TCheckbutton", background=[("active", PAPER_HOVER)], indicatorcolor=[("selected", ACCENT_PRIMARY)])
+    return style

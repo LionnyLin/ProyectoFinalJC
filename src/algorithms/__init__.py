@@ -1,57 +1,41 @@
-"""Algoritmos de recorrido, consulta y análisis de criticidad sobre la red."""
+"""Algoritmos obligatorios de recorrido, consulta y clasificación de tuberías."""
 
-from .traversals import (
-    TraversalAnimFrame,
-    TraversalResult,
-    bfs,
-    bfs_anim_frames,
-    dfs,
-    dfs_anim_frames,
-    topological_sort,
-)
+from .traversals import TraversalFrame, TraversalResult, bfs, dfs, topological_sort
 from .queries import (
-    build_route_to_sink,
-    find_isolated_from_sinks,
-    find_node,
-    find_pipe,
-    search_entities,
+    NodeQueryResult,
+    PipeQueryResult,
+    get_node_details,
+    get_pipe_details,
+    search_entity,
     trace_downstream,
     trace_upstream,
 )
 from .analysis import (
-    OVERLOAD_PERSISTENCE_LEVELS,
     UTILIZATION_LEVELS,
-    UtilizationCategory,
+    UTILIZATION_SCALE,
     CriticalPipeRecord,
-    SourceAttributionResult,
-    classify_overload_persistence,
+    UtilizationCategory,
     classify_utilization,
-    compute_source_attribution,
     rank_critical_pipes,
 )
 
 __all__ = [
+    "TraversalFrame",
     "TraversalResult",
-    "TraversalAnimFrame",
     "bfs",
-    "bfs_anim_frames",
     "dfs",
-    "dfs_anim_frames",
     "topological_sort",
-    "find_node",
-    "find_pipe",
-    "search_entities",
+    "NodeQueryResult",
+    "PipeQueryResult",
+    "search_entity",
+    "get_node_details",
+    "get_pipe_details",
     "trace_downstream",
     "trace_upstream",
-    "find_isolated_from_sinks",
-    "build_route_to_sink",
+    "UTILIZATION_SCALE",
     "UTILIZATION_LEVELS",
-    "OVERLOAD_PERSISTENCE_LEVELS",
     "UtilizationCategory",
     "CriticalPipeRecord",
-    "SourceAttributionResult",
     "classify_utilization",
-    "classify_overload_persistence",
-    "compute_source_attribution",
     "rank_critical_pipes",
 ]

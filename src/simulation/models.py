@@ -1,67 +1,12 @@
 """Modelos de datos para configuración, estado temporal y resultados de simulación."""
 
 from dataclasses import dataclass, field
-import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
+
 from src.algorithms.analysis import UtilizationCategory
-from src.data_structures import PipeEdge
 
 
-@dataclass(frozen=True)
-class PipeIntervention:
-    """Intervención operativa temporal sobre una tubería sin mutar el grafo base."""
-
-    pipe_id: str
-    obstruction_pct: float = 0.0
-    diameter_in_override: Optional[float] = None
-
-    def __post_init__(self) -> None:
-        if not math.isfinite(self.obstruction_pct) or not (0.0 <= self.obstruction_pct <= 100.0):
-            raise ValueError(
-                f"El porcentaje de obstrucción debe estar entre 0 y 100 (recibido: {self.obstruction_pct})."
-            )
-        if self.diameter_in_override is not None:
-            if not math.isfinite(self.diameter_in_override) or self.diameter_in_override <= 0.0:
-                raise ValueError(
-                    f"El diámetro intervenido debe ser mayor a 0 pulgadas (recibido: {self.diameter_in_override})."
-                )
-
-    @property
-    def is_closed(self) -> bool:
-        return self.obstruction_pct >= 100.0 - 1e-6
-
-    @property
-    def has_obstruction(self) -> bool:
-        return self.obstruction_pct > 1e-6
-
-
-def resolve_pipe_hydraulics(
-    edge: PipeEdge, intervention: Optional[PipeIntervention]
-) -> Tuple[float, float, float, float]:
-    """Calcula `(q_max_m3s, velocity_ms, transit_time_s, diameter_in)` efectivos para un tramo."""
-    if intervention is None:
-        return (
-            edge.q_max_m3s,
-            edge.reference_velocity_ms,
-            edge.transit_time_s,
-            edge.diameter_in,
-        )
-
-    eff_diam_in = (
-        intervention.diameter_in_override
-        if intervention.diameter_in_override is not None
-        else edge.diameter_in
-    )
-    scale_d = (eff_diam_in / edge.diameter_in) if edge.diameter_in > 0.0 else 1.0
-    q_diam = edge.q_max_m3s * (scale_d ** (8.0 / 3.0))
-    v_diam = edge.reference_velocity_ms * (scale_d ** (2.0 / 3.0))
-    open_fraction = max(0.0, 1.0 - intervention.obstruction_pct / 100.0)
-    eff_q_max = q_diam * open_fraction
-    eff_transit_s = (edge.length_m / v_diam) if v_diam > 0.0 else 0.0
-    return eff_q_max, v_diam, eff_transit_s, eff_diam_in
-
-
-@dataclass
+@dataclass(slots=True)
 class SimulationConfig:
     """Parámetros configurables de una simulación temporal."""
 
@@ -71,49 +16,39 @@ class SimulationConfig:
     duration_min: float = 90.0
     storm_duration_min: float = 60.0
     dt_min: float = 1.0
-    ingress_factor: float = 1.0  # 100% del Método Racional según guía docente (ajustable 0.01..1.0)
-    dry_weather_flow_per_source_m3s: float = 0.0  # Caudal sanitario base opcional por fuente (m³/s)
-    split_rule: str = "proportional"  # "proportional" (por Qmax) o "equal" (uniforme)
-    hyetograph: str = "uniform"  # "uniform" (constante) o "triangular" (pico al 50%)
-    source_distribution: str = "capacity"  # "capacity" (ponderado por Qmax) o "equal" (1/N)
-    max_manhole_storage_m3: float = 4.0  # Capacidad física amortiguadora por pozo antes de rebose
-    max_physical_utilization_pct: Optional[float] = None  # Obsoleto: mantenido solo por compatibilidad
-    interventions: Dict[str, PipeIntervention] = field(default_factory=dict)
+    split_rule: str = "proportional"       # "proportional" (por Qmax) | "equal" (1/k)
+    source_distribution: str = "capacity"  # "capacity" (por Qmax saliente) | "equal" (1/N)
+    max_manhole_storage_m3: float = 4.0    # Amortiguamiento en pozo antes de rebose superficial
 
 
-@dataclass
+@dataclass(slots=True)
 class PipeStepState:
-    """Estado de una tubería en un instante de tiempo t."""
+    """Estado hidráulico de una tubería en el instante de reporte t."""
 
     pipe_id: str
-    flow_m3s: float          # Caudal físico conducido aguas abajo (<= Qmax, coherente con node.outflow_m3s)
-    conveyed_flow_m3s: float # Caudal físico transportado aguas abajo (<= Qmax)
-    volume_in_transit_m3: float
-    utilization_pct: float   # Utilización oficial O_i(t) = (Q_demanda / Qmax_ef) * 100 sin recorte
+    flow_m3s: float              # Caudal físicamente conducido aguas abajo (<= Qmax)
+    demand_flow_m3s: float       # Caudal total demandado sobre la tubería (m³/s)
+    volume_in_transit_m3: float  # Volumen actualmente viajando dentro de la tubería (m³)
+    utilization_pct: float       # O_i(t) = (Q_demanda / Qmax) * 100 sin recorte artificial
     category: UtilizationCategory
-    excess_flow_m3s: float   # Déficit/exceso de demanda por encima de Qmax (m³/s)
-    demand_flow_m3s: float = 0.0     # Caudal de demanda total intentando ingresar (m³/s)
-    demand_ratio_pct: float = 0.0    # Índice de demanda = (Q_demanda / Qmax_ef) * 100 (%)
-    effective_q_max_m3s: Optional[float] = None
-    effective_velocity_ms: Optional[float] = None
-    is_closed: bool = False
+    excess_flow_m3s: float       # Exceso de demanda por encima de Qmax (m³/s)
 
 
-@dataclass
+@dataclass(slots=True)
 class NodeStepState:
-    """Estado de un pozo/alcantarilla en un instante de tiempo t."""
+    """Estado de un pozo de inspección o alcantarilla en el instante t."""
 
     node_id: str
     inflow_m3s: float
     outflow_m3s: float
-    stored_volume_m3: float  # Almacenamiento temporal dentro del pozo (<= max_manhole_storage_m3)
-    surface_flooding_m3: float = 0.0  # Rebose superficial acumulado en vía por pozo lleno (m³)
-    flooding_rate_m3s: float = 0.0    # Tasa instantánea de rebose superficial (m³/s)
+    stored_volume_m3: float      # Volumen retenido temporalmente en el pozo (m³)
+    surface_flooding_m3: float   # Rebose superficial acumulado en este nodo (m³)
+    flooding_rate_m3s: float     # Tasa de rebose durante el intervalo (m³/s)
 
 
-@dataclass
+@dataclass(slots=True)
 class TimeStepSnapshot:
-    """Instantánea completa de la red en el tiempo `time_min` (almacenada en LinkedList)."""
+    """Instantánea completa de la red en un instante discreto de tiempo."""
 
     step_index: int
     time_min: float
@@ -124,21 +59,21 @@ class TimeStepSnapshot:
     cumulative_sink_discharge_m3: float
     total_manhole_storage_m3: float
     total_pipe_transit_m3: float
+    total_surface_flooding_m3: float
     mass_balance_error_m3: float
-    total_surface_flooding_m3: float = 0.0
-    pipe_states: Dict[str, PipeStepState] = field(default_factory=dict)
-    node_states: Dict[str, NodeStepState] = field(default_factory=dict)
-    critical_pipe_ids: List[str] = field(default_factory=list)       # > 75% (cercanas + sobrecargadas)
-    near_capacity_pipe_ids: List[str] = field(default_factory=list)  # > 75% y <= 100%
-    overloaded_pipe_ids: List[str] = field(default_factory=list)     # > 100%
+    pipe_states: Dict[str, PipeStepState]
+    node_states: Dict[str, NodeStepState]
+    critical_pipe_ids: List[str] = field(default_factory=list)       # > 75 %
+    near_capacity_pipe_ids: List[str] = field(default_factory=list)  # > 75 % y <= 100 %
+    overloaded_pipe_ids: List[str] = field(default_factory=list)     # > 100 %
 
 
-@dataclass
+@dataclass(slots=True)
 class SimulationResult:
-    """Resultado completo de una corrida de simulación."""
+    """Resultado consolidado de la simulación de un escenario."""
 
     config: SimulationConfig
-    snapshots: List[TimeStepSnapshot]  # Espejo indexado de la LinkedList histórica
+    snapshots: List[TimeStepSnapshot]
     peak_pipe_utilization: Dict[str, float]
     peak_pipe_flow: Dict[str, float]
     max_manhole_storage_m3: Dict[str, float]
@@ -146,13 +81,9 @@ class SimulationResult:
     total_inflow_m3: float
     total_sink_discharge_m3: float
     final_residual_m3: float
+    total_surface_flooding_m3: float
     max_mass_balance_error_m3: float
     ever_critical_pipes: List[str]
+    ever_near_capacity_pipes: List[str]
     ever_overloaded_pipes: List[str]
     execution_time_ms: float
-    ever_near_capacity_pipes: List[str] = field(default_factory=list)
-    pipe_overloaded_minutes: Dict[str, float] = field(default_factory=dict)
-    peak_pipe_demand_ratio: Dict[str, float] = field(default_factory=dict)
-    peak_pipe_demand_flow: Dict[str, float] = field(default_factory=dict)
-    total_surface_flooding_m3: float = 0.0
-    max_node_flooding_m3: Dict[str, float] = field(default_factory=dict)
