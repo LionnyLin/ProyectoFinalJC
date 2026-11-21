@@ -119,11 +119,9 @@ class BicentenarioSewerApp(tk.Tk):
         self.paned.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.controls = ControlsPanel(self.paned, self.fonts, {
             "load_excel": lambda: self._pick_and_load(False), "load_csv": lambda: self._pick_and_load(True), "export_csv": self._action_export_csv,
-            "run_simulation": self.run_simulation, "search": self._action_search, "run_traversal": self._action_traversal,
+            "run_simulation": lambda: self.run_simulation(auto_play=True), "search": self._action_search, "run_traversal": self._action_traversal,
             "trace_downstream": lambda s: self._action_trace(s, False), "trace_upstream": lambda s: self._action_trace(s, True),
-            "clear_traversal": self.clear_traversal, "anim_first": self._anim_first,
-            "anim_prev": lambda: self.step_traversal_animation(-1),
-            "anim_toggle": self.toggle_traversal_animation, "anim_next": lambda: self.step_traversal_animation(1),
+            "clear_traversal": self.clear_traversal,
         })
         self.paned.add(self.controls, width=290, minsize=240, stretch="never")
 
@@ -202,7 +200,7 @@ class BicentenarioSewerApp(tk.Tk):
         if run_initial: self.run_simulation()
         return True
 
-    def run_simulation(self) -> Optional[SimulationResult]:
+    def run_simulation(self, auto_play: bool = False) -> Optional[SimulationResult]:
         if self.dataset is None: return None
         self._stop_playback()
         try: cfg = self.controls.get_simulation_config()
@@ -223,6 +221,8 @@ class BicentenarioSewerApp(tk.Tk):
         self.charts_panel.set_result(res, self._last_chart_pipe, is_visible=self._active_tab() == 2)
         self.go_to_step(0)
         self._status_lbl.configure(text=f"Esc. {cfg.scenario_id} ({theme.translate_scenario_name(cfg.scenario_name)}) en {res.execution_time_ms:.1f} ms")
+        if auto_play and len(res.snapshots) > 1:
+            self.toggle_play()
         return res
 
     def go_to_step(self, idx: int, from_slider: bool = False) -> None:
@@ -409,9 +409,6 @@ class BicentenarioSewerApp(tk.Tk):
     def start_traversal_animation(self, algo: str, start_id: str, target_id: Optional[str] = None) -> None:
         self._action_traversal(algo, start_id, target_id, animate=True)
 
-    def _anim_first(self) -> None:
-        if not self.traversal_frames: return
-        self._stop_traversal(); self.anim_idx = 0; self._render_traversal_frame()
 
     def _render_traversal_frame(self, summary_override: str = "") -> None:
         if not self.traversal_frames:

@@ -32,14 +32,15 @@ class InspectorTab(tk.Frame):
         super().__init__(parent, bg=theme.PAPER_BG)
         self._fonts = fonts
         self._canvas = tk.Canvas(self, bg=theme.PAPER_BG, highlightthickness=0, bd=0, takefocus=False)
-        vsb = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self._canvas.yview)
-        self._canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y); self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._vscroll = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._vscroll.set)
+        self._vscroll.pack(side=tk.RIGHT, fill=tk.Y); self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._inner = tk.Frame(self._canvas, bg=theme.PAPER_BG)
         self._win_id = self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
-        self._inner.bind("<Configure>", lambda _e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
-        self._canvas.bind("<Configure>", lambda e: (self._canvas.itemconfigure(self._win_id, width=e.width), self._empty_lbl.configure(wraplength=max(160, e.width - 28))))
+        self._inner.bind("<Configure>", lambda _e: self.after_idle(self._sync_scroll))
+        self._canvas.bind("<Configure>", self._on_canvas_resize)
         self._wheel_active = False
+        self._needs_scroll = False
         self._canvas.bind("<Enter>", lambda _e: self._toggle_wheel(True))
         self._canvas.bind("<Leave>", lambda _e: self._toggle_wheel(False))
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
@@ -65,12 +66,34 @@ class InspectorTab(tk.Frame):
         for (_, kl, vl), key in zip(self._sum_rows, _SUM_KEYS):
             kl.configure(text=key); vl.configure(text="—")
 
+    def _sync_scroll(self) -> None:
+        view_h = self._canvas.winfo_height()
+        if view_h <= 1:
+            return
+        content_h = self._inner.winfo_reqheight()
+        self._canvas.configure(scrollregion=(0, 0, max(1, self._canvas.winfo_width()), max(content_h, view_h)))
+        needs_scroll = content_h > view_h + 2
+        self._needs_scroll = needs_scroll
+        if needs_scroll:
+            if not self._vscroll.winfo_ismapped():
+                self._vscroll.pack(side=tk.RIGHT, fill=tk.Y, before=self._canvas)
+        else:
+            if self._vscroll.winfo_ismapped():
+                self._vscroll.pack_forget()
+            self._canvas.yview_moveto(0.0)
+
+    def _on_canvas_resize(self, event: tk.Event) -> None:
+        self._canvas.itemconfigure(self._win_id, width=event.width)
+        self._empty_lbl.configure(wraplength=max(160, event.width - 28))
+        self.after_idle(self._sync_scroll)
+
     def _toggle_wheel(self, active: bool) -> None:
         self._wheel_active = active
 
     def _on_wheel(self, e: tk.Event) -> None:
-        if self._wheel_active:
-            self._canvas.yview_scroll(-1 if (e.num == 4 or (e.delta and e.delta > 0)) else 1, "units")
+        if not self._wheel_active or not getattr(self, "_needs_scroll", False):
+            return
+        self._canvas.yview_scroll(-1 if (e.num == 4 or (e.delta and e.delta > 0)) else 1, "units")
 
     def _header(self, title: str) -> None:
         tk.Label(self._inner, text=title, bg=theme.PAPER_BG, fg=theme.ACCENT_TEXT, font=self._fonts["label"], anchor="w").pack(fill=tk.X, padx=10, pady=(8, 2))

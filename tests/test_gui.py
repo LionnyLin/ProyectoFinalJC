@@ -138,7 +138,7 @@ class TestGuiSmoke(unittest.TestCase):
 
         self.app._action_trace("17", upstream=True)
         self.app.update()
-        note = self.app.controls._note_label.cget("text")
+        note = self.app.controls._traversal_note.cget("text")
         self.assertTrue(len(note.strip()) > 0)
 
     def test_critical_pipes_strict_75_to_100_range(self) -> None:
@@ -201,39 +201,39 @@ class TestGuiSmoke(unittest.TestCase):
         ok_fb = self.app.controls._search_feedback.cget("text")
         self.assertIn("P30", ok_fb)
 
-    def test_slider_and_visor_buttons_states(self) -> None:
+    def test_slider_and_playback_buttons_states(self) -> None:
         self.assertIsInstance(self.app._scale, tk.Scale)
         self.assertEqual(str(self.app._scale.cget("state")), "normal")
 
         self.app.go_to_step(0)
         self.app.update()
         self.assertEqual(str(self.app._btn_step_back.cget("state")), "disabled")
+        self.assertEqual(str(self.app._btn_step_fwd.cget("state")), "normal")
+        self.assertEqual(str(self.app._btn_reset.cget("state")), "disabled")
 
         self.app._on_slider_move("10")
         self.app.update()
         self.assertEqual(self.app.current_step, 10)
         self.assertEqual(str(self.app._btn_step_back.cget("state")), "normal")
+        self.assertEqual(str(self.app._btn_reset.cget("state")), "normal")
+
+        self.assertFalse(hasattr(self.app.controls, "_btn_first"))
+        self.assertFalse(hasattr(self.app.controls, "_struct_title"))
+
+        self.app._action_traversal("BFS", "17", "31", animate=True)
+        self.app.update()
+        self.assertGreater(len(self.app.traversal_frames), 0)
+        self.assertTrue(bool(self.app.controls._traversal_note.winfo_manager()))
+        self.assertTrue(len(self.app.controls._traversal_note.cget("text").strip()) > 0)
 
         self.app.clear_traversal()
         self.app.update()
-        for btn in (
-            self.app.controls._btn_first,
-            self.app.controls._btn_prev,
-            self.app.controls._btn_play,
-            self.app.controls._btn_next,
-        ):
-            self.assertEqual(str(btn.cget("state")), "disabled")
-        self.assertIn("¿Cómo funciona?", self.app.controls._rule_label.cget("text"))
+        self.assertEqual(len(self.app.traversal_frames), 0)
+        self.assertEqual(self.app.controls._traversal_note.winfo_manager(), "")
 
-        self.app._action_traversal("BFS", "17", "31", animate=False)
-        self.app.update()
-        self.assertGreater(len(self.app.traversal_frames), 0)
-        self.assertEqual(str(self.app.controls._btn_play.cget("state")), "normal")
-        self.assertEqual(str(self.app.controls._btn_prev.cget("state")), "normal")
-        self.assertIn("Cola FIFO", self.app.controls._rule_label.cget("text"))
-        self.app._anim_first()
-        self.app.update()
-        self.assertEqual(self.app.anim_idx, 0)
+        self.app.run_simulation(auto_play=True)
+        self.assertTrue(self.app.is_playing)
+        self.app._stop_playback(False)
 
 
 if __name__ == "__main__":
