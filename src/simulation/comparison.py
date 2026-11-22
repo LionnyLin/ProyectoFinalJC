@@ -27,6 +27,7 @@ class ScenarioSummary:
     max_stored_surcharge_m3: float
     mass_balance_error_m3: float
     result: SimulationResult
+    max_demand_ratio_pct: float = 0.0  # Máx. (Q_dem / Qmax_ef) × 100 en la red
 
 
 def compare_all_scenarios(
@@ -48,11 +49,14 @@ def compare_all_scenarios(
             split_rule=base_config.split_rule,
             source_distribution=base_config.source_distribution,
             max_manhole_storage_m3=base_config.max_manhole_storage_m3,
+            ingress_factor=base_config.ingress_factor,
+            dry_weather_flow_per_source_m3s=base_config.dry_weather_flow_per_source_m3s,
+            interventions=dict(base_config.interventions),
         )
         res = engine.run(cfg)
         most_crit = max(
             res.peak_pipe_utilization.items(),
-            key=lambda kv: kv[1],
+            key=lambda kv: (kv[1], res.peak_pipe_demand_ratio.get(kv[0], 0.0)),
             default=("N/A", 0.0),
         )
         summaries.append(
@@ -75,6 +79,7 @@ def compare_all_scenarios(
                 ),
                 mass_balance_error_m3=res.max_mass_balance_error_m3,
                 result=res,
+                max_demand_ratio_pct=max(res.peak_pipe_demand_ratio.values(), default=0.0),
             )
         )
 

@@ -1,11 +1,25 @@
 """Algoritmos obligatorios de recorrido, consulta y clasificación de tuberías."""
 
-from .traversals import TraversalFrame, TraversalResult, bfs, dfs, topological_sort
+from .traversals import (
+    TraversalAnimFrame,
+    TraversalFrame,
+    TraversalResult,
+    bfs,
+    bfs_anim_frames,
+    dfs,
+    dfs_anim_frames,
+    topological_sort,
+)
 from .queries import (
     NodeQueryResult,
     PipeQueryResult,
+    build_route_to_sink,
+    find_isolated_from_sinks,
+    find_node,
+    find_pipe,
     get_node_details,
     get_pipe_details,
+    search_entities,
     search_entity,
     trace_downstream,
     trace_upstream,
@@ -16,14 +30,26 @@ from .analysis import (
     UTILIZATION_LEVELS,
     UTILIZATION_SCALE,
     CriticalPipeRecord,
+    SourceAttributionResult,
     UtilizationCategory,
     classify_overload_persistence,
     classify_utilization,
+    compute_source_attribution,
     rank_critical_pipes,
 )
 
 __all__ = [
     "TraversalFrame",
+    "TraversalAnimFrame",
+    "bfs_anim_frames",
+    "dfs_anim_frames",
+    "find_node",
+    "find_pipe",
+    "search_entities",
+    "find_isolated_from_sinks",
+    "build_route_to_sink",
+    "SourceAttributionResult",
+    "compute_source_attribution",
     "TraversalResult",
     "bfs",
     "dfs",

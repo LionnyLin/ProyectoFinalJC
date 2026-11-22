@@ -1,4 +1,4 @@
-"""Panel izquierdo de controles, escenarios, recorridos BFS/DFS y visor de Cola/Pila."""
+"""Panel izquierdo: pestañas Simulación / Recorridos, parámetros, búsqueda y bitácora de recorrido."""
 
 import math
 import tkinter as tk
@@ -9,12 +9,27 @@ from src.algorithms.traversals import TraversalFrame
 from src.io.data_loader import NetworkDataset, PrecipitationScenario
 from src.simulation.models import SimulationConfig
 from . import theme
+from .widgets import _ScenarioMenuButton
 
 _NONE_TARGET = "(Ninguno)"
+_RERUN_DEBOUNCE_MS = 140
+_STRIP_MAX_CELLS = 6
+# (clave, etiqueta, mínimo, máximo, incremento, valor por defecto, formato)
+_PARAM_SPECS: Tuple[Tuple[str, str, float, float, float, str], ...] = (
+    ("duration", "Duración simulación (min)", 10.0, 360.0, 10.0, "90"),
+    ("storm", "Duración lluvia (min)", 0.0, 360.0, 5.0, "60"),
+    ("dt", "Paso temporal Δt (min)", 0.5, 10.0, 0.5, "1.0"),
+    ("ingress", "Ingreso pluvial (%)", 0.5, 100.0, 0.5, "100"),
+    ("dry", "Caudal sanitario (m³/s)", 0.0, 0.05, 0.001, "0.000"),
+)
+PRESETS: Dict[str, Tuple[float, float]] = {
+    "Oficial Guía (100%)": (100.0, 0.0),
+    "Calibrado (2.5% + Q_san)": (2.5, 0.003),
+}
 
 
 class ControlsPanel(tk.Frame):
-    """Panel lateral desplazable con tarjetas planas de simulación y recorridos."""
+    """Panel lateral desplazable con pestañas Simulación y Recorridos (tarjetas planas)."""
 
     def __init__(self, parent: tk.Misc, fonts: Dict[str, Tuple[str, int, str]], callbacks: Dict[str, Callable]) -> None:
         super().__init__(parent, bg=theme.DOCK_BG)
@@ -25,7 +40,11 @@ class ControlsPanel(tk.Frame):
         self._wheel_active = False
         self._needs_scroll = False
         self._btn_styles: Dict[tk.Button, Tuple[str, str, str, str]] = {}
+        self._rerun_after_id: Optional[str] = None
+        self._applied_sig: Optional[tuple] = None
+        self.rail_tab = "sim"
 
+        self._build_tab_bar()
         self._canvas = tk.Canvas(self, bg=theme.DOCK_BG, highlightthickness=0, bd=0, takefocus=False)
         self._vscroll = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self._canvas.yview)
         self._canvas.configure(yscrollcommand=self._vscroll.set)
@@ -39,9 +58,49 @@ class ControlsPanel(tk.Frame):
         self._canvas.bind("<Enter>", lambda _e: self._toggle_wheel(True))
         self._canvas.bind("<Leave>", lambda _e: self._toggle_wheel(False))
 
+        self._sim_page = tk.Frame(self._inner, bg=theme.DOCK_BG)
+        self._trav_page = tk.Frame(self._inner, bg=theme.DOCK_BG)
         self._build_scenario_card()
         self._build_traversal_card()
+        self._build_log_card()
         self._bind_wheel_recursive(self._inner)
+        self.switch_tab("sim")
+
+    # ── Pestañas ─────────────────────────────────────────────────────────────
+
+    def _build_tab_bar(self) -> None:
+        bar = tk.Frame(self, bg=theme.DOCK_BG)
+        bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(8, 6))
+        self.btn_tab_sim = self._btn(bar, "Simulación", lambda: self.switch_tab("sim"), primary=True, pady=5)
+        self.btn_tab_sim.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+        self.btn_tab_trav = self._btn(bar, "Recorridos", lambda: self.switch_tab("trav"), pady=5)
+        self.btn_tab_trav.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
+        tk.Frame(self, bg=theme.DOCK_BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
+
+    def _restyle(self, btn: tk.Button, primary: bool) -> None:
+        bg, hov, fg, bdr = (
+            (theme.ACCENT_PRIMARY, theme.ACCENT_HOVER, theme.ACCENT_INK, theme.ACCENT_HOVER) if primary
+            else (theme.PAPER_SUBTLE, theme.PAPER_HOVER, theme.INK_PRIMARY, theme.PAPER_BORDER)
+        )
+        self._btn_styles[btn] = (bg, hov, fg, bdr)
+        btn.configure(bg=bg, fg=fg, activebackground=hov, activeforeground=fg, highlightbackground=bdr)
+
+    def switch_tab(self, tab_id: str) -> None:
+        """Muestra la pestaña «sim» (Simulación) o «trav» (Recorridos)."""
+        self.rail_tab = tab_id = "trav" if tab_id == "trav" else "sim"
+        self._sim_page.pack_forget()
+        self._trav_page.pack_forget()
+        (self._trav_page if tab_id == "trav" else self._sim_page).pack(fill=tk.X)
+        self._restyle(self.btn_tab_sim, tab_id == "sim")
+        self._restyle(self.btn_tab_trav, tab_id == "trav")
+        self._canvas.yview_moveto(0.0)
+        self.after_idle(self._sync_scroll)
+
+    def focus_search(self) -> None:
+        """Abre la pestaña Recorridos y enfoca el campo de búsqueda (Ctrl+F)."""
+        self.switch_tab("trav")
+        self._search_entry.focus_set()
+        self._search_entry.select_range(0, tk.END)
 
     def _sync_scroll(self) -> None:
         view_h = self._canvas.winfo_height()
@@ -62,10 +121,9 @@ class ControlsPanel(tk.Frame):
     def _on_canvas_resize(self, event: tk.Event) -> None:
         self._canvas.itemconfigure(self._win_id, width=event.width)
         wrap = max(160, event.width - 42)
-        if hasattr(self, "_search_feedback"):
-            self._search_feedback.configure(wraplength=wrap)
-        if hasattr(self, "_traversal_note"):
-            self._traversal_note.configure(wraplength=wrap)
+        for name in ("_search_feedback", "_param_error"):
+            if hasattr(self, name):
+                getattr(self, name).configure(wraplength=wrap)
         self.after_idle(self._sync_scroll)
 
     def _on_wheel(self, event: tk.Event) -> None:
@@ -75,7 +133,7 @@ class ControlsPanel(tk.Frame):
         self._canvas.yview_scroll(step, "units")
 
     def _bind_wheel_recursive(self, widget: tk.Misc) -> None:
-        if isinstance(widget, ttk.Combobox):
+        if isinstance(widget, (ttk.Combobox, tk.Text)):
             return
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             widget.bind(seq, self._on_wheel, add="+")
@@ -91,8 +149,8 @@ class ControlsPanel(tk.Frame):
         if (fn := self._callbacks.get(key)) is not None:
             fn(*args)
 
-    def _make_card(self, title: str, bottom_pad: int = 0) -> tk.Frame:
-        card = tk.Frame(self._inner, bg=theme.PAPER_BG, highlightbackground=theme.PAPER_RULE, highlightthickness=1, bd=0)
+    def _make_card(self, parent: tk.Misc, title: str, bottom_pad: int = 0) -> tk.Frame:
+        card = tk.Frame(parent, bg=theme.PAPER_BG, highlightbackground=theme.PAPER_RULE, highlightthickness=1, bd=0)
         card.pack(fill=tk.X, padx=6, pady=(6, bottom_pad))
         tk.Label(card, text=title, bg=theme.PAPER_BG, fg=theme.ACCENT_TEXT, font=self._fonts["label"], anchor="w").pack(fill=tk.X, padx=8, pady=(6, 3))
         tk.Frame(card, bg=theme.PAPER_BORDER, height=1).pack(fill=tk.X, padx=8, pady=(0, 5))
@@ -122,8 +180,8 @@ class ControlsPanel(tk.Frame):
             relief="flat", bd=0, padx=6, pady=pady, font=fnt, cursor="hand2", highlightthickness=1, highlightbackground=bdr,
         )
         self._btn_styles[btn] = (bg, hov, fg, bdr)
-        btn.bind("<Enter>", lambda _e, b=btn, h=hov: str(b.cget("state")) != "disabled" and b.configure(bg=h))
-        btn.bind("<Leave>", lambda _e, b=btn, c=bg: str(b.cget("state")) != "disabled" and b.configure(bg=c))
+        btn.bind("<Enter>", lambda _e, b=btn: str(b.cget("state")) != "disabled" and b.configure(bg=self._btn_styles[b][1]))
+        btn.bind("<Leave>", lambda _e, b=btn: str(b.cget("state")) != "disabled" and b.configure(bg=self._btn_styles[b][0]))
         return btn
 
     def _set_btn_enabled(self, btn: tk.Button, enabled: bool) -> None:
@@ -145,45 +203,67 @@ class ControlsPanel(tk.Frame):
             highlightbackground=theme.PAPER_BORDER, highlightcolor=theme.ACCENT_PRIMARY,
         )
 
-    def _build_scenario_card(self) -> None:
-        body = self._make_card("DATOS Y ESCENARIO")
-        io_row = tk.Frame(body, bg=theme.PAPER_BG)
-        io_row.pack(fill=tk.X, pady=(0, 6))
-        for c, (lbl, key) in enumerate((("Excel", "load_excel"), ("CSV", "load_csv"), ("Exportar CSV", "export_csv"))):
-            io_row.columnconfigure(c, weight=1)
-            self._btn(io_row, lbl, lambda k=key: self._cb(k)).grid(row=0, column=c, sticky="ew", padx=(0 if c == 0 else 3, 0))
+    def _menu_select(self, parent: tk.Misc, var: tk.StringVar, values: Tuple[str, ...] = (), pady: int = 4) -> _ScenarioMenuButton:
+        return _ScenarioMenuButton(
+            parent, textvariable=var, values=values, on_select=self._schedule_param_rerun,
+            on_before_open=lambda: self._cb("pause_playback"), padx=6, pady=pady, ui_font=self._fonts["body"][0],
+        )
 
+    def _build_scenario_card(self) -> None:
+        body = self._make_card(self._sim_page, "ESCENARIO Y PARÁMETROS")
         self._lbl(body, "Escenario de precipitación").pack(fill=tk.X)
         self._scenario_var = tk.StringVar()
-        self._scenario_combo = ttk.Combobox(body, textvariable=self._scenario_var, state="readonly", font=self._fonts["body"])
+        self._scenario_combo = self._menu_select(body, self._scenario_var, pady=5)
         self._scenario_combo.pack(fill=tk.X, pady=(2, 6))
 
-        tgrid = tk.Frame(body, bg=theme.PAPER_BG)
-        tgrid.pack(fill=tk.X, pady=(0, 6))
-        self._duration_var, self._storm_var, self._dt_var = tk.StringVar(value="90"), tk.StringVar(value="60"), tk.StringVar(value="1.0")
-        for c, (lbl, var) in enumerate((("Duración (min)", self._duration_var), ("Lluvia (min)", self._storm_var), ("Δt (min)", self._dt_var))):
-            tgrid.columnconfigure(c, weight=1)
-            pad = (0 if c == 0 else 4, 0)
-            self._lbl(tgrid, lbl).grid(row=0, column=c, sticky="ew", padx=pad)
-            self._entry(tgrid, var).grid(row=1, column=c, sticky="ew", padx=pad, pady=(2, 0), ipady=2)
+        grid = tk.Frame(body, bg=theme.PAPER_BG)
+        grid.pack(fill=tk.X)
+        grid.columnconfigure(0, weight=1)
+        self._param_vars: Dict[str, tk.StringVar] = {}
+        self._param_spins: Dict[str, tk.Spinbox] = {}
+        for row, (key, label, lo, hi, inc, default) in enumerate(_PARAM_SPECS):
+            var = self._param_vars[key] = tk.StringVar(value=default)
+            tk.Label(grid, text=label, bg=theme.PAPER_BG, fg=theme.INK_PRIMARY, font=self._fonts["small"], anchor="w").grid(row=row, column=0, sticky="w", pady=2)
+            sb = tk.Spinbox(
+                grid, textvariable=var, from_=lo, to=hi, increment=inc, command=self._schedule_param_rerun, width=8,
+                bg=theme.PAPER_BG, fg=theme.INK_PRIMARY, buttonbackground=theme.DOCK_BG, insertbackground=theme.ACCENT_PRIMARY,
+                highlightthickness=1, highlightbackground=theme.DOCK_BORDER, highlightcolor=theme.ACCENT_PRIMARY,
+                relief="flat", font=self._fonts["mono"], justify="right",
+            )
+            sb.grid(row=row, column=1, sticky="e", pady=2)
+            sb.bind("<Return>", lambda _e: self._schedule_param_rerun())
+            sb.bind("<FocusOut>", lambda _e: self._schedule_param_rerun())
+            self._param_spins[key] = sb
+        self._duration_var, self._storm_var, self._dt_var = (self._param_vars[k] for k in ("duration", "storm", "dt"))
+        self._ingress_var, self._dry_var = self._param_vars["ingress"], self._param_vars["dry"]
+        self._param_error = tk.Label(body, text="", bg=theme.ERROR_BG, fg=theme.ERROR_TEXT, font=self._fonts["small"], anchor="w", justify="left", wraplength=240, padx=5, pady=2)
 
-        rgrid = tk.Frame(body, bg=theme.PAPER_BG)
-        rgrid.pack(fill=tk.X, pady=(0, 7))
+        prow = tk.Frame(body, bg=theme.PAPER_BG)
+        prow.pack(fill=tk.X, pady=(8, 4))
+        for c, (name, (pct, dry)) in enumerate(PRESETS.items()):
+            prow.columnconfigure(c, weight=1)
+            self._btn(prow, name, lambda p=pct, d=dry: self.apply_preset(p, d), pady=4).grid(row=0, column=c, sticky="ew", padx=(0 if c == 0 else 3, 0))
+
         self._split_var = tk.StringVar(value=theme.SPLIT_RULE_TO_ES["proportional"])
         self._source_var = tk.StringVar(value=theme.SOURCE_DIST_TO_ES["capacity"])
-        for c, (lbl, var, vals) in enumerate((
-            ("Bifurcación", self._split_var, list(theme.SPLIT_RULE_TO_ES.values())),
-            ("Fuentes", self._source_var, list(theme.SOURCE_DIST_TO_ES.values())),
-        )):
-            rgrid.columnconfigure(c, weight=1)
-            pad = (0 if c == 0 else 4, 0)
-            self._lbl(rgrid, lbl).grid(row=0, column=c, sticky="ew", padx=pad)
-            ttk.Combobox(rgrid, textvariable=var, values=vals, state="readonly", font=self._fonts["small"]).grid(row=1, column=c, sticky="ew", padx=pad, pady=(2, 0))
+        self._split_combo = self._source_combo = None
+        for lbl, var, vals, attr in (
+            ("Bifurcación", self._split_var, tuple(theme.SPLIT_RULE_TO_ES.values()), "_split_combo"),
+            ("Reparto fuentes", self._source_var, tuple(theme.SOURCE_DIST_TO_ES.values()), "_source_combo"),
+        ):
+            row = tk.Frame(body, bg=theme.PAPER_BG)
+            row.pack(fill=tk.X, pady=3)
+            tk.Label(row, text=lbl, bg=theme.PAPER_BG, fg=theme.INK_PRIMARY, font=self._fonts["small"]).pack(side=tk.LEFT)
+            w = self._menu_select(row, var, vals, pady=3)
+            w.configure(width=15)
+            w.pack(side=tk.RIGHT)
+            setattr(self, attr, w)
 
-        self._btn(body, "Ejecutar simulación", lambda: self._cb("run_simulation"), primary=True, pady=6).pack(fill=tk.X)
+        self._btn_run = self._btn(body, "Ejecutar simulación", lambda: self._cb("run_simulation"), primary=True, pady=6)
+        self._btn_run.pack(fill=tk.X, pady=(8, 0))
 
     def _build_traversal_card(self) -> None:
-        body = self._make_card("RECORRIDOS BFS / DFS Y BÚSQUEDA", bottom_pad=6)
+        body = self._make_card(self._trav_page, "BÚSQUEDA Y RECORRIDOS")
         self._lbl(body, "Búsqueda O(1) (ID de nodo o tubería)").pack(fill=tk.X)
         srow = tk.Frame(body, bg=theme.PAPER_BG)
         srow.pack(fill=tk.X, pady=(2, 6))
@@ -202,7 +282,7 @@ class ControlsPanel(tk.Frame):
 
         ngrid = tk.Frame(body, bg=theme.PAPER_BG)
         ngrid.pack(fill=tk.X, pady=(0, 3))
-        self._start_var, self._target_var = tk.StringVar(), tk.StringVar(value=_NONE_TARGET)
+        self._start_var, self._target_var = tk.StringVar(value="6"), tk.StringVar(value="31")
         self._start_combo = ttk.Combobox(ngrid, textvariable=self._start_var, state="readonly", font=self._fonts["mono"])
         self._target_combo = ttk.Combobox(ngrid, textvariable=self._target_var, state="readonly", font=self._fonts["mono"])
         for c, (lbl, cb) in enumerate((("Inicio", self._start_combo), ("Destino", self._target_combo))):
@@ -213,29 +293,149 @@ class ControlsPanel(tk.Frame):
 
         self._lbl(body, "Aguas abajo y aguas arriba usan el nodo «Inicio».").pack(fill=tk.X, pady=(0, 5))
 
-        agrid = tk.Frame(body, bg=theme.PAPER_BG)
-        agrid.pack(fill=tk.X, pady=(0, 4))
-        for c in (0, 1):
-            agrid.columnconfigure(c, weight=1)
-        for idx, (lbl, algo, anim) in enumerate((("BFS", "BFS", False), ("DFS", "DFS", False), ("Animar BFS", "BFS", True), ("Animar DFS", "DFS", True))):
-            r, c = divmod(idx, 2)
-            self._btn(agrid, lbl, lambda a=algo, an=anim: self._emit_traversal(a, an)).grid(row=r, column=c, sticky="ew", padx=(0 if c == 0 else 3, 0), pady=(0 if r == 0 else 3, 0))
+        row1 = tk.Frame(body, bg=theme.PAPER_BG)
+        row1.pack(fill=tk.X, pady=(0, 3))
+        for c, (lbl, cmd) in enumerate((
+            ("BFS", lambda: self._emit_traversal("BFS", False)),
+            ("DFS", lambda: self._emit_traversal("DFS", False)),
+            ("Limpiar", lambda: self._cb("clear_traversal")),
+        )):
+            row1.columnconfigure(c, weight=1)
+            self._btn(row1, lbl, cmd).grid(row=0, column=c, sticky="ew", padx=(0 if c == 0 else 3, 0))
 
-        trow = tk.Frame(body, bg=theme.PAPER_BG)
-        trow.pack(fill=tk.X)
-        trace_specs = (
-            ("▼ Aguas abajo", lambda: self._emit_trace("trace_downstream"), "#E0F2FE", "#BAE6FD", theme.TRAV_DOWNSTREAM_OUTLINE, theme.TRAV_DOWNSTREAM_EDGE),
-            ("▲ Aguas arriba", lambda: self._emit_trace("trace_upstream"), "#F3E8FF", "#EDE9FE", theme.TRAV_UPSTREAM_OUTLINE, theme.TRAV_UPSTREAM_EDGE),
-            ("Limpiar", lambda: self._cb("clear_traversal"), None, None, None, None),
-        )
-        for c, (lbl, cmd, bg, hov, fg, bdr) in enumerate(trace_specs):
-            trow.columnconfigure(c, weight=1)
-            self._btn(trow, lbl, cmd, bg=bg, hov=hov, fg=fg, bdr=bdr).grid(row=0, column=c, sticky="ew", padx=(0 if c == 0 else 3, 0))
+        self.btn_anim = self._btn(body, "Animar recorrido", lambda: self._cb("toggle_anim"), primary=True, pady=4)
+        self.btn_anim.pack(fill=tk.X, pady=(0, 3))
 
-        self._traversal_note = tk.Label(
-            body, text="", bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY,
-            font=self._fonts["small"], justify="left", anchor="w", padx=6, pady=4, wraplength=240,
+        row2 = tk.Frame(body, bg=theme.PAPER_BG)
+        row2.pack(fill=tk.X)
+        for c, (lbl, key, bg, hov, fg, bdr) in enumerate((
+            ("▼ Aguas abajo", "trace_downstream", "#E0F2FE", "#BAE6FD", theme.TRAV_DOWNSTREAM_OUTLINE, theme.TRAV_DOWNSTREAM_EDGE),
+            ("▲ Aguas arriba", "trace_upstream", "#F3E8FF", "#EDE9FE", theme.TRAV_UPSTREAM_OUTLINE, theme.TRAV_UPSTREAM_EDGE),
+        )):
+            row2.columnconfigure(c, weight=1)
+            self._btn(row2, lbl, lambda k=key: self._emit_trace(k), bg=bg, hov=hov, fg=fg, bdr=bdr).grid(row=0, column=c, sticky="ew", padx=(0 if c == 0 else 3, 0))
+
+    def _build_log_card(self) -> None:
+        body = self._make_card(self._trav_page, "BITÁCORA DE RECORRIDO", bottom_pad=6)
+        self._struct_box = tk.Frame(body, bg=theme.PAPER_SUBTLE, highlightthickness=1, highlightbackground=theme.DOCK_BORDER)
+        self._struct_box.pack(fill=tk.X, pady=(0, 6))
+        self._struct_header = tk.Label(
+            self._struct_box, text="", bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY,
+            font=self._fonts["mono_bold"], anchor="w", padx=6, pady=3,
         )
+        self._struct_header.pack(fill=tk.X)
+        self._struct_cells = tk.Frame(self._struct_box, bg=theme.PAPER_SUBTLE)
+        self._struct_cells.pack(fill=tk.X, padx=5, pady=(0, 5))
+        self._log_text = tk.Text(
+            body, height=8, bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, highlightthickness=1,
+            highlightbackground=theme.ACCENT_PRIMARY, relief="flat", font=self._fonts["mono"],
+            wrap=tk.WORD, padx=8, pady=6, state=tk.DISABLED, takefocus=False,
+        )
+        self._log_text.pack(fill=tk.X)
+        self.render_structure_strip("Queue", [])
+
+    # ── Bitácora de recorrido ────────────────────────────────────────────────
+
+    def render_structure_strip(self, structure_name: str, items: List[str], step_text: str = "") -> None:
+        """Dibuja la tira de la estructura activa: primeros 6 elementos, cabeza resaltada."""
+        for child in self._struct_cells.winfo_children():
+            child.destroy()
+        hdr = "Pila (Stack) · TOPE ↑" if structure_name == "Stack" else "Cola (Queue) · FRENTE → FINAL"
+        self._struct_header.configure(text=f"{hdr}  [{step_text}]" if step_text else hdr)
+        mono = self._fonts["mono"]
+
+        def cell(text: str, bg: str, fg: str, bold: bool = True) -> None:
+            tk.Label(
+                self._struct_cells, text=text, bg=bg, fg=fg, font=self._fonts["mono_bold"] if bold else mono,
+                padx=5, pady=2, highlightthickness=1, highlightbackground=theme.PAPER_BORDER if not bold else theme.DOCK_BORDER,
+            ).pack(side=tk.LEFT, padx=(0, 2))
+
+        if not items:
+            cell("(vacía)", theme.PAPER_BG, theme.INK_MUTED, bold=False)
+            return
+        for idx, val in enumerate(items[:_STRIP_MAX_CELLS]):
+            head = idx == 0
+            cell(str(val), theme.ACCENT_PRIMARY if head else theme.PAPER_BG, theme.ACCENT_INK if head else theme.INK_PRIMARY)
+        if len(items) > _STRIP_MAX_CELLS:
+            cell(f"+{len(items) - _STRIP_MAX_CELLS}", theme.DOCK_BG, theme.INK_PRIMARY)
+
+    def strip_items(self) -> List[str]:
+        """Textos de las celdas de la tira (para pruebas y diagnóstico)."""
+        return [w.cget("text") for w in self._struct_cells.winfo_children()]
+
+    def strip_header(self) -> str:
+        return str(self._struct_header.cget("text"))
+
+    def set_traversal_log(self, text: str) -> None:
+        self._log_text.configure(state=tk.NORMAL)
+        self._log_text.delete("1.0", tk.END)
+        self._log_text.insert("1.0", text)
+        self._log_text.configure(state=tk.DISABLED)
+
+    def get_traversal_log(self) -> str:
+        return self._log_text.get("1.0", "end-1c")
+
+    def update_traversal_view(
+        self, frame: Optional[TraversalFrame] = None, summary_text: str = "", playing: bool = False,
+        mode: Optional[str] = None, has_frames: Optional[bool] = None, step_text: Optional[str] = None,
+    ) -> None:
+        """Actualiza la tira Cola/Pila y el registro; sin fotograma ni texto restablece la bitácora."""
+        self.set_traversal_playing(playing)
+        if frame is not None:
+            self.render_structure_strip(
+                frame.structure_name, frame.structure_items,
+                step_text if step_text is not None else f"{frame.step_index + 1}/{frame.total_steps}",
+            )
+            self.set_traversal_log(summary_text or (
+                f"[{frame.algorithm} · Paso {frame.step_index + 1}/{frame.total_steps}]\n{frame.note}\n"
+                f"{frame.structure_name}: {', '.join(frame.structure_items[:10]) or '(vacía)'}"
+            ))
+        else:
+            self.render_structure_strip("Queue", [])
+            self.set_traversal_log(summary_text)
+
+    def set_traversal_playing(self, playing: bool) -> None:
+        """Actualiza el estado de reproducción del recorrido y el rótulo del botón."""
+        self._playing = bool(playing)
+        self.btn_anim.configure(text="Detener animación" if self._playing else "Animar recorrido")
+
+    # ── Parámetros y re-simulación ───────────────────────────────────────────
+
+    def _param_sig(self) -> tuple:
+        return (self._scenario_var.get(), self._split_var.get(), self._source_var.get(),
+                *(self._param_vars[k].get().strip() for k, *_ in _PARAM_SPECS))
+
+    def _schedule_param_rerun(self) -> None:
+        """Re-simulación automática con debounce de 140 ms al cambiar parámetros."""
+        if self._rerun_after_id is not None:
+            self.after_cancel(self._rerun_after_id)
+        self._rerun_after_id = self.after(_RERUN_DEBOUNCE_MS, self._fire_param_rerun)
+
+    def _fire_param_rerun(self) -> None:
+        self._rerun_after_id = None
+        if self._param_sig() == self._applied_sig:
+            return
+        try:
+            self.get_simulation_config()
+        except ValueError as exc:
+            self._param_error.configure(text=str(exc))
+            self._param_error.pack(fill=tk.X, pady=(4, 0), after=self._param_spins["dry"].master)
+            return
+        self._cb("param_changed")
+
+    def cancel_pending(self) -> None:
+        if self._rerun_after_id is not None:
+            try:
+                self.after_cancel(self._rerun_after_id)
+            except tk.TclError:
+                pass
+            self._rerun_after_id = None
+
+    def apply_preset(self, ingress_pct: float, dry_flow: float) -> None:
+        """Aplica un preset de calibración (ingreso pluvial % y Q sanitario) y re-simula."""
+        self._ingress_var.set(f"{ingress_pct:g}")
+        self._dry_var.set(f"{dry_flow:.3f}")
+        self._schedule_param_rerun()
 
     def show_search_feedback(self, message: str, is_error: bool = False) -> None:
         if is_error:
@@ -284,13 +484,13 @@ class ControlsPanel(tk.Frame):
             self._label_to_scenario[lbl] = sc
             self._id_to_label[sc.scenario_id] = lbl
             labels.append(lbl)
-        self._scenario_combo.configure(values=labels)
+        self._scenario_combo.set_values(labels)
         if labels:
             self._scenario_var.set(labels[0])
 
         node_ids, sources, sinks = dataset.graph.node_ids(), dataset.graph.source_ids(), dataset.graph.sink_ids()
         self._start_combo.configure(values=node_ids)
-        self._start_var.set("17" if "17" in sources else (sources[0] if sources else (node_ids[0] if node_ids else "")))
+        self._start_var.set("6" if "6" in node_ids else (sources[0] if sources else (node_ids[0] if node_ids else "")))
         self._target_combo.configure(values=[_NONE_TARGET] + node_ids)
         self._target_var.set("31" if "31" in sinks else (sinks[0] if sinks else _NONE_TARGET))
 
@@ -300,47 +500,37 @@ class ControlsPanel(tk.Frame):
             self._scenario_var.set(label)
 
     def get_simulation_config(self) -> SimulationConfig:
-        """Valida los parámetros numéricos y construye SimulationConfig."""
+        """Valida los parámetros (rangos de la interfaz) y construye SimulationConfig."""
         if (sc := self._label_to_scenario.get(self._scenario_var.get())) is None:
             raise ValueError("Seleccione un escenario de precipitación válido.")
-        try:
-            duration = float(self._duration_var.get().strip())
-            storm = float(self._storm_var.get().strip())
-            dt = float(self._dt_var.get().strip())
-        except ValueError as exc:
-            raise ValueError("Duración, Lluvia y Δt deben ser valores numéricos válidos.") from exc
-
-        if not all(math.isfinite(v) for v in (duration, storm, dt)):
-            raise ValueError("Los parámetros temporales deben ser números finitos.")
-        if duration <= 0.0 or storm <= 0.0 or dt <= 0.0:
-            raise ValueError("Duración, Lluvia y Δt deben ser mayores que 0 min.")
+        vals: Dict[str, float] = {}
+        for key, label, lo, hi, _inc, _d in _PARAM_SPECS:
+            raw = self._param_vars[key].get().strip().replace(",", ".")
+            try:
+                v = float(raw)
+            except ValueError as exc:
+                raise ValueError(f"«{label}» debe ser un número válido.") from exc
+            if not math.isfinite(v) or not (lo - 1e-12 <= v <= hi + 1e-12):
+                raise ValueError(f"«{label}» debe estar entre {lo:g} y {hi:g}.")
+            vals[key] = v
+        duration, storm, dt = vals["duration"], vals["storm"], vals["dt"]
         if dt > duration:
             raise ValueError("El paso temporal Δt no puede superar la duración total.")
         if storm > duration:
             storm = duration
             self._storm_var.set(f"{storm:g}")
-
-        return SimulationConfig(
+        cfg = SimulationConfig(
             scenario_id=sc.scenario_id, scenario_name=sc.condition, intensity_mm_h=sc.intensity_mm_h,
             duration_min=duration, storm_duration_min=storm, dt_min=dt,
             split_rule=theme.SPLIT_RULE_FROM_ES.get(self._split_var.get(), "proportional"),
             source_distribution=theme.SOURCE_DIST_FROM_ES.get(self._source_var.get(), "capacity"),
+            ingress_factor=vals["ingress"] / 100.0, dry_weather_flow_per_source_m3s=vals["dry"],
         )
+        self._applied_sig = self._param_sig()
+        self._param_error.pack_forget()
+        return cfg
 
-    def update_traversal_view(
-        self, frame: Optional[TraversalFrame] = None, summary_text: str = "", playing: bool = False,
-        mode: Optional[str] = None, has_frames: Optional[bool] = None,
-    ) -> None:
-        """Actualiza la nota compacta de recorrido/traza en el panel."""
-        self.set_traversal_playing(playing)
-        msg = summary_text or (frame.note if frame else "")
-        if msg:
-            self._traversal_note.configure(text=msg)
-            self._traversal_note.pack(fill=tk.X, pady=(6, 0))
-        else:
-            self._traversal_note.configure(text="")
-            self._traversal_note.pack_forget()
-
-    def set_traversal_playing(self, playing: bool) -> None:
-        """Actualiza el estado de reproducción del recorrido."""
-        self._playing = bool(playing)
+    def get_traversal_endpoints(self) -> Tuple[str, Optional[str]]:
+        """Nodo de inicio y destino (None si «(Ninguno)») seleccionados en el panel."""
+        raw_t = self._target_var.get().strip()
+        return self._start_var.get().strip(), (None if (not raw_t or raw_t == _NONE_TARGET) else raw_t)

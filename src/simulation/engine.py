@@ -9,7 +9,10 @@ from src.algorithms.analysis import classify_utilization
 from src.algorithms.traversals import topological_sort
 from src.data_structures import DirectedGraph, HashTable, LinkedList, PriorityQueue
 from src.io.data_loader import DrainageBasin
-from .models import NodeStepState, PipeStepState, SimulationConfig, SimulationResult, TimeStepSnapshot
+from .models import (
+    NodeStepState, PipeStepState, SimulationConfig, SimulationResult, TimeStepSnapshot,
+    resolve_pipe_hydraulics,
+)
 
 _DRAIN_SCALE_S = 60.0  # Escala fija de drenaje (s) para presión de respaldo independiente de Δt
 
@@ -28,21 +31,43 @@ class SewerSimulationEngine:
         self._pipe_ids = [p.pipe_id for p in all_pipes]
         self._pipe_idx = {pid: i for i, pid in enumerate(self._pipe_ids)}
         self._is_sink = [nid in set(graph.sink_ids()) for nid in self._topo_order]
-        min_t = min((p.transit_time_s for p in all_pipes if p.transit_time_s > 0.0), default=60.0)
-        self._max_substep_s = max(1.0, min(15.0, 0.35 * min_t))
+        self._max_substep_s = self._substep_limit(p.transit_time_s for p in all_pipes if p.q_max_m3s > 1e-12)
         self._rational_coeff = 0.00278 * basin.runoff_coefficient_c * basin.area_ha
 
-    def _source_weights(self, distribution: str) -> List[Tuple[int, float]]:
-        """Precalcula los pesos (node_idx, peso) del caudal racional entre alcantarillas fuente."""
+    @staticmethod
+    def _substep_limit(transits) -> float:
+        """Límite de subpaso (s) según el menor tránsito positivo entre tuberías abiertas."""
+        min_t = min((t for t in transits if t > 0.0), default=60.0)
+        return max(1.0, min(15.0, 0.35 * min_t))
+
+    def _source_weights(self, config: SimulationConfig) -> List[Tuple[str, float]]:
+        """Pesos (source_id, peso) del caudal racional; por Qmax efectivo saliente o uniformes 1/N."""
         sources = self.graph.source_ids()
         if not sources:
             return []
-        if distribution != "equal":
-            caps = [sum(e.q_max_m3s for e in self.graph.outgoing_pipes(s)) for s in sources]
+        if config.source_distribution != "equal":
+            ivs = config.interventions or {}
+            caps = [
+                sum(resolve_pipe_hydraulics(e, ivs.get(e.pipe_id))[0] for e in self.graph.outgoing_pipes(s))
+                for s in sources
+            ]
             total = sum(caps)
-            if total > 0.0:
-                return [(self._node_idx[s], c / total) for s, c in zip(sources, caps)]
-        return [(self._node_idx[s], 1.0 / len(sources)) for s in sources]
+            if total > 1e-12:
+                return [(s, c / total) for s, c in zip(sources, caps)]
+        return [(s, 1.0 / len(sources)) for s in sources]
+
+    def compute_source_inflows_by_source(
+        self, config: SimulationConfig, intensity_mm_h: float
+    ) -> Tuple[float, Dict[str, float]]:
+        """Caudal total y por fuente: Método Racional × factor de ingreso + caudal sanitario por fuente."""
+        q_rain = self._rational_coeff * intensity_mm_h * config.ingress_factor
+        per_source = {sid: q_rain * w + config.dry_weather_flow_per_source_m3s for sid, w in self._source_weights(config)}
+        return sum(per_source.values()), per_source
+
+    def compute_source_inflow_m3s(self, config: SimulationConfig, intensity_mm_h: float) -> Tuple[float, float]:
+        """Caudal total (Método Racional + sanitario) y promedio por nodo fuente."""
+        q_total, per_source = self.compute_source_inflows_by_source(config, intensity_mm_h)
+        return q_total, q_total / max(1, len(per_source))
 
     @staticmethod
     def _interval_intensity(config: SimulationConfig, t0_min: float, t1_min: float) -> float:
@@ -53,8 +78,10 @@ class SewerSimulationEngine:
         overlap = min(storm_dur, t1_min) - max(0.0, t0_min)
         return float(config.intensity_mm_h) * (overlap / dt) if overlap > 0.0 else 0.0
 
-    def _build_out_table(self, split_rule: str, uniform_dt: float) -> List[Tuple[Tuple[int, str, int, float, float, float, int], ...]]:
-        """Precalcula aristas salientes (pipe_idx, pipe_id, to_idx, q_max, transit_s, weight, delta_slot)."""
+    def _build_out_table(
+        self, split_rule: str, uniform_dt: float, eff: Dict[str, Tuple[float, float, float, float]]
+    ) -> List[Tuple[Tuple[int, str, int, float, float, float, int], ...]]:
+        """Precalcula aristas salientes (pipe_idx, pipe_id, to_idx, q_max, transit_s, weight, delta_slot) efectivas."""
         n_idx, p_idx = self._node_idx, self._pipe_idx
         table: List[Tuple[Tuple[int, str, int, float, float, float, int], ...]] = []
         for u in self._topo_order:
@@ -62,14 +89,18 @@ class SewerSimulationEngine:
             if not outs:
                 table.append(())
                 continue
-            tot_cap = 0.0 if split_rule == "equal" else sum(p.q_max_m3s for p in outs)
+            tot_cap = 0.0 if split_rule == "equal" else sum(eff[p.pipe_id][0] for p in outs)
             inv_n = 1.0 / len(outs)
-            table.append(tuple(
-                (p_idx[p.pipe_id], p.pipe_id, n_idx[p.to_node], p.q_max_m3s, p.transit_time_s,
-                 (p.q_max_m3s / tot_cap) if tot_cap > 0.0 else inv_n,
-                 max(1, int(math.ceil((p.transit_time_s - 1e-9) / uniform_dt))) if (uniform_dt > 0.0 and p.transit_time_s > 1e-9) else 0)
-                for p in outs
-            ))
+            row = []
+            for p in outs:
+                q_max, _, tr_s, _ = eff[p.pipe_id]
+                if split_rule == "equal" or tot_cap <= 1e-12:
+                    w = inv_n
+                else:
+                    w = q_max / tot_cap if q_max > 1e-12 else 0.0
+                slot = max(1, int(math.ceil((tr_s - 1e-9) / uniform_dt))) if (uniform_dt > 0.0 and tr_s > 1e-9) else 0
+                row.append((p_idx[p.pipe_id], p.pipe_id, n_idx[p.to_node], q_max, tr_s, w, slot))
+            table.append(tuple(row))
         return table
 
     def run(self, config: SimulationConfig) -> SimulationResult:
@@ -79,8 +110,14 @@ class SewerSimulationEngine:
         topo, pipe_ids, is_sink = self._topo_order, self._pipe_ids, self._is_sink
         n_nodes, n_pipes = len(topo), len(pipe_ids)
         cap_manhole = max(0.0, float(config.max_manhole_storage_m3))
-        src_weights = self._source_weights(config.source_distribution)
-        q_rain_rate = self._rational_coeff * max(0.0, float(config.intensity_mm_h))
+        pipes = self.graph.pipes()
+        ivs = config.interventions or {}
+        eff = {p.pipe_id: resolve_pipe_hydraulics(p, ivs.get(p.pipe_id)) for p in pipes}
+        max_substep_s = self._substep_limit(eff[p.pipe_id][2] for p in pipes if eff[p.pipe_id][0] > 1e-12)
+        src_weights = [(self._node_idx[sid], w) for sid, w in self._source_weights(config)]
+        q_rain_rate = self._rational_coeff * max(0.0, float(config.intensity_mm_h)) * max(0.0, float(config.ingress_factor))
+        q_dry = max(0.0, float(config.dry_weather_flow_per_source_m3s)) if src_weights else 0.0
+        dry_total_rate = q_dry * len(src_weights)
         storm_s = max(0.0, float(config.storm_duration_min) * 60.0)
         user_dt_min = max(0.1, float(config.dt_min))
         duration_min = max(user_dt_min, float(config.duration_min))
@@ -91,7 +128,7 @@ class SewerSimulationEngine:
         while t_prev + 1e-9 < duration_min:
             t_curr = min(duration_min, t_prev + user_dt_min)
             prev_s, dt_s = t_prev * 60.0, max(1e-9, (t_curr - t_prev) * 60.0)
-            n_sub = max(1, int(math.ceil(dt_s / self._max_substep_s)))
+            n_sub = max(1, int(math.ceil(dt_s / max_substep_s)))
             sub_dt = dt_s / n_sub
             step_schedule.append((t_prev, t_curr, prev_s, dt_s, n_sub, sub_dt))
             sub_end_s.extend(prev_s + k * sub_dt for k in range(1, n_sub + 1))
@@ -100,7 +137,7 @@ class SewerSimulationEngine:
         sub_end_s.append(sub_end_s[-1] + 1.0)  # Centinela para llegadas > duration_min
         base_dt = step_schedule[0][5]
         uniform_dt = base_dt if all(abs(x[5] - base_dt) < 1e-9 for x in step_schedule) else 0.0
-        out_table = self._build_out_table(config.split_rule, uniform_dt)
+        out_table = self._build_out_table(config.split_rule, uniform_dt, eff)
 
         # Estructuras propias (HashTable y PriorityQueue) con pre-bind de métodos locales
         node_stored, node_flooded, pipe_transit_vol = HashTable(128), HashTable(128), HashTable(128)
@@ -112,7 +149,8 @@ class SewerSimulationEngine:
         low_cat = classify_utilization(0.0)
         hist_append(TimeStepSnapshot(
             0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            {pid: PipeStepState(pid, 0.0, 0.0, 0.0, 0.0, low_cat, 0.0) for pid in pipe_ids},
+            {pid: PipeStepState(pid, 0.0, 0.0, 0.0, 0.0, low_cat, 0.0, eff[pid][0], eff[pid][1], eff[pid][0] <= 1e-12)
+             for pid in pipe_ids},
             {nid: NodeStepState(nid, 0.0, 0.0, 0.0, 0.0, 0.0) for nid in topo},
         ))
 
@@ -120,6 +158,8 @@ class SewerSimulationEngine:
         stored_active, flooded_active, ever_near, ever_over = set(), set(), set(), set()
         cum_in = cum_sink = tot_stored = tot_transit = tot_flooded = peak_sink_q = max_mass_err = 0.0
         peak_util, peak_flow, max_storage = [0.0] * n_pipes, [0.0] * n_pipes, [0.0] * n_nodes
+        peak_dem_flow, over_min = [0.0] * n_pipes, [0.0] * n_pipes
+        snap_min_cap = duration_min
         curr_slot = 0
 
         for step, (prev_m, curr_m, prev_s, snap_dt_s, n_sub, sub_dt_s) in enumerate(step_schedule, start=1):
@@ -138,15 +178,17 @@ class SewerSimulationEngine:
                         tot_transit -= vol
                 tot_transit = max(0.0, tot_transit)
 
-                if q_rain_rate > 0.0 and t0_s < storm_s:
-                    vol_rain = q_rain_rate * (min(storm_s, t1_s) - t0_s)
+                vol_rain = q_rain_rate * (min(storm_s, t1_s) - t0_s) if (q_rain_rate > 0.0 and t0_s < storm_s) else 0.0
+                vol_dry = q_dry * (t1_s - t0_s)
+                if vol_rain > 0.0 or vol_dry > 0.0:
                     has_arrivals = True
                     for s_idx, sw in src_weights:
-                        vol_in = vol_rain * sw
+                        vol_in = vol_rain * sw + vol_dry
                         sub_arr[s_idx] += vol_in
                         snap_arr[s_idx] += vol_in
-                    cum_in += vol_rain
-                    snap_inflow += vol_rain
+                    vol_total = vol_rain + vol_dry * len(src_weights) if src_weights else 0.0
+                    cum_in += vol_total
+                    snap_inflow += vol_total
 
                 if not has_arrivals and not stored_active:
                     curr_slot += 1
@@ -213,15 +255,29 @@ class SewerSimulationEngine:
                 st_u = ns_get(topo[u_idx]) if u_idx in stored_active else 0.0
                 q_node_dem = snap_arr[u_idx] * inv_snap_dt + st_u / _DRAIN_SCALE_S
                 for p_idx, pid, _, q_max, _, w, _ in out_edges:
+                    eff_p = eff[pid]
+                    if q_max <= 1e-12:  # Tubería cerrada: sin conducción; toda la demanda es exceso
+                        q_dem = q_node_dem * w
+                        pipe_states[pid] = PipeStepState(
+                            pid, 0.0, q_dem, pt_get(pid, 0.0), 0.0, low_cat, q_dem, q_max, eff_p[1], True
+                        )
+                        if q_dem > peak_dem_flow[p_idx]:
+                            peak_dem_flow[p_idx] = q_dem
+                        continue
                     q_cond = snap_pipe_sent[p_idx] * inv_snap_dt
                     q_dem = max(q_node_dem * w, q_cond)
-                    util_pct = (q_dem / q_max) * 100.0 if q_max > 0.0 else 0.0
+                    util_pct = (q_dem / q_max) * 100.0
                     cat = classify_utilization(util_pct)
                     pipe_states[pid] = PipeStepState(
-                        pid, q_cond, q_dem, pt_get(pid, 0.0), util_pct, cat, max(0.0, q_dem - q_max)
+                        pid, q_cond, q_dem, pt_get(pid, 0.0), util_pct, cat, max(0.0, q_dem - q_max),
+                        q_max, eff_p[1], False,
                     )
                     peak_util[p_idx] = max(peak_util[p_idx], util_pct)
                     peak_flow[p_idx] = max(peak_flow[p_idx], q_cond)
+                    if q_dem > peak_dem_flow[p_idx]:
+                        peak_dem_flow[p_idx] = q_dem
+                    if cat.is_overloaded:
+                        over_min[p_idx] = min(snap_min_cap, over_min[p_idx] + snap_dt_s / 60.0)
                     if cat.is_critical:
                         critical_ids.append(pid)
                         (over_ids if cat.is_overloaded else near_ids).append(pid)
@@ -254,4 +310,8 @@ class SewerSimulationEngine:
             peak_sink_q, cum_in, cum_sink, tot_stored + tot_transit, tot_flooded, max_mass_err,
             sorted(ever_near | ever_over), sorted(ever_near), sorted(ever_over),
             (time.perf_counter() - t_start) * 1000.0,
+            {pipe_ids[i]: over_min[i] for i in range(n_pipes)},
+            {pipe_ids[i]: peak_util[i] for i in range(n_pipes)},  # Razón de demanda pico = utilización pico
+            {pipe_ids[i]: peak_dem_flow[i] for i in range(n_pipes)},
+            {topo[i]: (nf_get(topo[i]) if i in flooded_active else 0.0) for i in range(n_nodes)},
         )

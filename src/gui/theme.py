@@ -81,6 +81,15 @@ SPLIT_RULE_FROM_ES: Dict[str, str] = {"Proporcional": "proportional", "Equitativ
 SOURCE_DIST_TO_ES: Dict[str, str] = {"capacity": "Por capacidad", "equal": "Uniforme (1/8)"}
 SOURCE_DIST_FROM_ES: Dict[str, str] = {"Por capacidad": "capacity", "Uniforme (1/8)": "equal"}
 
+ES_TO_SPLIT_RULE, ES_TO_SOURCE_DIST = SPLIT_RULE_FROM_ES, SOURCE_DIST_FROM_ES
+
+# Umbrales responsivos de ventana (px) y velocidades del reproductor (ms por paso)
+BREAKPOINT_COMPACT, BREAKPOINT_MEDIUM, BREAKPOINT_SHORT = 940, 1220, 650
+BREAKPOINT_FULL_ACTIONS, BREAKPOINT_HINT = 1660, 980
+PLAY_SPEED_MS: Dict[str, int] = {"0.5x": 840, "1x": 420, "2x": 210, "5x": 85, "10x": 40}
+MASS_BALANCE_OK_M3 = 1e-6
+ACCENT_ON_DARK, ACCENT_ON_DARK_HOVER, ACCENT_ON_DARK_INK = PALETTE_SLATE, "#7D91A6", PALETTE_IVORY
+
 _DPI_AWARENESS_SET = False
 _FONTS_REGISTERED = False
 
@@ -93,6 +102,16 @@ def translate_scenario_name(condition: str, short: bool = False) -> str:
 def format_scenario_label(scenario_id: int, condition: str, intensity_mm_h: float) -> str:
     """Formatea la etiqueta visible del escenario en español."""
     return f"Esc. {scenario_id}: {translate_scenario_name(condition)} ({intensity_mm_h:g} mm/h)"
+
+
+def resolve_dpi_scale(root: tk.Misc) -> float:
+    """Factor de escala DPI respecto a 96 DPI (entre 1.0 y 3.0)."""
+    try:
+        if (dpi := float(root.winfo_fpixels("1i"))) > 0.0:
+            return max(1.0, min(3.0, dpi / 96.0))
+    except Exception:
+        pass
+    return 1.0
 
 
 def enable_dpi_awareness() -> None:

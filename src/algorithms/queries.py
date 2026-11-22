@@ -1,9 +1,9 @@
 """Búsqueda O(1) y consultas estructurales sobre el grafo dirigido."""
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
-from src.data_structures import DirectedGraph, HashTable, ManholeNode, PipeEdge, Queue
+from src.data_structures import DirectedGraph, HashTable, ManholeNode, PipeEdge, Queue, Stack
 from .traversals import TraversalFrame, TraversalResult, bfs
 
 
@@ -157,6 +157,7 @@ def trace_upstream_result(
                 structure_name="Queue",
                 structure_items=list(queue),
                 note=f"Inicio aguas arriba desde nodo {target_node} (cola inversa)",
+                active_nodes={target_node},
             )
         )
 
@@ -167,6 +168,7 @@ def trace_upstream_result(
         incoming = graph.incoming_pipes(curr)
         enqueued_upstream: List[str] = []
         last_edge_id: Optional[str] = None
+        front_edges: set[str] = set()
 
         for edge in incoming:
             if not seen_pipes.contains(edge.pipe_id):
@@ -174,6 +176,7 @@ def trace_upstream_result(
                 pipes_list.append(edge)
                 visited_edges_set.add(edge.pipe_id)
                 last_edge_id = edge.pipe_id
+            front_edges.add(edge.pipe_id)
             if not visited.contains(edge.from_node):
                 visited.put(edge.from_node, True)
                 levels.put(edge.from_node, curr_level + 1)
@@ -200,6 +203,8 @@ def trace_upstream_result(
                     structure_name="Queue",
                     structure_items=list(queue),
                     note=note,
+                    active_nodes={curr, *enqueued_upstream},
+                    active_edges=front_edges,
                 )
             )
 
@@ -220,3 +225,133 @@ def trace_upstream_result(
         target_reached=False,
         frames=frames,
     )
+
+
+def find_node(graph: DirectedGraph, node_id: str) -> Optional[ManholeNode]:
+    """Consulta directa O(1) de un vértice por su identificador."""
+    return graph.get_node(node_id.strip())
+
+
+def find_pipe(graph: DirectedGraph, pipe_id: str) -> Optional[PipeEdge]:
+    """Consulta directa O(1) de una tubería por su identificador."""
+    return graph.get_pipe(pipe_id.strip())
+
+
+def search_entities(graph: DirectedGraph, query_text: str) -> Tuple[List[ManholeNode], List[PipeEdge]]:
+    """Busca por subcadena en id/etiqueta/tipo de nodos y en id/origen/destino de tuberías."""
+    q = query_text.strip().upper()
+    if not q:
+        return graph.nodes(), graph.pipes()
+    nodes = [n for n in graph.nodes() if q in n.node_id.upper() or q in n.label.upper() or q in n.node_type.upper()]
+    pipes = [p for p in graph.pipes() if q in p.pipe_id.upper() or q in p.from_node.upper() or q in p.to_node.upper()]
+    return nodes, pipes
+
+
+def find_isolated_from_sinks(
+    graph: DirectedGraph, blocked_pipe_ids: Set[str], sink_ids: Optional[List[str]] = None,
+) -> Tuple[Set[str], Set[str]]:
+    """Nodos y tuberías incomunicados de la PTAR ante cierres totales (BFS inverso desde cada sumidero)."""
+    if not blocked_pipe_ids:
+        return set(), set()
+    sinks = [sid for sid in (sink_ids or graph.sink_ids()) if graph.has_node(sid)]
+    if not sinks:
+        return set(), set()
+    queue: Queue[str] = Queue()
+    reachable: HashTable[str, bool] = HashTable(64)
+    for sid in sinks:
+        reachable.put(sid, True)
+        queue.enqueue(sid)
+    while not queue.is_empty():
+        v = queue.dequeue()
+        for edge in graph.incoming_pipes(v):
+            if edge.pipe_id not in blocked_pipe_ids and not reachable.contains(edge.from_node):
+                reachable.put(edge.from_node, True)
+                queue.enqueue(edge.from_node)
+    iso_nodes = {nid for nid in graph.node_ids() if not reachable.contains(nid)}
+    iso_pipes = {
+        e.pipe_id for e in graph.pipes()
+        if e.pipe_id not in blocked_pipe_ids and (e.from_node in iso_nodes or e.to_node in iso_nodes)
+    }
+    return iso_nodes, iso_pipes
+
+
+def _shortest_path_edges(graph: DirectedGraph, start_id: str, target_id: str) -> List[PipeEdge]:
+    """Camino dirigido de menos saltos (BFS con Queue/HashTable y reconstrucción con Stack)."""
+    if start_id == target_id or not graph.has_node(start_id) or not graph.has_node(target_id):
+        return []
+    queue: Queue[str] = Queue()
+    parent_edge: HashTable[str, Optional[PipeEdge]] = HashTable(64)
+    parent_edge.put(start_id, None)
+    queue.enqueue(start_id)
+    found = False
+    while not queue.is_empty():
+        u = queue.dequeue()
+        if u == target_id:
+            found = True
+            break
+        for edge in graph.outgoing_pipes(u):
+            if not parent_edge.contains(edge.to_node):
+                parent_edge.put(edge.to_node, edge)
+                queue.enqueue(edge.to_node)
+    if not found:
+        return []
+    stack: Stack[PipeEdge] = Stack()
+    curr = target_id
+    while curr != start_id:
+        e = parent_edge.get(curr)
+        if e is None:
+            break
+        stack.push(e)
+        curr = e.from_node
+    return [stack.pop() for _ in range(len(stack))]
+
+
+def _nearest_upstream_source_path(graph: DirectedGraph, target_id: str) -> List[PipeEdge]:
+    """Camino dirigido desde la fuente más cercana aguas arriba hasta `target_id` (BFS inverso)."""
+    node = graph.get_node(target_id)
+    if node is None or node.node_type == "source":
+        return []
+    queue: Queue[str] = Queue()
+    child_edge: HashTable[str, Optional[PipeEdge]] = HashTable(64)
+    child_edge.put(target_id, None)
+    queue.enqueue(target_id)
+    found: Optional[str] = None
+    while not queue.is_empty():
+        v = queue.dequeue()
+        n = graph.get_node(v)
+        if n is not None and n.node_type == "source":
+            found = v
+            break
+        for edge in graph.incoming_pipes(v):
+            if not child_edge.contains(edge.from_node):
+                child_edge.put(edge.from_node, edge)
+                queue.enqueue(edge.from_node)
+    if found is None:
+        return []
+    path: List[PipeEdge] = []
+    curr = found
+    while curr != target_id:
+        e = child_edge.get(curr)
+        if e is None:
+            break
+        path.append(e)
+        curr = e.to_node
+    return path
+
+
+def build_route_to_sink(
+    graph: DirectedGraph, pipe_id: Optional[str] = None, node_id: Optional[str] = None, sink_id: str = "31",
+) -> List[PipeEdge]:
+    """Ruta fuente → punto seleccionado → PTAR (lista de tuberías) para el perfil longitudinal."""
+    sinks = graph.sink_ids()
+    target = sink_id if graph.has_node(sink_id) else (sinks[0] if sinks else "")
+    if not target:
+        return []
+    if pipe_id is not None:
+        edge = graph.get_pipe(pipe_id)
+        if edge is None:
+            return []
+        return _nearest_upstream_source_path(graph, edge.from_node) + [edge] + _shortest_path_edges(graph, edge.to_node, target)
+    if node_id is not None and graph.has_node(node_id):
+        return _nearest_upstream_source_path(graph, node_id) + _shortest_path_edges(graph, node_id, target)
+    return []

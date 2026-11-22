@@ -2,10 +2,13 @@
 
 import os, unittest
 from src.algorithms import (
-    UTILIZATION_LEVELS, UTILIZATION_SCALE, bfs, classify_utilization, dfs,
-    get_node_details, get_pipe_details, rank_critical_pipes, search_entity,
+    OVERLOAD_PERSISTENCE_LEVELS, UTILIZATION_LEVELS, UTILIZATION_SCALE, TraversalAnimFrame, TraversalFrame,
+    bfs, bfs_anim_frames, build_route_to_sink, classify_overload_persistence, classify_utilization,
+    compute_source_attribution, dfs, dfs_anim_frames, find_isolated_from_sinks, find_node, find_pipe,
+    get_node_details, get_pipe_details, rank_critical_pipes, search_entities, search_entity,
     topological_sort, trace_downstream, trace_upstream, trace_upstream_result,
 )
+from src.simulation import PipeIntervention, SewerSimulationEngine, SimulationConfig
 from src.io.data_loader import load_dataset
 
 DATA_XLSX = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "DataSetBicentenario.xlsx"))
@@ -131,6 +134,133 @@ class TestAlgorithms(unittest.TestCase):
         )
         self.assertEqual([r.pipe_id for r in strict_crit], ["P2", "P1"])
         self.assertTrue(all(75.0 < r.utilization_pct <= 100.0 for r in strict_crit))
+
+    def test_find_and_search_entities(self) -> None:
+        self.assertEqual(find_node(self.graph, " 31 ").node_id, "31")
+        self.assertIsNone(find_node(self.graph, "ZZZ"))
+        self.assertEqual(find_pipe(self.graph, "P31 ").pipe_id, "P31")
+        self.assertIsNone(find_pipe(self.graph, "P999"))
+        nodes, pipes = search_entities(self.graph, "p3")
+        self.assertTrue({"P3", "P30", "P31"} <= {p.pipe_id for p in pipes})
+        nodes, pipes = search_entities(self.graph, "31")
+        self.assertIn("31", {n.node_id for n in nodes})
+        self.assertTrue({"P3", "P30"} <= {p.pipe_id for p in pipes})  # coincide por extremo de la tubería
+        all_nodes, all_pipes = search_entities(self.graph, "  ")
+        self.assertEqual((len(all_nodes), len(all_pipes)), (self.graph.num_nodes, 59))
+        self.assertEqual(search_entities(self.graph, "no-existe-xyz"), ([], []))
+
+    def test_isolation_route_and_traversal_anim_frames(self) -> None:
+        self.assertEqual(find_isolated_from_sinks(self.graph, set()), (set(), set()))
+        nodes, pipes = find_isolated_from_sinks(self.graph, {"P3"})
+        self.assertEqual(nodes, {"C", "1", "27"})
+        self.assertEqual(pipes, {"P1", "P2"})
+        self.assertNotIn("31", nodes)
+        # Cerrar P3 y P30 (únicas entradas a la PTAR) aísla toda la red salvo el sumidero
+        n_all, _ = find_isolated_from_sinks(self.graph, {"P3", "P30"})
+        self.assertEqual(len(n_all), self.graph.num_nodes - 1)
+
+        for kwargs in ({"pipe_id": "P31"}, {"node_id": "17"}, {"node_id": "C"}):
+            route = build_route_to_sink(self.graph, **kwargs)
+            self.assertTrue(route and route[-1].to_node == "31")
+            for a, b in zip(route, route[1:]):
+                self.assertEqual(a.to_node, b.from_node)
+            self.assertEqual(self.graph.get_node(route[0].from_node).node_type, "source")
+        self.assertIn("P31", [e.pipe_id for e in build_route_to_sink(self.graph, pipe_id="P31")])
+        self.assertEqual(build_route_to_sink(self.graph, pipe_id="NOPE"), [])
+        self.assertEqual(build_route_to_sink(self.graph), [])
+        self.assertEqual(build_route_to_sink(self.graph, node_id="31")[-1].to_node, "31")  # solo prefijo aguas arriba
+
+        self.assertIs(TraversalAnimFrame, TraversalFrame)
+        res_d, frames_d = dfs_anim_frames(self.graph, "17", "31")
+        self.assertIs(frames_d, res_d.frames)
+        self.assertTrue(res_d.target_reached and len(frames_d) > 2)
+        _, frames_full = dfs_anim_frames(self.graph, "17")  # recorrido completo: hay ramas agotadas
+        self.assertTrue(any(f.backtracked_nodes and f.backtracked_edges for f in frames_full), "DFS debe registrar retroceso")
+        for f in frames_full + frames_d[:-1]:
+            self.assertEqual(f.active_nodes | f.backtracked_nodes, f.visited_nodes | {f.current_node})
+            self.assertFalse(f.active_nodes & f.backtracked_nodes)
+            self.assertFalse(f.active_edges & f.backtracked_edges)
+            self.assertIn("17", f.active_nodes)
+            self.assertIn(f.current_node, f.active_nodes)
+        last = frames_d[-1]
+        self.assertEqual(last.active_nodes, set(res_d.path_nodes))
+        self.assertEqual(last.active_edges, {p.pipe_id for p in res_d.path_pipes})
+
+        res_b, frames_b = bfs_anim_frames(self.graph, "17", "31")
+        self.assertTrue(res_b.target_reached and frames_b[0].active_nodes == {"17"})
+        for f in frames_b[1:-1]:
+            self.assertIn(f.current_node, f.active_nodes)
+            self.assertTrue(f.active_nodes <= f.visited_nodes | set(f.structure_items))
+            for pid in f.active_edges:
+                e = self.graph.get_pipe(pid)
+                self.assertTrue(e.to_node in f.active_nodes)
+        self.assertTrue(any(len(f.active_nodes) > 1 for f in frames_b))
+        self.assertEqual(frames_b[-1].active_nodes, set(res_b.path_nodes))
+        self.assertEqual([f.step_index for f in frames_b], list(range(len(frames_b))))
+        # Sin objetivo, bfs/dfs conservan su firma
+        self.assertEqual(bfs(self.graph, "17").visited_order, bfs_anim_frames(self.graph, "17")[0].visited_order)
+        self.assertEqual(dfs(self.graph, "17").frames, [])
+        up = trace_upstream_result(self.graph, "31", record_frames=True)
+        self.assertTrue(up.frames and all(f.current_node in f.active_nodes for f in up.frames))
+
+    def test_source_attribution_and_overload_persistence_levels(self) -> None:
+        graph = self.graph
+        attr = compute_source_attribution(graph)
+        sources = set(graph.source_ids())
+        for nid, shares in attr.node_shares.items():
+            if shares:
+                self.assertAlmostEqual(sum(f for _, f in shares), 1.0, places=9)
+                self.assertTrue({sid for sid, _ in shares} <= sources)
+                self.assertEqual(shares, sorted(shares, key=lambda kv: (-kv[1], kv[0])))
+        for sid in sources:
+            self.assertEqual(attr.node_shares[sid], [(sid, 1.0)])
+        self.assertEqual(len(attr.node_shares["31"]), len(sources))
+        self.assertEqual(set(attr.pipe_shares), {p.pipe_id for p in graph.pipes()})
+
+        engine = SewerSimulationEngine(graph, load_dataset(DATA_XLSX).basin)
+        cfg = SimulationConfig(5, "Extrema", 100.0, interventions={"P3": PipeIntervention("P3", 100.0)})
+        res = engine.run(cfg)
+        snap = res.snapshots[40]
+        live = compute_source_attribution(graph, snap)
+        for nid, shares in live.node_shares.items():
+            if shares:
+                self.assertAlmostEqual(sum(f for _, f in shares), 1.0, places=9)
+        self.assertEqual(live.pipe_shares["P3"], [])  # tubería cerrada: sin aporte atribuible
+        self.assertEqual(live.node_shares["31"] != [], True)
+        override = compute_source_attribution(graph, None, pipe_qmax_overrides={"P3": 0.0})
+        self.assertEqual(override.pipe_shares["P3"], [])
+        eq = compute_source_attribution(graph, None, "equal", source_distribution="equal")
+        self.assertAlmostEqual(sum(f for _, f in eq.node_shares["31"]), 1.0, places=9)
+
+        self.assertEqual(len(OVERLOAD_PERSISTENCE_LEVELS), 5)
+        tiers = [classify_overload_persistence(m, 100.0)[0] for m in (0.0, 10.0, 40.0, 60.0, 90.0)]
+        self.assertEqual(tiers, [0, 1, 2, 3, 4])
+
+    def test_rank_critical_pipes_demand_tiebreak_and_overrides(self) -> None:
+        ids = ("P1", "P2", "P3")
+        utils = {"P1": 120.0, "P2": 120.0, "P3": 80.0}
+        flows = {pid: 0.01 for pid in ids}
+        base = rank_critical_pipes(self.graph, flows, utils, min_utilization_pct=50.0)
+        self.assertEqual([r.pipe_id for r in base][-1], "P3")
+        dem = {"P1": 130.0, "P2": 300.0, "P3": 80.0}
+        ranked = rank_critical_pipes(self.graph, flows, utils, 50.0, pipe_demand_ratios_pct=dem)
+        self.assertEqual([r.pipe_id for r in ranked], ["P2", "P1", "P3"])
+        self.assertEqual([r.rank for r in ranked], [1, 2, 3])
+        self.assertEqual(ranked[0].demand_ratio_pct, 300.0)
+        self.assertEqual(base[0].demand_ratio_pct, base[0].utilization_pct)  # sin demanda: igual a la utilización
+        qm = {"P1": 0.02}
+        over = rank_critical_pipes(self.graph, flows, utils, 50.0, pipe_qmax_overrides=qm,
+                                   pipe_excess_flows_m3s={"P2": 0.123})
+        by_id = {r.pipe_id: r for r in over}
+        self.assertEqual(by_id["P1"].q_max_m3s, 0.02)
+        self.assertAlmostEqual(by_id["P1"].excess_flow_m3s, 0.2 * 0.02)
+        self.assertEqual(by_id["P2"].excess_flow_m3s, 0.123)
+        self.assertEqual(by_id["P2"].q_max_m3s, self.graph.get_pipe("P2").q_max_m3s)
+        self.assertEqual(by_id["P3"].excess_flow_m3s, max(0.0, 0.01 - self.graph.get_pipe("P3").q_max_m3s,
+                                                          (0.8 - 1.0) * self.graph.get_pipe("P3").q_max_m3s))
+        # Los filtros siguen funcionando (llamadas posicionales previas intactas)
+        self.assertEqual([r.pipe_id for r in rank_critical_pipes(self.graph, flows, utils, 100.0, None, True)], ["P1", "P2"])
+        self.assertEqual([r.pipe_id for r in rank_critical_pipes(self.graph, flows, utils, 75.0, 100.0)], ["P3"])
 
 
 if __name__ == "__main__":

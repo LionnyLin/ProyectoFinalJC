@@ -17,21 +17,27 @@ from . import theme
 from .charts_panel import ChartsPanel
 from .comparison_panel import ComparisonPanel
 from .controls_panel import ControlsPanel
+from .icons import build_icon_set
 from .inspector_panel import CriticalPipesTab, InspectorTab
 from .network_canvas import NetworkCanvas
 
-_SPEED_MS: Dict[str, int] = {"0.5x": 500, "1x": 250, "2x": 120, "4x": 60}
-_ANIM_MS = 420
+_SPEED_MS: Dict[str, int] = theme.PLAY_SPEED_MS
+_ANIM_MS_BY_ALGO: Dict[str, int] = {"BFS": 560, "DFS": 340}
+_TRAVERSAL_ANIM_MS = 560
+_TYPING_CLASSES = ("Entry", "TEntry", "Spinbox", "TSpinbox", "TCombobox", "Text")
+_BUTTON_CLASSES = ("Button", "TButton", "Menubutton", "Checkbutton", "TCheckbutton")
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _BTN_PAL = {
     "primary": (theme.ACCENT_PRIMARY, theme.ACCENT_HOVER, theme.ACCENT_INK, theme.ACCENT_HOVER, "label"),
     "dark": (theme.SHELL_ELEVATED, theme.SHELL_HOVER, theme.SHELL_TEXT, theme.SHELL_BORDER, "small"),
     "light": (theme.PAPER_SUBTLE, theme.PAPER_HOVER, theme.INK_PRIMARY, theme.PAPER_BORDER, "small"),
+    "dark_primary": (theme.ACCENT_ON_DARK, theme.ACCENT_ON_DARK_HOVER, theme.ACCENT_ON_DARK_INK, theme.ACCENT_ON_DARK, "small"),
 }
 
 
-def _base_key(c: SimulationConfig) -> Tuple[float, float, float, str, str, float]:
-    return (c.duration_min, c.storm_duration_min, c.dt_min, c.split_rule, c.source_distribution, c.max_manhole_storage_m3)
+def _base_key(c: SimulationConfig) -> tuple:
+    return (c.duration_min, c.storm_duration_min, c.dt_min, c.split_rule, c.source_distribution,
+            c.max_manhole_storage_m3, c.ingress_factor, c.dry_weather_flow_per_source_m3s)
 
 
 class BicentenarioSewerApp(tk.Tk):
@@ -43,18 +49,23 @@ class BicentenarioSewerApp(tk.Tk):
         self.geometry("1320x780"); self.minsize(780, 540); self.configure(bg=theme.DOCK_BG)
         self.fonts = theme.resolve_fonts(self)
         self.style = theme.apply_ttk_theme(self, self.fonts)
+        self._dpi_scale = theme.resolve_dpi_scale(self)
+        self._icons = build_icon_set(
+            fg_dark=theme.SHELL_TEXT, fg_light=theme.INK_PRIMARY, fg_on_accent=theme.ACCENT_INK,
+            accent_color=theme.ACCENT_PRIMARY, scale=self._dpi_scale,
+        )  # referencias vivas: evitan que el GC libere las PhotoImage
 
         # Estado UI (dueño único)
         self.dataset: Optional[NetworkDataset] = None
         self.result: Optional[SimulationResult] = None
-        self.current_step, self.is_playing, self.play_speed_ms = 0, False, 250
+        self.current_step, self.is_playing, self.play_speed_ms = 0, False, _SPEED_MS["2x"]
         self.selected_kind: Optional[str] = None; self.selected_id: Optional[str] = None
         self.traversal_frames: List[TraversalFrame] = []
         self.anim_idx, self.anim_playing = 0, False
         self.cached_comparisons: Optional[List[ScenarioSummary]] = None
         self._play_after_id: Optional[str] = None; self._anim_after_id: Optional[str] = None
         self._traversal_result: Optional[TraversalResult] = None
-        self._base_compare_key: Optional[Tuple[float, float, float, str, str, float]] = None
+        self._base_compare_key: Optional[tuple] = None
         self._last_chart_pipe: Optional[str] = None; self._updating_slider = False
         self._btn_styles: Dict[tk.Button, Tuple[str, str, str]] = {}
         self._slider_dragging = False
@@ -64,21 +75,40 @@ class BicentenarioSewerApp(tk.Tk):
         self._traversal_mode: Optional[str] = None
         self._traversal_origin: Optional[str] = None
         self._traversal_banner: str = ""
+        self._traversal_log: str = ""
+        self._last_traversal_algo = "BFS"
+        # Estado responsivo y de paneles
+        self._show_left, self._show_right = True, True
+        self._layout_tier = ""
+        self._topbar_sig: Optional[tuple] = None
+        self._resize_after_id: Optional[str] = None
+        self._closing = False
+        self._player_compact: Optional[bool] = None
 
         self._build_ui()
+        self._bind_shortcuts()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         xlsx = os.path.join(_ROOT_DIR, "data", "DataSetBicentenario.xlsx")
         start_path = initial_data_path or (xlsx if os.path.exists(xlsx) else os.path.join(_ROOT_DIR, "data", "csv"))
         if start_path and os.path.exists(start_path): self.load_data(start_path)
+        self.update_idletasks()
+        self._apply_responsive_layout(self.winfo_width(), self.winfo_height())
 
-    def _btn(self, parent: tk.Misc, text: str, cmd: Callable[[], None], style: str = "light", padx: int = 8, pady: int = 3) -> tk.Button:
+    def _btn(self, parent: tk.Misc, text: str, cmd: Callable[[], None], style: str = "light", padx: int = 8, pady: int = 3,
+             icon: Optional[str] = None) -> tk.Button:
         bg, hov, fg, bdr, fk = _BTN_PAL[style]
+        kw = {"image": self._icons[icon], "compound": tk.LEFT} if icon else {}
         b = tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg, activebackground=hov, activeforeground=fg,
-                      relief="flat", bd=0, padx=padx, pady=pady, font=self.fonts[fk], cursor="hand2", highlightthickness=1, highlightbackground=bdr)
+                      relief="flat", bd=0, padx=padx, pady=pady, font=self.fonts[fk], cursor="hand2", highlightthickness=1, highlightbackground=bdr, **kw)
         self._btn_styles[b] = (bg, hov, fg)
-        b.bind("<Enter>", lambda _e, w=b, h=hov: w.configure(bg=h) if str(w.cget("state")) != "disabled" else None)
-        b.bind("<Leave>", lambda _e, w=b, c=bg: w.configure(bg=c) if str(w.cget("state")) != "disabled" else None)
+        b.bind("<Enter>", lambda _e, w=b: w.configure(bg=self._btn_styles[w][1]) if str(w.cget("state")) != "disabled" else None)
+        b.bind("<Leave>", lambda _e, w=b: w.configure(bg=self._btn_styles[w][0]) if str(w.cget("state")) != "disabled" else None)
         return b
+
+    def _restyle_btn(self, btn: tk.Button, style: str) -> None:
+        bg, hov, fg, bdr, _fk = _BTN_PAL[style]
+        self._btn_styles[btn] = (bg, hov, fg)
+        btn.configure(bg=bg, fg=fg, activebackground=hov, activeforeground=fg, highlightbackground=bdr)
 
     def _set_btn_enabled(self, btn: tk.Button, enabled: bool) -> None:
         bg, _hov, fg = self._btn_styles.get(btn, (theme.PAPER_SUBTLE, theme.PAPER_HOVER, theme.INK_PRIMARY))
@@ -94,14 +124,92 @@ class BicentenarioSewerApp(tk.Tk):
             )
 
     def _build_ui(self) -> None:
-        self.topbar = tk.Frame(self, bg=theme.SHELL_BG); self.topbar.pack(side=tk.TOP, fill=tk.X)
-        tk.Label(self.topbar, text="Simulador de Alcantarillado — Ciudad Bicentenario", bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, font=self.fonts["headline"], padx=12, pady=7).pack(side=tk.LEFT)
-        self._status_lbl = tk.Label(self.topbar, text="Listo", bg=theme.SHELL_BG, fg=theme.SHELL_TEXT_MUTED, font=self.fonts["small"], padx=10)
-        self._status_lbl.pack(side=tk.RIGHT)
-        for text, cmd in (("Supuestos", self._show_assumptions), ("Exportar Word", lambda: self._action_export("docx")), ("Exportar MD/CSV", lambda: self._action_export("md"))):
-            self._btn(self.topbar, text, cmd, "dark").pack(side=tk.RIGHT, padx=(0, 5), pady=6)
-        tk.Frame(self, bg=theme.SHELL_BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
+        self._build_topbar()
+        tk.Frame(self, bg=theme.ACCENT_PRIMARY, height=3).pack(side=tk.TOP, fill=tk.X)
+        self._build_legend_bar()
+        tk.Frame(self, bg=theme.DOCK_BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
 
+        # Barra de estado inferior (se empaqueta antes del área expandible)
+        statusbar = tk.Frame(self, bg=theme.SHELL_BG)
+        statusbar.pack(side=tk.BOTTOM, fill=tk.X)
+        tk.Frame(self, bg=theme.ACCENT_PRIMARY, height=2).pack(side=tk.BOTTOM, fill=tk.X)
+        self._status_lbl = tk.Label(statusbar, text="Listo", bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, font=self.fonts["small"], anchor="w")
+        self._status_lbl.pack(side=tk.LEFT, padx=12, pady=3)
+        self.lbl_shortcuts_hint = tk.Label(
+            statusbar, text="Espacio: Reproducir/Pausar  ·  ←/→: Paso  ·  Inicio: t=0  ·  Ctrl+F: Buscar  ·  Esc: Limpiar",
+            bg=theme.SHELL_BG, fg=theme.SHELL_TEXT_MUTED, font=self.fonts["small"],
+        )
+        self.lbl_shortcuts_hint.pack(side=tk.RIGHT, padx=12, pady=3)
+
+        self.paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=theme.DOCK_BORDER, sashwidth=4, bd=0, relief="flat", opaqueresize=True)
+        self.paned.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.controls = ControlsPanel(self.paned, self.fonts, {
+            "run_simulation": lambda: self.run_simulation(auto_play=True),
+            "param_changed": lambda: self.run_simulation(),
+            "pause_playback": lambda: self._stop_playback(True),
+            "search": self._action_search, "run_traversal": self._action_traversal,
+            "trace_downstream": lambda s: self._action_trace(s, False), "trace_upstream": lambda s: self._action_trace(s, True),
+            "clear_traversal": self.clear_traversal, "toggle_anim": self._action_toggle_anim,
+        })
+
+        self._center = center = tk.Frame(self.paned, bg=theme.DOCK_BG)
+        self.network_canvas = NetworkCanvas(center, fonts=self.fonts, on_select=self.select_entity)
+        self.network_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._build_player(center)
+        kbar = tk.Frame(center, bg=theme.SHELL_BG, padx=10, pady=5); kbar.pack(side=tk.TOP, fill=tk.X)
+        self._kpi_labels = {k: tk.Label(kbar, text=t, bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, font=self.fonts["mono"])
+                            for k, t in (("inflow", "Entrada: 0.000 m³/s"), ("sink", "PTAR 31: 0.000 m³/s"), ("crit", "Crít. (>75–100%): 0 · Sobr. (>100%): 0"))}
+        for lbl in self._kpi_labels.values(): lbl.pack(side=tk.LEFT, padx=(0, 14))
+
+        self.notebook = ttk.Notebook(self.paned)
+        self.inspector_tab = InspectorTab(self.notebook, self.fonts)
+        self.critical_tab = CriticalPipesTab(self.notebook, self.fonts, on_select_pipe=lambda pid: self.select_entity("pipe", pid))
+        self.charts_panel = ChartsPanel(self.notebook, self.fonts)
+        self.comparison_panel = ComparisonPanel(self.notebook, self.fonts, self.run_comparison, lambda sid: (self.controls.select_scenario_by_id(sid), self.run_simulation()))
+        for w, title in ((self.inspector_tab, "Inspector"), (self.critical_tab, "Críticas"), (self.charts_panel, "Gráficas"), (self.comparison_panel, "Comparación")):
+            self.notebook.add(w, text=title)
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        self._sync_panes()
+        self._update_toggle_styles()
+        self.bind("<Configure>", self._on_window_configure)
+
+    def _build_topbar(self) -> None:
+        self.topbar = tk.Frame(self, bg=theme.SHELL_BG)
+        self.topbar.pack(side=tk.TOP, fill=tk.X)
+        left = tk.Frame(self.topbar, bg=theme.SHELL_BG)
+        left.pack(side=tk.LEFT, padx=(10, 8), pady=6)
+        tk.Label(left, image=self._icons["brand_network"], bg=theme.SHELL_BG).pack(side=tk.LEFT, padx=(0, 8))
+        wrap = tk.Frame(left, bg=theme.SHELL_BG)
+        wrap.pack(side=tk.LEFT, padx=(0, 14))
+        self.lbl_app_title = tk.Label(wrap, text="Simulador de Alcantarillado — Ciudad Bicentenario", bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, font=self.fonts["headline"], anchor="w")
+        self.lbl_app_title.pack(anchor="w")
+        self.lbl_app_subtitle = tk.Label(wrap, text="Red dirigida de alcantarillado hacia PTAR Punta Canoa (Nodo 31)", bg=theme.SHELL_BG, fg=theme.SHELL_TEXT_MUTED, font=self.fonts["small"], anchor="w")
+        self.lbl_app_subtitle.pack(anchor="w")
+        self.btn_toggle_left = self._btn(left, " Controles", self.toggle_left_panel, "dark", padx=9, pady=4, icon="sliders_light")
+        self.btn_toggle_left.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_toggle_right = self._btn(left, " Análisis", self.toggle_right_panel, "dark", padx=9, pady=4, icon="chart_light")
+        self.btn_toggle_right.pack(side=tk.LEFT)
+
+        self.actions_bar = tk.Frame(self.topbar, bg=theme.SHELL_BG)
+        self.actions_bar.pack(side=tk.RIGHT, padx=10, pady=6)
+        mk = lambda text, cmd: self._btn(self.actions_bar, text, cmd, "dark", padx=9, pady=4)
+        self.btn_load_excel, self.btn_load_csv = mk("Cargar Excel", lambda: self._pick_and_load(False)), mk("Cargar CSV", lambda: self._pick_and_load(True))
+        self.btn_export_csv, self.btn_assumptions = mk("Exportar CSV", self._action_export_csv), mk("Supuestos", self._show_assumptions)
+        self.btn_export_md, self.btn_export_docx = mk("Exportar MD/CSV", lambda: self._action_export("md")), mk("Exportar Word", lambda: self._action_export("docx"))
+        self.menu_btn_file = tk.Menubutton(
+            self.actions_bar, text="Archivo y Modelo ", image=self._icons["chevron_light"], compound=tk.RIGHT,
+            bg=theme.SHELL_ELEVATED, fg=theme.SHELL_TEXT, activebackground=theme.SHELL_HOVER, activeforeground=theme.SHELL_TEXT,
+            relief="flat", bd=0, padx=10, pady=5, font=self.fonts["small"], cursor="hand2",
+            highlightthickness=1, highlightbackground=theme.ACCENT_PRIMARY,
+        )
+        menu = tk.Menu(self.menu_btn_file, tearoff=0, bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, activebackground=theme.ACCENT_PRIMARY, activeforeground=theme.ACCENT_INK, font=self.fonts["body"])
+        for item in (("Cargar Excel (.xlsx)...", lambda: self._pick_and_load(False)), ("Cargar carpeta CSV...", lambda: self._pick_and_load(True)),
+                           ("Exportar CSV...", self._action_export_csv), None, ("Supuestos del modelo", self._show_assumptions), None,
+                           ("Exportar reporte Word...", lambda: self._action_export("docx")), ("Exportar reporte MD/CSV...", lambda: self._action_export("md"))):
+            menu.add_separator() if item is None else menu.add_command(label=item[0], command=item[1])
+        self.menu_btn_file.configure(menu=menu)
+
+    def _build_legend_bar(self) -> None:
         lbar = tk.Frame(self, bg=theme.PAPER_SUBTLE, pady=4, padx=10); lbar.pack(side=tk.TOP, fill=tk.X)
         self._legend_labels: List[Tuple[str, tk.Label]] = []
         for rng, hex_c, _ in theme.COLOR_SCALE_LEGEND:
@@ -113,38 +221,34 @@ class BicentenarioSewerApp(tk.Tk):
         for text, var in (("% Util.", self._show_util_var), ("IDs", self._show_ids_var)):
             tk.Checkbutton(lbar, text=text, variable=var, command=lambda: self.network_canvas.set_label_options(self._show_ids_var.get(), self._show_util_var.get()),
                            bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY, activebackground=theme.PAPER_SUBTLE, selectcolor=theme.PAPER_BG, font=self.fonts["small"], cursor="hand2").pack(side=tk.RIGHT, padx=(0, 8))
-        tk.Frame(self, bg=theme.DOCK_BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
 
-        self.paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=theme.DOCK_BORDER, sashwidth=4, bd=0, relief="flat")
-        self.paned.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.controls = ControlsPanel(self.paned, self.fonts, {
-            "load_excel": lambda: self._pick_and_load(False), "load_csv": lambda: self._pick_and_load(True), "export_csv": self._action_export_csv,
-            "run_simulation": lambda: self.run_simulation(auto_play=True), "search": self._action_search, "run_traversal": self._action_traversal,
-            "trace_downstream": lambda s: self._action_trace(s, False), "trace_upstream": lambda s: self._action_trace(s, True),
-            "clear_traversal": self.clear_traversal,
-        })
-        self.paned.add(self.controls, width=290, minsize=240, stretch="never")
-
-        center = tk.Frame(self.paned, bg=theme.DOCK_BG)
-        self.network_canvas = NetworkCanvas(center, fonts=self.fonts, on_select=self.select_entity)
-        self.network_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        pbar = tk.Frame(center, bg=theme.PAPER_SUBTLE, padx=8, pady=5); pbar.pack(side=tk.TOP, fill=tk.X)
-        self._btn_play = self._btn(pbar, "▶ Iniciar", self.toggle_play, "primary", padx=9); self._btn_play.pack(side=tk.LEFT, padx=(0, 4))
-        self._btn_step_back = self._btn(pbar, "◀ Paso", self.step_backward, padx=6); self._btn_step_back.pack(side=tk.LEFT, padx=(0, 4))
-        self._btn_step_fwd = self._btn(pbar, "Paso ▶", self.step_forward, padx=6); self._btn_step_fwd.pack(side=tk.LEFT, padx=(0, 4))
-        self._btn_reset = self._btn(pbar, "↺ Reiniciar", self._reset_playback, padx=6); self._btn_reset.pack(side=tk.LEFT, padx=(0, 4))
-        self._set_btn_enabled(self._btn_step_back, False)
-        self._set_btn_enabled(self._btn_step_fwd, False)
-        self._set_btn_enabled(self._btn_reset, False)
-        self._speed_var = tk.StringVar(value="1x")
-        scb = ttk.Combobox(pbar, textvariable=self._speed_var, values=tuple(_SPEED_MS), state="readonly", width=4, font=self.fonts["mono"])
-        scb.pack(side=tk.LEFT, padx=(2, 8)); scb.bind("<<ComboboxSelected>>", lambda _e: setattr(self, "play_speed_ms", _SPEED_MS.get(self._speed_var.get(), 250)))
-        self._time_lbl = tk.Label(pbar, text="t = 0.0 / 90.0 min", bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY, font=self.fonts["mono_bold"])
+    def _build_player(self, parent: tk.Frame) -> None:
+        pbar = tk.Frame(parent, bg=theme.PAPER_SUBTLE, padx=8, pady=5); pbar.pack(side=tk.TOP, fill=tk.X)
+        row1 = tk.Frame(pbar, bg=theme.PAPER_SUBTLE); row1.pack(fill=tk.X)
+        self._btn_reset = self._btn(row1, " Inicio", self._reset_playback, padx=7, icon="reset_light")
+        self._btn_step_back = self._btn(row1, " -1", self.step_backward, padx=7, icon="step_back_light")
+        self._btn_play = self._btn(row1, " Reproducir", self.toggle_play, "primary", padx=9, icon="play_on_accent")
+        self._btn_step_fwd = self._btn(row1, " +1", self.step_forward, padx=7, icon="step_fwd_light")
+        for b, padx in ((self._btn_reset, (0, 3)), (self._btn_step_back, 2), (self._btn_play, 4), (self._btn_step_fwd, 2)):
+            b.pack(side=tk.LEFT, padx=padx)
+        for b in (self._btn_step_back, self._btn_step_fwd, self._btn_reset):
+            self._set_btn_enabled(b, False)
+        self._speed_var = tk.StringVar(value="2x")
+        self._lbl_speed = tk.Label(row1, text="Velocidad", bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY, font=self.fonts["small"])
+        self._lbl_speed.pack(side=tk.LEFT, padx=(10, 4))
+        self._speed_combo = ttk.Combobox(row1, textvariable=self._speed_var, values=tuple(_SPEED_MS), state="readonly", width=4, font=self.fonts["mono"])
+        self._speed_combo.pack(side=tk.LEFT)
+        self._speed_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_speed_change())
+        self._mass_lbl = tk.Label(row1, text="Balance masa: -", bg=theme.ACCENT_SOFT, fg=theme.OK_TEXT, highlightthickness=1,
+                                  highlightbackground=theme.DOCK_BORDER, padx=8, pady=2, font=self.fonts["mono_bold"])
+        self._mass_lbl.pack(side=tk.RIGHT, padx=2)
+        row2 = tk.Frame(pbar, bg=theme.PAPER_SUBTLE); row2.pack(fill=tk.X, pady=(4, 0))
+        self._time_lbl = tk.Label(row2, text="t = 0.0 / 90.0 min", bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY, font=self.fonts["mono_bold"])
         self._time_lbl.pack(side=tk.RIGHT, padx=(8, 0))
-        self._scale_min_lbl = tk.Label(pbar, text="0m", bg=theme.PAPER_SUBTLE, fg=theme.INK_MUTED, font=self.fonts["mono"])
+        self._scale_min_lbl = tk.Label(row2, text="0m", bg=theme.PAPER_SUBTLE, fg=theme.INK_MUTED, font=self.fonts["mono"])
         self._scale_min_lbl.pack(side=tk.LEFT, padx=(0, 4))
         self._scale = tk.Scale(
-            pbar, from_=0, to=0, resolution=1, orient=tk.HORIZONTAL, showvalue=False,
+            row2, from_=0, to=0, resolution=1, orient=tk.HORIZONTAL, showvalue=False,
             sliderrelief="flat", sliderlength=18, troughcolor=theme.DOCK_BG,
             bg=theme.PAPER_SUBTLE, activebackground=theme.ACCENT_HOVER,
             highlightthickness=0, bd=0, state="disabled", command=self._on_slider_move,
@@ -152,24 +256,183 @@ class BicentenarioSewerApp(tk.Tk):
         self._scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._scale.bind("<ButtonPress-1>", self._on_slider_press)
         self._scale.bind("<ButtonRelease-1>", self._on_slider_release)
-        self._scale_max_lbl = tk.Label(pbar, text="90m", bg=theme.PAPER_SUBTLE, fg=theme.INK_MUTED, font=self.fonts["mono"])
+        self._scale_max_lbl = tk.Label(row2, text="90m", bg=theme.PAPER_SUBTLE, fg=theme.INK_MUTED, font=self.fonts["mono"])
         self._scale_max_lbl.pack(side=tk.LEFT, padx=(4, 0))
+        self._play_btn_sig: Optional[tuple] = None
+        pbar.bind("<Configure>", self._on_player_configure)
 
-        kbar = tk.Frame(center, bg=theme.SHELL_BG, padx=10, pady=5); kbar.pack(side=tk.TOP, fill=tk.X)
-        self._kpi_labels = {k: tk.Label(kbar, text=t, bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, font=self.fonts["mono"])
-                            for k, t in (("inflow", "Entrada: 0.000 m³/s"), ("sink", "PTAR 31: 0.000 m³/s"), ("crit", "Crít. (>75–100%): 0 · Sobr. (>100%): 0"), ("mass", "Error masa: 0.00e+00 m³"))}
-        for lbl in self._kpi_labels.values(): lbl.pack(side=tk.LEFT, padx=(0, 14))
-        self.paned.add(center, minsize=340, stretch="always")
+    def _on_speed_change(self) -> None:
+        self.play_speed_ms = _SPEED_MS.get(self._speed_var.get(), _SPEED_MS["2x"])
 
-        self.notebook = ttk.Notebook(self.paned)
-        self.inspector_tab = InspectorTab(self.notebook, self.fonts)
-        self.critical_tab = CriticalPipesTab(self.notebook, self.fonts, on_select_pipe=lambda pid: self.select_entity("pipe", pid))
-        self.charts_panel = ChartsPanel(self.notebook, self.fonts)
-        self.comparison_panel = ComparisonPanel(self.notebook, self.fonts, self.run_comparison, lambda sid: (self.controls.select_scenario_by_id(sid), self.run_simulation()))
-        for w, title in ((self.inspector_tab, "Inspector"), (self.critical_tab, "Críticas"), (self.charts_panel, "Gráficas"), (self.comparison_panel, "Comparación")):
-            self.notebook.add(w, text=title)
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-        self.paned.add(self.notebook, width=430, minsize=330, stretch="never")
+    def _on_player_configure(self, event: tk.Event) -> None:
+        compact = event.width < 600
+        if event.width <= 1 or compact == self._player_compact:
+            return
+        self._player_compact = compact
+        for b, txt in ((self._btn_reset, " Inicio"), (self._btn_step_back, " -1"), (self._btn_step_fwd, " +1")):
+            b.configure(text="" if compact else txt)
+        if compact:
+            self._lbl_speed.pack_forget()
+        elif not self._lbl_speed.winfo_ismapped():
+            self._lbl_speed.pack(side=tk.LEFT, padx=(10, 4), before=self._speed_combo)
+        self._play_btn_sig = None
+        self._update_play_button()
+        self._update_mass_label()
+
+    def _update_play_button(self) -> None:
+        """Rotula el botón principal (Reproducir / Pausar / Reanudar) y su icono; solo reconfigura si cambió."""
+        last = bool(self.result and self.result.snapshots) and self.current_step >= len(self.result.snapshots) - 1
+        word = "Pausar" if self.is_playing else ("Reanudar" if 0 < self.current_step and not last else "Reproducir")
+        sig = (self.is_playing, word, bool(self._player_compact))
+        if sig == self._play_btn_sig:
+            return
+        self._play_btn_sig = sig
+        self._btn_play.configure(text="" if self._player_compact else f" {word}",
+                                 image=self._icons["pause_on_accent" if self.is_playing else "play_on_accent"])
+
+    def _update_mass_label(self, snap: Optional[TimeStepSnapshot] = None) -> None:
+        snap = snap or self._current_snapshot()
+        if snap is None:
+            self._mass_lbl.configure(text="Balance masa: -", fg=theme.INK_MUTED)
+            return
+        err = snap.mass_balance_error_m3
+        ok = abs(err) < theme.MASS_BALANCE_OK_M3
+        if self._player_compact:
+            text = f"Masa {'OK' if ok else 'ERROR'} · {err:.1e}"
+        else:
+            text = f"Balance masa {'OK' if ok else 'ERROR'} · Err {err:.2e} m³"
+        self._mass_lbl.configure(text=text, fg=theme.OK_TEXT if ok else theme.ERROR_TEXT)
+
+    # ── Atajos de teclado ────────────────────────────────────────────────────
+
+    def _bind_shortcuts(self) -> None:
+        self.bind("<space>", self._shortcut_play_pause)
+        self.bind("<Left>", lambda e: self._shortcut_step(e, -1))
+        self.bind("<Right>", lambda e: self._shortcut_step(e, 1))
+        self.bind("<Home>", self._shortcut_home)
+        self.bind("<Control-f>", self._shortcut_focus_search)
+        self.bind("<Control-F>", self._shortcut_focus_search)
+        self.bind("<Escape>", self._shortcut_escape)
+
+    def _focus_class(self) -> str:
+        try:
+            w = self.focus_get()
+        except (KeyError, tk.TclError):
+            return ""
+        return w.winfo_class() if w is not None else ""
+
+    def _is_typing_widget(self) -> bool:
+        """True si el foco está en un campo de texto/numérico (los atajos no deben dispararse)."""
+        return self._focus_class() in _TYPING_CLASSES
+
+    def _shortcut_play_pause(self, _event: object = None) -> Optional[str]:
+        if self._is_typing_widget() or self._focus_class() in _BUTTON_CLASSES:
+            return None
+        self.toggle_play()
+        return "break"
+
+    def _shortcut_step(self, _event: object, delta: int) -> Optional[str]:
+        if self._is_typing_widget():
+            return None
+        (self.step_forward if delta > 0 else self.step_backward)()
+        return "break"
+
+    def _shortcut_home(self, _event: object = None) -> Optional[str]:
+        if self._is_typing_widget():
+            return None
+        self._reset_playback()
+        return "break"
+
+    def _shortcut_focus_search(self, _event: object = None) -> str:
+        if not self._show_left:
+            self.toggle_left_panel()
+        self.controls.focus_search()
+        return "break"
+
+    def _shortcut_escape(self, _event: object = None) -> None:
+        self.clear_traversal()
+        self.select_entity(None, None)
+
+    # ── Layout responsivo ────────────────────────────────────────────────────
+
+    def _on_window_configure(self, event: tk.Event) -> None:
+        if event.widget is not self or self._closing:
+            return
+        if self._resize_after_id is not None:
+            self.after_cancel(self._resize_after_id)
+        self._resize_after_id = self.after(70, lambda: self._apply_responsive_layout(self.winfo_width(), self.winfo_height()))
+
+    def _apply_responsive_layout(self, width: int, height: int) -> None:
+        """Adapta topbar, paneles laterales y pista de atajos al ancho de ventana."""
+        self._resize_after_id = None
+        if width < 200 or height < 200:
+            return
+        tier = "wide" if width >= theme.BREAKPOINT_MEDIUM else ("medium" if width >= theme.BREAKPOINT_COMPACT else "compact")
+        tier_changed, self._layout_tier = tier != self._layout_tier, tier
+        sig = (tier, width >= theme.BREAKPOINT_FULL_ACTIONS)
+        if sig != self._topbar_sig:
+            self._topbar_sig = sig
+            self._layout_topbar(*sig)
+        if width >= theme.BREAKPOINT_HINT:
+            if not self.lbl_shortcuts_hint.winfo_manager():
+                self.lbl_shortcuts_hint.pack(side=tk.RIGHT, padx=12, pady=3)
+        else:
+            self.lbl_shortcuts_hint.pack_forget()
+        if tier_changed:
+            if tier == "compact" and self._show_left and self._show_right:
+                self._show_right = False
+            self._sync_panes()
+            self._update_toggle_styles()
+
+    def _layout_topbar(self, tier: str, full_actions: bool) -> None:
+        for child in self.actions_bar.pack_slaves():
+            child.pack_forget()
+        wide = tier == "wide"
+        if wide:
+            if not self.lbl_app_subtitle.winfo_manager():
+                self.lbl_app_subtitle.pack(anchor="w")
+            self.lbl_app_title.configure(text="Simulador de Alcantarillado — Ciudad Bicentenario")
+        else:
+            self.lbl_app_subtitle.pack_forget()
+            self.lbl_app_title.configure(text="Ciudad Bicentenario")
+        if wide:
+            self.btn_export_docx.pack(side=tk.RIGHT, padx=(4, 0))
+            self.btn_export_md.pack(side=tk.RIGHT, padx=4)
+        if full_actions:
+            for b in (self.btn_assumptions, self.btn_export_csv, self.btn_load_csv, self.btn_load_excel):
+                b.pack(side=tk.RIGHT, padx=4)
+        else:
+            self.menu_btn_file.configure(text="Archivo y Modelo " if wide or tier == "medium" else "Archivo ")
+            self.menu_btn_file.pack(side=tk.RIGHT, padx=4)
+
+    def _sync_panes(self) -> None:
+        for pane in list(self.paned.panes()):
+            self.paned.forget(pane)
+        wide = (self._layout_tier or "wide") == "wide"
+        if self._show_left:
+            self.paned.add(self.controls, width=290 if wide else 264, minsize=272 if wide else 264, stretch="never")
+        self.paned.add(self._center, minsize=420 if wide else 310, stretch="always")
+        if self._show_right:
+            self.paned.add(self.notebook, width=430 if wide else 330, minsize=340 if wide else 285, stretch="never")
+
+    def _update_toggle_styles(self) -> None:
+        for btn, shown, name in ((self.btn_toggle_left, self._show_left, "sliders"), (self.btn_toggle_right, self._show_right, "chart")):
+            self._restyle_btn(btn, "dark_primary" if shown else "dark")
+            btn.configure(image=self._icons[f"{name}_ink" if shown else f"{name}_light"])
+
+    def toggle_left_panel(self) -> None:
+        self._show_left = not self._show_left
+        if self._show_left and self._layout_tier == "compact":
+            self._show_right = False
+        self._sync_panes()
+        self._update_toggle_styles()
+
+    def toggle_right_panel(self) -> None:
+        self._show_right = not self._show_right
+        if self._show_right and self._layout_tier == "compact":
+            self._show_left = False
+        self._sync_panes()
+        self._update_toggle_styles()
 
     # ── Carga, simulación y reproducción (RF01–RF09) ─────────────────────────
 
@@ -216,7 +479,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._scale_min_lbl.configure(text="0m")
         self._scale_max_lbl.configure(text=f"{snaps[-1].time_min:g}m" if snaps else "0m")
         self._sync_slider_programmatic(0)
-        self._btn_play.configure(text="▶ Iniciar")
+        self._play_btn_sig = None
         self._last_chart_pipe = self.selected_id if self.selected_kind == "pipe" else None
         self.charts_panel.set_result(res, self._last_chart_pipe, is_visible=self._active_tab() == 2)
         self.go_to_step(0)
@@ -236,6 +499,8 @@ class BicentenarioSewerApp(tk.Tk):
         self._set_btn_enabled(self._btn_step_fwd, self.current_step < len(snaps) - 1)
         self._set_btn_enabled(self._btn_reset, self.current_step > 0 or self.is_playing)
         self._time_lbl.configure(text=f"t = {snap.time_min:.1f} / {snaps[-1].time_min:.1f} min")
+        self._update_mass_label(snap)
+        self._update_play_button()
         self.network_canvas.set_snapshot(snap)
         tab = self._active_tab()
         self.inspector_tab.update_view(self.dataset.graph, snap, self.result, self.selected_kind, self.selected_id)
@@ -247,7 +512,7 @@ class BicentenarioSewerApp(tk.Tk):
             if 0 <= ps.category.tier_index < len(counts): counts[ps.category.tier_index] += 1
         for (rng, lbl), cnt in zip(self._legend_labels, counts): lbl.configure(text=f"{rng}: {cnt}")
         for k, txt in (("inflow", f"Entrada: {snap.total_source_inflow_m3s:.4f} m³/s"), ("sink", f"PTAR 31: {snap.total_sink_discharge_m3s:.4f} m³/s"),
-                       ("crit", f"Crít. (>75–100%): {len(snap.near_capacity_pipe_ids)} · Sobr. (>100%): {len(snap.overloaded_pipe_ids)}"), ("mass", f"Error masa: {snap.mass_balance_error_m3:.2e} m³")):
+                       ("crit", f"Crít. (>75–100%): {len(snap.near_capacity_pipe_ids)} · Sobr. (>100%): {len(snap.overloaded_pipe_ids)}")):
             self._kpi_labels[k].configure(text=txt)
 
     def _sync_slider_programmatic(self, step: int) -> None:
@@ -315,12 +580,12 @@ class BicentenarioSewerApp(tk.Tk):
     def _reset_playback(self) -> None: self._stop_playback(False); self.go_to_step(0)
     def _stop_playback(self, resume: bool = False) -> None:
         self.is_playing = False; self._cancel_timer("_play_after_id")
-        if hasattr(self, "_btn_play"): self._btn_play.configure(text="▶ Reanudar" if (resume and self.current_step > 0) else "▶ Iniciar")
+        if hasattr(self, "_btn_play"): self._update_play_button()
     def toggle_play(self) -> None:
         if not self.result or not self.result.snapshots: return
         if self.is_playing: self._stop_playback(True); return
         if self.current_step >= len(self.result.snapshots) - 1: self.go_to_step(0)
-        self.is_playing = True; self._btn_play.configure(text="⏸ Pausar")
+        self.is_playing = True; self._update_play_button()
         self._play_after_id = self.after(self.play_speed_ms, self._play_tick)
     def _play_tick(self) -> None:
         self._play_after_id = None
@@ -374,6 +639,26 @@ class BicentenarioSewerApp(tk.Tk):
         self.anim_playing = False; self._cancel_timer("_anim_after_id")
         if hasattr(self, "controls"): self.controls.set_traversal_playing(False)
 
+    def _anim_delay(self) -> int:
+        """Retardo por paso de la animación del recorrido: 560 ms en BFS y 340 ms en DFS."""
+        f = self.traversal_frames[min(self.anim_idx, len(self.traversal_frames) - 1)] if self.traversal_frames else None
+        return _ANIM_MS_BY_ALGO.get(f.algorithm if f else self._last_traversal_algo, _TRAVERSAL_ANIM_MS)
+
+    @staticmethod
+    def _log_traversal(res: TraversalResult, start_id: str, target_id: Optional[str]) -> str:
+        """Texto de la bitácora de un recorrido BFS/DFS terminado (visita, ruta y resumen)."""
+        order = res.visited_order
+        lines = [f"[{res.algorithm}] {start_id} → {target_id or 'toda la red'}",
+                 f"Visitados ({len(order)}): {' → '.join(order[:14])}" + (" ..." if len(order) > 14 else "")]
+        if target_id:
+            if res.target_reached:
+                lines += [f"Ruta ({len(res.path_pipes)} tramos): {' → '.join(res.path_nodes)}",
+                          f"Tuberías: {', '.join(p.pipe_id for p in res.path_pipes)}",
+                          f"Tránsito acumulado: {sum(p.transit_time_min for p in res.path_pipes):.1f} min"]
+            else:
+                lines.append(f"Sin camino dirigido desde {start_id} hasta {target_id}.")
+        return "\n".join(lines)
+
     def _action_traversal(self, algo: str, start_id: str, target_id: Optional[str], animate: bool) -> None:
         if self.dataset is None: return
         if not start_id or not self.dataset.graph.has_node(start_id):
@@ -383,34 +668,44 @@ class BicentenarioSewerApp(tk.Tk):
             messagebox.showwarning("Nodo no encontrado", msg, parent=self)
             return
         self._stop_traversal()
-        res = (bfs if algo.upper() == "BFS" else dfs)(self.dataset.graph, start_id, target_id, record_frames=True)
+        algo = algo.upper()
+        res = (bfs if algo == "BFS" else dfs)(self.dataset.graph, start_id, target_id, record_frames=True)
+        self._last_traversal_algo = algo
         self._traversal_mode = algo.lower()
         self._traversal_origin = start_id
-        self._traversal_banner = (
-            f"{'BFS (Cola FIFO)' if algo.upper() == 'BFS' else 'DFS (Pila LIFO)'} · Inicio {start_id} → Destino {target_id}"
-            if target_id else
-            f"{'BFS (Cola FIFO)' if algo.upper() == 'BFS' else 'DFS (Pila LIFO)'} · Desde {start_id}"
-        )
+        label = "BFS (Cola FIFO)" if algo == "BFS" else "DFS (Pila LIFO)"
+        self._traversal_banner = f"{label} · Inicio {start_id} → Destino {target_id}" if target_id else f"{label} · Desde {start_id}"
         self._traversal_result, self.traversal_frames = res, res.frames
+        self._traversal_log = self._log_traversal(res, start_id, target_id)
         msg = f"{res.algorithm}: {len(res.visited_order)} nodos" + (f" · Ruta ({len(res.path_pipes)}): {' → '.join(res.path_nodes)}" if (target_id and res.target_reached) else (f" · Sin ruta a {target_id}" if target_id else ""))
         if animate:
             if not self.traversal_frames: return
             self.anim_idx = 0
             self.anim_playing = True
             self._render_traversal_frame()
-            if len(self.traversal_frames) > 1: self._anim_after_id = self.after(_ANIM_MS, self._anim_tick)
-            else: self._stop_traversal()
+            if len(self.traversal_frames) > 1: self._anim_after_id = self.after(self._anim_delay(), self._anim_tick)
+            else: self._stop_traversal(); self._render_traversal_frame()
             return
         self.anim_idx = max(0, len(self.traversal_frames) - 1)
         self.anim_playing = False
-        self._render_traversal_frame(summary_override=msg)
+        sample = self.traversal_frames[min(1, len(self.traversal_frames) - 1)] if self.traversal_frames else None
+        self._render_traversal_frame(summary_override=self._traversal_log, strip_frame=sample, step_text=f"muestra {res.algorithm}")
         self._status_lbl.configure(text=msg, fg=theme.SHELL_TEXT_MUTED)
 
     def start_traversal_animation(self, algo: str, start_id: str, target_id: Optional[str] = None) -> None:
         self._action_traversal(algo, start_id, target_id, animate=True)
 
+    def _action_toggle_anim(self) -> None:
+        """Botón «Animar recorrido»: alterna la animación; sin recorrido previo usa el último algoritmo."""
+        if self.dataset is None: return
+        if self.traversal_frames:
+            self.toggle_traversal_animation()
+        else:
+            start_id, target_id = self.controls.get_traversal_endpoints()
+            self._action_traversal(self._last_traversal_algo, start_id, target_id, True)
 
-    def _render_traversal_frame(self, summary_override: str = "") -> None:
+    def _render_traversal_frame(self, summary_override: str = "", strip_frame: Optional[TraversalFrame] = None,
+                                step_text: Optional[str] = None) -> None:
         if not self.traversal_frames:
             self.network_canvas.set_traversal_highlight(
                 mode=self._traversal_mode, origin_node=self._traversal_origin, banner_text=self._traversal_banner
@@ -420,24 +715,30 @@ class BicentenarioSewerApp(tk.Tk):
                 mode=self._traversal_mode, has_frames=False,
             )
             return
+        last = self.anim_idx == len(self.traversal_frames) - 1
         f = self.traversal_frames[self.anim_idx]
-        lr = self._traversal_result if self.anim_idx == len(self.traversal_frames) - 1 else None
+        lr = self._traversal_result if last else None
         self.network_canvas.set_traversal_highlight(
             f.visited_nodes, f.visited_edges,
             lr.path_nodes if lr else None, lr.path_pipes if lr else None,
             f.current_node, f.active_edge,
             mode=self._traversal_mode, origin_node=self._traversal_origin, banner_text=self._traversal_banner,
         )
+        if last and not summary_override and not self.anim_playing:
+            summary_override = self._traversal_log  # animación terminada: muestra el registro completo
         self.controls.update_traversal_view(
-            f, summary_text=summary_override, playing=self.anim_playing,
-            mode=self._traversal_mode, has_frames=bool(self.traversal_frames),
+            strip_frame or f, summary_text=summary_override, playing=self.anim_playing,
+            mode=self._traversal_mode, has_frames=True, step_text=step_text,
         )
 
     def _anim_tick(self) -> None:
         self._anim_after_id = None
         if not self.anim_playing or not self.traversal_frames: return
         if self.anim_idx + 1 < len(self.traversal_frames):
-            self.anim_idx += 1; self._render_traversal_frame(); self._anim_after_id = self.after(_ANIM_MS, self._anim_tick)
+            self.anim_idx += 1
+            if self.anim_idx == len(self.traversal_frames) - 1: self._stop_traversal()
+            self._render_traversal_frame()
+            if self.anim_playing: self._anim_after_id = self.after(self._anim_delay(), self._anim_tick)
         else: self._stop_traversal()
 
     def step_traversal_animation(self, delta: int) -> None:
@@ -446,9 +747,9 @@ class BicentenarioSewerApp(tk.Tk):
 
     def toggle_traversal_animation(self) -> None:
         if not self.traversal_frames: return
-        if self.anim_playing: self._stop_traversal(); return
+        if self.anim_playing: self._stop_traversal(); self._render_traversal_frame(); return
         if self.anim_idx >= len(self.traversal_frames) - 1: self.anim_idx = 0
-        self.anim_playing = True; self._render_traversal_frame(); self._anim_after_id = self.after(_ANIM_MS, self._anim_tick)
+        self.anim_playing = True; self._render_traversal_frame(); self._anim_after_id = self.after(self._anim_delay(), self._anim_tick)
 
     def _action_trace(self, start_id: str, upstream: bool) -> None:
         if self.dataset is None: return
@@ -480,7 +781,11 @@ class BicentenarioSewerApp(tk.Tk):
                 msg = f"Aguas abajo desde {start_id}: sumidero / PTAR final sin tuberías salientes (0 tuberías)."
             else:
                 msg = f"Aguas abajo desde {start_id}: {n_cnt} nodos, {p_cnt} tuberías"
-        self._render_traversal_frame(summary_override=msg)
+        self._traversal_log = (f"[{'Aguas arriba' if upstream else 'Aguas abajo'} desde {start_id}]\n{msg}\n"
+                               f"Nodos ({n_cnt}): {', '.join(res.visited_order[:14])}{' ...' if n_cnt > 14 else ''}\n"
+                               f"Tuberías ({p_cnt}): {', '.join(p.pipe_id for p in res.traversed_edges[:14])}{' ...' if p_cnt > 14 else ''}")
+        sample = res.frames[min(1, len(res.frames) - 1)] if res.frames else None
+        self._render_traversal_frame(summary_override=self._traversal_log, strip_frame=sample, step_text="muestra")
         self._status_lbl.configure(text=msg, fg=theme.SHELL_TEXT_MUTED)
 
     def clear_traversal(self) -> None:
@@ -488,7 +793,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._traversal_result, self.traversal_frames, self.anim_idx = None, [], 0
         self._traversal_mode = None
         self._traversal_origin = None
-        self._traversal_banner = ""
+        self._traversal_banner = self._traversal_log = ""
         self.network_canvas.clear_traversal_highlight()
         self.controls.update_traversal_view(None, has_frames=False)
         self._status_lbl.configure(text="Recorrido limpiado", fg=theme.SHELL_TEXT_MUTED)
@@ -533,7 +838,9 @@ class BicentenarioSewerApp(tk.Tk):
         self._btn(win, "Cerrar", win.destroy, "primary", padx=14, pady=4).pack(pady=(0, 12))
 
     def _on_close(self) -> None:
-        self._stop_playback(); self._stop_traversal(); self._cancel_timer("_slider_after_id")
+        self._closing = True
+        self._stop_playback(); self._stop_traversal(); self._cancel_timer("_slider_after_id"); self._cancel_timer("_resize_after_id")
+        self.controls.cancel_pending()
         self.network_canvas.cancel_pending(); self.charts_panel._cancel_cursor_timer()
         try: self.destroy()
         except tk.TclError: pass
