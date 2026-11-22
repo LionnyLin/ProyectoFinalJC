@@ -719,16 +719,7 @@ class ControlsPanelMixin:
 
         self._set_traversal_text("\n".join(lines))
         if self.result is not None and self.result.snapshots:
-            snap = self.result.snapshots[self.current_step]
-            self.temporal_charts.update_plots(
-                self.result,
-                self._selected_pipe_id,
-                snap.time_min,
-                previous_result=self._previous_result,
-                route_pipes=self._resolve_active_route(),
-                current_step_index=self.current_step,
-                diameter_overrides=self._diameter_overrides_map(),
-            )
+            self._push_temporal_charts(throttle_draw=False)
 
     def _action_toggle_traversal_anim(self) -> None:
         if self.dataset is None:
@@ -837,16 +828,7 @@ class ControlsPanelMixin:
         self._charts_tab_dirty = True
         if self._active_right_tab() == 2 and self.result is not None and self.result.snapshots:
             self._charts_tab_dirty = False
-            snap = self.result.snapshots[self.current_step]
-            self.temporal_charts.update_plots(
-                self.result,
-                self._selected_pipe_id,
-                snap.time_min,
-                previous_result=self._previous_result,
-                route_pipes=self._resolve_active_route(),
-                current_step_index=self.current_step,
-                diameter_overrides=self._diameter_overrides_map(),
-            )
+            self._push_temporal_charts(throttle_draw=False)
         self._refresh_inspector()
 
     def _set_traversal_text(self, text: str) -> None:

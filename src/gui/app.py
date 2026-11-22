@@ -1,5 +1,6 @@
 """Aplicación principal rediseñada — Lámina Cartográfica de Archivo Hidráulico (#4A4A4A, #CBCBCB, #FFFFE3, #6D8196)."""
 
+from dataclasses import replace
 import math
 import os
 import time
@@ -75,6 +76,7 @@ class BicentenarioSewerApp(
         self.dataset: Optional[NetworkDataset] = None
         self.engine: Optional[SewerSimulationEngine] = None
         self.result: Optional[SimulationResult] = None
+        self._baseline_result: Optional[SimulationResult] = None
         self._previous_result: Optional[SimulationResult] = None
         self.comparisons: List[ScenarioSummary] = []
         self._comparisons_dirty: bool = True
@@ -710,16 +712,7 @@ class BicentenarioSewerApp(
             self._suppress_tree_select = False
         if self._active_right_tab() == 2 and self.result is not None and self.result.snapshots:
             self._charts_tab_dirty = False
-            snap = self.result.snapshots[self.current_step]
-            self.temporal_charts.update_plots(
-                self.result,
-                None,
-                snap.time_min,
-                previous_result=self._previous_result,
-                route_pipes=self._resolve_active_route(),
-                current_step_index=self.current_step,
-                diameter_overrides=self._diameter_overrides_map(),
-            )
+            self._push_temporal_charts(throttle_draw=False)
         self._refresh_inspector()
 
     def _on_window_configure(self, event: tk.Event) -> None:
@@ -1302,17 +1295,7 @@ class BicentenarioSewerApp(
             self._refresh_critical_table()
         elif idx == 2 and self._charts_tab_dirty and self.result is not None:
             self._charts_tab_dirty = False
-            snap = self.result.snapshots[self.current_step]
-            self.temporal_charts.update_plots(
-                self.result,
-                self._selected_pipe_id,
-                snap.time_min,
-                previous_result=self._previous_result,
-                route_pipes=self._resolve_active_route(),
-                current_step_index=self.current_step,
-                diameter_overrides=self._diameter_overrides_map(),
-                throttle_draw=False,
-            )
+            self._push_temporal_charts(throttle_draw=False)
         elif idx == 3 and (not self.comparisons or self._comparisons_dirty):
             self._action_compare_scenarios()
 
@@ -1341,6 +1324,7 @@ class BicentenarioSewerApp(
         self.dataset = dataset
         self.engine = SewerSimulationEngine(dataset.graph, dataset.basin)
         self.result = None
+        self._baseline_result = None
         self._previous_result = None
         self.comparisons = []
         self._comparisons_dirty = True
@@ -1587,15 +1571,29 @@ class BicentenarioSewerApp(
             return
 
         prev_scenario_id = self.result.config.scenario_id if self.result is not None else None
+        base_cfg = replace(cfg, interventions={})
 
-        if preserve_previous and self.result is not None:
-            self._previous_result = self.result
-        elif self.result is not None and self.result.config == cfg:
-            pass
+        if self._interventions:
+            if (
+                self._baseline_result is not None
+                and replace(self._baseline_result.config, interventions={}) == base_cfg
+            ):
+                pass
+            elif (
+                self.result is not None
+                and not self.result.config.interventions
+                and replace(self.result.config, interventions={}) == base_cfg
+            ):
+                self._baseline_result = self.result
+            else:
+                self._baseline_result = self.engine.run(base_cfg)
+            self._previous_result = self._baseline_result
         else:
             self._previous_result = None
 
         self.result = self.engine.run(cfg)
+        if not self._interventions:
+            self._baseline_result = self.result
         self._last_attr_key = None
         n_snaps = len(self.result.snapshots)
         if auto_play and self._map_mode != "instant":
@@ -1666,6 +1664,23 @@ class BicentenarioSewerApp(
             return build_route_to_sink(g, node_id=srcs[0], sink_id="31")
         return []
 
+    def _push_temporal_charts(self, throttle_draw: bool = False) -> None:
+        if self.result is None or not self.result.snapshots or not hasattr(self, "temporal_charts"):
+            return
+        step_idx = max(0, min(len(self.result.snapshots) - 1, self.current_step))
+        snap = self.result.snapshots[step_idx]
+        self.temporal_charts.update_plots(
+            self.result,
+            self._selected_pipe_id,
+            snap.time_min,
+            previous_result=self._previous_result,
+            route_pipes=self._resolve_active_route(),
+            current_step_index=step_idx,
+            diameter_overrides=self._diameter_overrides_map(),
+            interventions=dict(self._interventions),
+            throttle_draw=throttle_draw,
+        )
+
     def _diameter_overrides_map(self) -> Dict[str, float]:
         return {
             pid: inv.diameter_in_override
@@ -1730,16 +1745,7 @@ class BicentenarioSewerApp(
 
         if active_tab == 2:
             self._charts_tab_dirty = False
-            self.temporal_charts.update_plots(
-                self.result,
-                self._selected_pipe_id,
-                snap.time_min,
-                previous_result=self._previous_result,
-                route_pipes=self._resolve_active_route(),
-                current_step_index=step_idx,
-                diameter_overrides=self._diameter_overrides_map(),
-                throttle_draw=self.is_playing,
-            )
+            self._push_temporal_charts(throttle_draw=self.is_playing)
         else:
             self._charts_tab_dirty = True
 
@@ -1984,17 +1990,7 @@ class BicentenarioSewerApp(
         if was_playing and self.result is not None and self.result.snapshots:
             active_tab = self._active_right_tab()
             if active_tab == 2 and hasattr(self, "temporal_charts"):
-                snap = self.result.snapshots[self.current_step]
-                self.temporal_charts.update_plots(
-                    self.result,
-                    self._selected_pipe_id,
-                    snap.time_min,
-                    previous_result=self._previous_result,
-                    route_pipes=self._resolve_active_route(),
-                    current_step_index=self.current_step,
-                    diameter_overrides=self._diameter_overrides_map(),
-                    throttle_draw=False,
-                )
+                self._push_temporal_charts(throttle_draw=False)
             elif active_tab == 0 and self._insp_tab_dirty:
                 self._insp_tab_dirty = False
                 self._refresh_inspector()

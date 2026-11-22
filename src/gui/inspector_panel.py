@@ -430,16 +430,7 @@ class InspectorPanelMixin:
             self._crit_tab_dirty = True
         self._refresh_inspector()
         if self.result is not None:
-            snap = self.result.snapshots[self.current_step]
-            self.temporal_charts.update_plots(
-                self.result,
-                pipe_id,
-                snap.time_min,
-                previous_result=self._previous_result,
-                route_pipes=self._resolve_active_route(),
-                current_step_index=self.current_step,
-                diameter_overrides=self._diameter_overrides_map(),
-            )
+            self._push_temporal_charts(throttle_draw=False)
 
     def _on_node_selected(self, node_id: str) -> None:
         if self._inspector_trace_state is not None and self._inspector_trace_state[0] != node_id:
@@ -462,16 +453,7 @@ class InspectorPanelMixin:
             self._suppress_tree_select = False
         self._refresh_inspector()
         if self.result is not None:
-            snap = self.result.snapshots[self.current_step]
-            self.temporal_charts.update_plots(
-                self.result,
-                None,
-                snap.time_min,
-                previous_result=self._previous_result,
-                route_pipes=self._resolve_active_route(),
-                current_step_index=self.current_step,
-                diameter_overrides=self._diameter_overrides_map(),
-            )
+            self._push_temporal_charts(throttle_draw=False)
 
     def _action_focus_selected(self) -> None:
         if self._selected_pipe_id:
