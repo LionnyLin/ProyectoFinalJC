@@ -810,7 +810,7 @@ def generate_technical_document_docx(
     )
     _add_screenshot_if_exists(
         doc,
-        "04_3_tests_41.png",
+        "04_3_tests.png",
         "Figura 27. Ejecución completa de la suite de pruebas automatizadas (OK).",
     )
 
