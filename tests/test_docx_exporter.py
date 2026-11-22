@@ -16,6 +16,7 @@ from src.simulation import (
     generate_technical_document_docx,
 )
 from src.simulation.charts_export import generate_single_column_figures
+from src.simulation.models import compute_symlog_ticks
 
 DATA_XLSX = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "data", "DataSetBicentenario.xlsx")
@@ -97,6 +98,14 @@ class TestDocxExporter(unittest.TestCase):
 
             self._assert_docx_rules(out1, expected_min_omml=6)
             self._assert_docx_rules(out2, expected_min_omml=7)
+
+    def test_symlog_ticks_coverage(self) -> None:
+        for peak, min_top in ((420.0, 250.0), (5126.0, 2500.0), (16560.0, 10000.0)):
+            ticks = compute_symlog_ticks(peak)
+            self.assertIn(0.0, ticks)
+            self.assertIn(100.0, ticks)
+            self.assertGreaterEqual(max(ticks), min_top)
+            self.assertGreaterEqual(len(ticks), 4)
 
 
 if __name__ == "__main__":

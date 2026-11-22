@@ -602,6 +602,62 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
 
             canvas.destroy()
 
+    def test_charts_baseline_persistence_symlog_profile_and_comparison(self) -> None:
+        # 1. Múltiples intervenciones seguidas conservan siempre la base original sin intervenciones
+        self.app.network_canvas.select_pipe("P29")
+        self.app._on_pipe_selected("P29")
+        self.app.var_obstruction_pct.set(50.0)
+        self.app._action_apply_intervention()
+        _pump(self.app, 80)
+        base_ref = self.app._baseline_result
+        self.assertIsNotNone(base_ref)
+        self.assertEqual(len(base_ref.config.interventions), 0)
+        self.assertIs(self.app._previous_result, base_ref)
+
+        self.app.var_obstruction_pct.set(80.0)
+        self.app._action_apply_intervention()
+        _pump(self.app, 80)
+        self.assertIs(self.app._previous_result, base_ref)
+        self.assertEqual(len(self.app._previous_result.config.interventions), 0)
+
+        # 2. En pestaña Evolución muestra el banner de impacto y ticks symlog explícitos (>2 marcas)
+        self.app.notebook.select(2)
+        _pump(self.app, 180)
+        self.assertTrue(self.app.temporal_charts._banner_visible)
+        self.assertGreaterEqual(len(self.app.temporal_charts.ax_util.get_yticks()), 4)
+
+        # 3. Restaurar todo oculta el banner y limpia _previous_result
+        self.app._action_restore_all_interventions()
+        _pump(self.app, 120)
+        self.assertIsNone(self.app._previous_result)
+        self.assertFalse(self.app.temporal_charts._banner_visible)
+
+        # 4. Escenario 5 (16k%): Perfil longitudinal en modos '% Uso vs Cap.' y 'Caudal m³/s'
+        vals = list(self.app.combo_scenario["values"])
+        self.app.var_scenario.set(vals[4])
+        self.app.combo_scenario.event_generate("<<ComboboxSelected>>")
+        _pump(self.app, 140)
+        self.app._set_step(25)
+        self.app.temporal_charts.set_subtab("profile")
+        _pump(self.app, 120)
+        self.assertEqual(self.app.temporal_charts._profile_mode, "pct")
+        ytick_labels = [t.get_text() for t in self.app.temporal_charts.ax_profile.get_yticklabels()]
+        self.assertTrue(any("Rebose" in lbl for lbl in ytick_labels))
+        self.app.temporal_charts.set_profile_mode("flow")
+        _pump(self.app, 80)
+        self.assertEqual(self.app.temporal_charts._profile_mode, "flow")
+        self.app.temporal_charts.set_profile_mode("pct")
+        self.app.temporal_charts.set_subtab("hydro")
+
+        # 5. Comparación de 5 escenarios permite alternar entre Rebose (m³) y Descarga PTAR 31
+        self.app.notebook.select(3)
+        _pump(self.app, 200)
+        self.assertEqual(self.app.comparison_charts._metric_mode, "flood")
+        self.app.comparison_charts.set_metric_mode("ptar")
+        _pump(self.app, 100)
+        self.assertEqual(self.app.comparison_charts._metric_mode, "ptar")
+        self.app.comparison_charts.set_metric_mode("flood")
+
 
 if __name__ == "__main__":
     unittest.main()
