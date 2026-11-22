@@ -9,6 +9,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib.ticker import FuncFormatter
 
 from src.data_structures import PipeEdge
 from src.simulation.comparison import ScenarioSummary
@@ -368,107 +369,172 @@ class TemporalChartsPanel(tk.Frame):
             and previous_result is not result
             and bool(previous_result.snapshots)
         )
-        max_left_q = max(inflows + (flood_rates if has_flood else []) + [0.05])
-        max_ptar_q = max(ptar_out + [0.05])
+        t_cur = current_time_min if current_time_min is not None else times[0]
 
-        self._ax_flow_ptar = self.ax_flow.twinx()
-        ax_ptar = self._ax_flow_ptar
-        ax_ptar.tick_params(colors=theme.ACCENT_TEXT_ON_LIGHT, labelsize=7.2)
-        for spine in ax_ptar.spines.values():
-            spine.set_color(theme.INK_PRIMARY)
-            spine.set_linewidth(0.85)
-        ax_ptar.set_ylabel("PTAR (m³/s)", color=theme.ACCENT_TEXT_ON_LIGHT, fontsize=7.4)
-
-        lines_left = []
-        lines_right = []
         if has_prev:
+            # Vista comparativa limpia de un solo eje Y: PTAR 31 Antes vs. Después
             prev_times = [s.time_min for s in previous_result.snapshots]
             prev_ptar = [s.total_sink_discharge_m3s for s in previous_result.snapshots]
-            if prev_ptar:
-                max_ptar_q = max(max_ptar_q, max(prev_ptar))
-            lines_right.extend(
-                ax_ptar.plot(
-                    prev_times,
-                    prev_ptar,
-                    label="Antes",
-                    color=theme.INK_MUTED,
-                    linestyle=":",
-                    linewidth=1.9,
-                    zorder=2,
-                )
-            )
+            max_ptar_q = max(ptar_out + prev_ptar + [0.05])
 
-        lines_left.extend(
+            self.ax_flow.plot(
+                prev_times,
+                prev_ptar,
+                label="Antes (Base)",
+                color="#64748b",
+                linestyle="--",
+                linewidth=1.8,
+                zorder=2,
+            )
             self.ax_flow.plot(
                 times,
-                inflows,
-                label="Entrada",
-                color=theme.INK_PRIMARY,
-                linewidth=1.7,
-                alpha=0.88,
-                zorder=3,
-            )
-        )
-        if has_flood:
-            lines_left.extend(
-                self.ax_flow.plot(
-                    times,
-                    flood_rates,
-                    label="Rebose vía",
-                    color="#dc2626",
-                    linestyle="--",
-                    linewidth=1.55,
-                    alpha=0.92,
-                    zorder=3.5,
-                )
-            )
-        lines_right.extend(
-            ax_ptar.plot(
-                times,
                 ptar_out,
-                label="PTAR 31",
+                label="Después (Actual)",
                 color=theme.ACCENT_PRIMARY,
                 linewidth=2.3,
                 zorder=4,
             )
-        )
-        self.ax_flow.set_ylim(0.0, max_left_q * 1.38)
-        ax_ptar.set_ylim(0.0, max_ptar_q * 1.38)
-        t_cur = current_time_min if current_time_min is not None else times[0]
+            if len(prev_ptar) == len(ptar_out) and len(times) == len(prev_times):
+                self.ax_flow.fill_between(
+                    times,
+                    prev_ptar,
+                    ptar_out,
+                    where=[c >= p for c, p in zip(ptar_out, prev_ptar)],
+                    interpolate=True,
+                    color="#22c55e",
+                    alpha=0.16,
+                    zorder=1,
+                )
+                self.ax_flow.fill_between(
+                    times,
+                    prev_ptar,
+                    ptar_out,
+                    where=[c < p for c, p in zip(ptar_out, prev_ptar)],
+                    interpolate=True,
+                    color="#ef4444",
+                    alpha=0.16,
+                    zorder=1,
+                )
+
+            peak_prev = max(prev_ptar, default=0.0)
+            peak_cur = max(ptar_out, default=0.0)
+            delta_str = ""
+            if peak_prev > 1e-6:
+                delta_pct = ((peak_cur - peak_prev) / peak_prev) * 100.0
+                delta_str = f" ({delta_pct:+.0f}% pico)"
+
+            self.ax_flow.set_ylim(0.0, max_ptar_q * 1.22)
+            self.ax_flow.set_ylabel("Descarga PTAR 31 (m³/s)", color=theme.INK_PRIMARY, fontsize=7.4)
+            self.ax_flow.set_title(
+                f"PTAR 31: Antes vs. Después{delta_str}",
+                color=theme.INK_PRIMARY,
+                fontsize=8.6,
+                fontweight="bold",
+                fontfamily=["Inter", "Segoe UI", "DejaVu Sans"],
+                pad=22,
+            )
+            self.ax_flow.legend(
+                loc="lower center",
+                bbox_to_anchor=(0.5, 1.01),
+                ncol=2,
+                frameon=True,
+                facecolor=theme.PAPER_BG,
+                edgecolor=theme.PAPER_BORDER,
+                framealpha=0.95,
+                fontsize=6.8,
+                borderpad=0.24,
+                columnspacing=0.8,
+                handlelength=1.4,
+                labelcolor=theme.INK_PRIMARY,
+            )
+        else:
+            max_left_q = max(inflows + (flood_rates if has_flood else []) + [0.05])
+            max_ptar_q = max(ptar_out + [0.05])
+
+            self._ax_flow_ptar = self.ax_flow.twinx()
+            ax_ptar = self._ax_flow_ptar
+            ax_ptar.tick_params(colors=theme.ACCENT_TEXT_ON_LIGHT, labelsize=7.2)
+            for spine in ax_ptar.spines.values():
+                spine.set_color(theme.INK_PRIMARY)
+                spine.set_linewidth(0.85)
+            ax_ptar.spines["right"].set_color(theme.ACCENT_PRIMARY)
+            ax_ptar.spines["right"].set_linewidth(1.25)
+            ax_ptar.set_ylabel("PTAR 31 (der., m³/s)", color=theme.ACCENT_TEXT_ON_LIGHT, fontsize=7.3)
+
+            lines_left = []
+            lines_right = []
+            lines_left.extend(
+                self.ax_flow.plot(
+                    times,
+                    inflows,
+                    label="Entrada (izq.)",
+                    color=theme.INK_PRIMARY,
+                    linewidth=1.65,
+                    alpha=0.88,
+                    zorder=3,
+                )
+            )
+            if has_flood:
+                lines_left.extend(
+                    self.ax_flow.plot(
+                        times,
+                        flood_rates,
+                        label="Rebose (izq.)",
+                        color="#dc2626",
+                        linestyle="--",
+                        linewidth=1.5,
+                        alpha=0.90,
+                        zorder=3.5,
+                    )
+                )
+            lines_right.extend(
+                ax_ptar.plot(
+                    times,
+                    ptar_out,
+                    label="PTAR 31 (der. →)",
+                    color=theme.ACCENT_PRIMARY,
+                    linewidth=2.3,
+                    zorder=4,
+                )
+            )
+            ax_ptar.fill_between(times, 0.0, ptar_out, color=theme.ACCENT_PRIMARY, alpha=0.14, zorder=1)
+            self.ax_flow.set_ylim(0.0, max_left_q * 1.22)
+            ax_ptar.set_ylim(0.0, max_ptar_q * 1.22)
+            self.ax_flow.set_title(
+                "Balance de Caudales (m³/s)",
+                color=theme.INK_PRIMARY,
+                fontsize=8.6,
+                fontweight="bold",
+                fontfamily=["Inter", "Segoe UI", "DejaVu Sans"],
+                pad=22,
+            )
+            self.ax_flow.set_ylabel("Entrada / Rebose (izq.)", color=theme.INK_PRIMARY, fontsize=7.3)
+            all_flow_lines = lines_left + lines_right
+            all_flow_labels = [l.get_label() for l in all_flow_lines]
+            self.ax_flow.legend(
+                all_flow_lines,
+                all_flow_labels,
+                loc="lower center",
+                bbox_to_anchor=(0.5, 1.01),
+                ncol=min(3, max(2, len(all_flow_lines))),
+                frameon=True,
+                facecolor=theme.PAPER_BG,
+                edgecolor=theme.PAPER_BORDER,
+                framealpha=0.95,
+                fontsize=6.5,
+                borderpad=0.22,
+                columnspacing=0.55,
+                handlelength=1.2,
+                labelcolor=theme.INK_PRIMARY,
+            )
+
         self._cursor_flow = self.ax_flow.axvline(
             t_cur,
-            color=theme.ACCENT_PRIMARY,
+            color="#dc2626",
             linestyle=":",
             linewidth=1.4,
             alpha=0.9,
             animated=True,
-        )
-        self.ax_flow.set_title(
-            "Caudal: Antes vs. Después (m³/s)" if has_prev else "Balance de Caudales (m³/s)",
-            color=theme.INK_PRIMARY,
-            fontsize=8.8,
-            fontweight="bold",
-            fontfamily=["Inter", "Segoe UI", "DejaVu Sans"],
-            pad=5,
-        )
-        self.ax_flow.set_ylabel("Entrada (m³/s)", color=theme.INK_PRIMARY, fontsize=7.4)
-        all_flow_lines = lines_left + lines_right
-        all_flow_labels = [l.get_label() for l in all_flow_lines]
-        self.ax_flow.legend(
-            all_flow_lines,
-            all_flow_labels,
-            loc="upper center",
-            ncol=min(4, max(2, len(all_flow_lines))),
-            frameon=True,
-            facecolor=theme.PAPER_BG,
-            edgecolor=theme.PAPER_BORDER,
-            framealpha=0.94,
-            fontsize=6.8,
-            borderpad=0.28,
-            labelspacing=0.25,
-            columnspacing=0.65,
-            handlelength=1.25,
-            labelcolor=theme.INK_PRIMARY,
         )
 
         target_pids: List[str] = []
@@ -484,20 +550,52 @@ class TemporalChartsPanel(tk.Frame):
 
         palette = [theme.ACCENT_PRIMARY, "#f97316", theme.INK_PRIMARY]
         max_u_val = 105.0
-        for idx, pid in enumerate(target_pids):
-            utils = [
-                s.pipe_states[pid].utilization_pct if pid in s.pipe_states else 0.0
+
+        if has_prev and target_pids:
+            focus_pid = target_pids[0]
+            prev_times = [s.time_min for s in previous_result.snapshots]
+            prev_utils = [
+                s.pipe_states[focus_pid].utilization_pct if focus_pid in s.pipe_states else 0.0
+                for s in previous_result.snapshots
+            ]
+            cur_utils = [
+                s.pipe_states[focus_pid].utilization_pct if focus_pid in s.pipe_states else 0.0
                 for s in result.snapshots
             ]
-            if utils:
-                max_u_val = max(max_u_val, max(utils))
+            if prev_utils:
+                max_u_val = max(max_u_val, max(prev_utils))
+                self.ax_util.plot(
+                    prev_times,
+                    prev_utils,
+                    label=f"Antes ({previous_result.peak_pipe_utilization.get(focus_pid, 0.0):.0f}%)",
+                    color="#64748b",
+                    linestyle="--",
+                    linewidth=1.7,
+                )
+            if cur_utils:
+                max_u_val = max(max_u_val, max(cur_utils))
             self.ax_util.plot(
                 times,
-                utils,
-                label=f"{pid} ({result.peak_pipe_utilization.get(pid, 0.0):.0f}%)",
-                color=palette[idx % len(palette)],
-                linewidth=1.9,
+                cur_utils,
+                label=f"Después ({result.peak_pipe_utilization.get(focus_pid, 0.0):.0f}%)",
+                color=theme.ACCENT_PRIMARY,
+                linewidth=2.1,
             )
+        else:
+            for idx, pid in enumerate(target_pids):
+                utils = [
+                    s.pipe_states[pid].utilization_pct if pid in s.pipe_states else 0.0
+                    for s in result.snapshots
+                ]
+                if utils:
+                    max_u_val = max(max_u_val, max(utils))
+                self.ax_util.plot(
+                    times,
+                    utils,
+                    label=f"{pid} ({result.peak_pipe_utilization.get(pid, 0.0):.0f}%)",
+                    color=palette[idx % len(palette)],
+                    linewidth=1.9,
+                )
 
         self.ax_util.axhline(
             75.0, color="#f97316", linestyle=":", linewidth=1.0, label="Crít. 75%"
@@ -507,45 +605,48 @@ class TemporalChartsPanel(tk.Frame):
         )
         if max_u_val > 250.0:
             self.ax_util.set_yscale("symlog", linthresh=100.0)
-            self.ax_util.set_ylim(0.0, max_u_val * 1.45)
+            self.ax_util.set_ylim(0.0, max_u_val * 1.25)
         else:
             self.ax_util.set_yscale("linear")
-            self.ax_util.set_ylim(0.0, max_u_val * 1.32)
+            self.ax_util.set_ylim(0.0, max_u_val * 1.18)
+        self.ax_util.yaxis.set_major_formatter(
+            FuncFormatter(lambda v, _: f"{int(round(v)):,}%" if v >= 1 else "0%")
+        )
         self._cursor_util = self.ax_util.axvline(
             t_cur,
-            color=theme.ACCENT_PRIMARY,
+            color="#dc2626",
             linestyle=":",
             linewidth=1.4,
             alpha=0.9,
             animated=True,
         )
         title_u = (
-            f"Utilización — {selected_pipe_id}"
-            if selected_pipe_id
-            else "Utilización — Top 3 Críticas"
+            f"Utilización {selected_pipe_id}: Antes vs. Después"
+            if (has_prev and selected_pipe_id)
+            else (f"Utilización — {selected_pipe_id}" if selected_pipe_id else "Utilización — Top 3 Críticas")
         )
         self.ax_util.set_title(
             title_u,
             color=theme.INK_PRIMARY,
-            fontsize=8.8,
+            fontsize=8.6,
             fontweight="bold",
             fontfamily=["Inter", "Segoe UI", "DejaVu Sans"],
-            pad=5,
+            pad=34,
         )
         self.ax_util.set_xlabel("Tiempo (min)", color=theme.INK_SECONDARY, fontsize=7.6)
         self.ax_util.set_ylabel("% Cap.", color=theme.INK_SECONDARY, fontsize=7.6)
         self.ax_util.legend(
-            loc="upper center",
+            loc="lower center",
+            bbox_to_anchor=(0.5, 1.01),
             ncol=2,
             frameon=True,
             facecolor=theme.PAPER_BG,
             edgecolor=theme.PAPER_BORDER,
-            framealpha=0.94,
-            fontsize=6.8,
-            borderpad=0.28,
-            labelspacing=0.25,
-            columnspacing=0.75,
-            handlelength=1.25,
+            framealpha=0.95,
+            fontsize=6.5,
+            borderpad=0.22,
+            columnspacing=0.65,
+            handlelength=1.2,
             labelcolor=theme.INK_PRIMARY,
         )
 
