@@ -23,6 +23,7 @@ from . import theme
 from .charts_panel import ChartsPanel
 from .comparison_panel import ComparisonPanel
 from .controls_panel import ControlsPanel
+from .guided_tour import GuidedTourController
 from .icons import build_icon_set
 from .inspector_panel import CriticalPipesTab, InspectorTab
 from .network_canvas import NetworkCanvas
@@ -110,6 +111,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._active_route: List[PipeEdge] = []
         self._last_chart_node: Optional[str] = None
         self._txt_cache: Dict[tk.Widget, tuple] = {}
+        self.tour = GuidedTourController(self)  # recorrido guiado (G12): ficha, paradas y foco
 
         self._build_ui()
         self._bind_shortcuts()
@@ -183,6 +185,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._build_map_mode_bar(center)
         self.network_canvas = NetworkCanvas(center, fonts=self.fonts, on_select=self.select_entity)
         self.network_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.tour.build_card(self.network_canvas)
         self._build_player(center)
 
         self.notebook = ttk.Notebook(self.paned)
@@ -237,6 +240,7 @@ class BicentenarioSewerApp(tk.Tk):
                            ("Exportar reporte Word...", lambda: self._action_export("docx")), ("Exportar reporte MD/CSV...", lambda: self._action_export("md"))):
             menu.add_separator() if item is None else menu.add_command(label=item[0], command=item[1])
         self.menu_btn_file.configure(menu=menu)
+        self.btn_guided_tour = self._btn(self.actions_bar, "Recorrido guiado", self.tour.toggle, "dark", padx=9, pady=4)
 
     def _build_legend_bar(self) -> None:
         """Leyenda superior dinámica: cabecera del modo + 5 bandas con conteo (cambia con el modo de mapa)."""
@@ -450,7 +454,10 @@ class BicentenarioSewerApp(tk.Tk):
         self.controls.focus_search()
         return "break"
 
-    def _shortcut_escape(self, _event: object = None) -> None:
+    def _shortcut_escape(self, _event: object = None) -> Optional[str]:
+        if self.tour.active:  # Esc cierra primero el recorrido guiado
+            self.tour.close()
+            return "break"
         self.clear_traversal()
         self._clear_basin()
         self.select_entity(None, None)
@@ -490,6 +497,8 @@ class BicentenarioSewerApp(tk.Tk):
         for child in self.actions_bar.pack_slaves():
             child.pack_forget()
         wide = tier == "wide"
+        self.btn_guided_tour.configure(text=self.tour.button_label(tier))
+        self.btn_guided_tour.pack(side=tk.RIGHT, padx=(4, 0))
         if wide:
             if not self.lbl_app_subtitle.winfo_manager():
                 self.lbl_app_subtitle.pack(anchor="w")
@@ -554,7 +563,7 @@ class BicentenarioSewerApp(tk.Tk):
         except (DataLoadError, OSError, ValueError) as exc:
             messagebox.showerror("Error al cargar datos", str(exc), parent=self)
             self._status_lbl.configure(text="Error de carga — se conserva dataset previo"); return False
-        self._stop_playback(); self.clear_traversal()
+        self._stop_playback(); self.clear_traversal(); self.tour.close(reset_view=False)
         self.dataset, self.cached_comparisons, self._base_compare_key = ds, None, None
         self.interventions.clear(); self.previous_result = self._baseline_result = None
         self.isolated_nodes, self.isolated_pipes, self._canvas_int_sig = set(), set(), None
@@ -583,6 +592,7 @@ class BicentenarioSewerApp(tk.Tk):
         intervenciones sucesivas y se descarta al restaurar la red (`preserve_previous` es solo una pista)."""
         if self.dataset is None: return None
         self._stop_playback()
+        prev_sid = self.result.config.scenario_id if self.result is not None else None
         try: cfg = self._build_config()
         except ValueError as exc: messagebox.showerror("Parámetros inválidos", str(exc), parent=self); return None
         key = _base_key(cfg)
@@ -620,6 +630,8 @@ class BicentenarioSewerApp(tk.Tk):
         self.go_to_step(0)
         self._sync_inspector_context()
         self._status_lbl.configure(text=f"Esc. {cfg.scenario_id} ({theme.translate_scenario_name(cfg.scenario_name)}) en {res.execution_time_ms:.1f} ms")
+        self.tour.update_button()
+        self.tour.on_result(auto_play, prev_sid)
         if auto_play and len(res.snapshots) > 1:
             self.toggle_play()
         return res
@@ -673,7 +685,7 @@ class BicentenarioSewerApp(tk.Tk):
     def _set_map_mode(self, mode: str) -> None:
         """Cambia la lectura del mapa. Pico/Sobrecarga son vistas globales congeladas: pausan y conservan `current_step`."""
         if mode not in _MAP_MODE_IDS: return
-        if mode != "instant": self._stop_playback(True)
+        if mode != "instant": self._stop_playback(True); self.tour.close(reset_view=False)
         self._map_mode = mode
         self._apply_map_mode_button_styles()
         snap = self._current_snapshot()
@@ -820,6 +832,7 @@ class BicentenarioSewerApp(tk.Tk):
     def toggle_play(self) -> None:
         if not self.result or not self.result.snapshots: return
         if self.is_playing: self._stop_playback(True); return
+        self.tour.close()  # reproducir cierra el recorrido guiado
         self._ensure_instant()
         if self.current_step >= len(self.result.snapshots) - 1: self.go_to_step(0)
         self.is_playing = True; self._update_play_button()
@@ -1233,7 +1246,7 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _on_close(self) -> None:
         self._closing = True
-        self._stop_playback(); self._stop_traversal(); self._cancel_timer("_slider_after_id"); self._cancel_timer("_resize_after_id")
+        self.tour.cancel_timers(); self._stop_playback(); self._stop_traversal(); self._cancel_timer("_slider_after_id"); self._cancel_timer("_resize_after_id")
         self.controls.cancel_pending()
         self.network_canvas.stop_pulse_animation(); self.network_canvas.cancel_pending(); self.charts_panel._cancel_cursor_timer()
         try: self.destroy()
