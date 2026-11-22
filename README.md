@@ -72,4 +72,6 @@ python scripts/capture_doc_screenshots.py
 - `src/simulation/`: Motor de simulación, comparación, figuras `3.5 × 2.8 in` y exportador Word `.docx` (OMML `8.5 pt`) sin Pandoc.
 - `src/gui/`: Interfaz gráfica adaptable Tkinter + Matplotlib en español con sistema visual **Lámina Cartográfica de Archivo Hidráulico** (Grafito `#4A4A4A`, Plata `#CBCBCB`, Marfil `#FFFFE3` y Azul Pizarra `#6D8196`).
 - `docs/`: Documento técnico en Word (`DOCUMENTO_TECNICO.docx`), Markdown y reportes de escenarios.
+- `scripts/`: Generador reproducible de capturas de pantalla para la documentación.
+- `assets/`: Fuentes tipográficas (`Inter`) utilizadas por la interfaz.
 - `tests/`: Suite de pruebas unitarias.

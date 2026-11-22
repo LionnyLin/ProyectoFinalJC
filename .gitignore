@@ -8,3 +8,10 @@ venv/
 dist/
 build/
 .agent/
+.dsh/
+.impeccable/
+~$*.docx
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
