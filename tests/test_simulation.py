@@ -108,11 +108,27 @@ class TestSimulation(unittest.TestCase):
             with open(md_path, "r", encoding="utf-8") as fh:
                 md_text = fh.read()
             self.assertTrue("PTAR Punta Canoa" in md_text and "## 5. Comparación" in md_text)
+            for token in ("Razón Qmax", "Razón Máx", "factor de ingreso pluvial", "Caudal sanitario", "P57"):
+                self.assertIn(token, md_text)
+            self.assertNotIn("Intervenciones activas", md_text)
             with open(csv_path, "r", encoding="utf-8") as fh:
-                self.assertEqual(len(list(csv.reader(fh))), 60)  # Encabezado + 59 tuberías
+                rows = list(csv.reader(fh))
+            self.assertEqual(len(rows), 60)  # Encabezado + 59 tuberías
+            self.assertIn("peak_demand_factor", rows[0])
+
+            iv_cfg = SimulationConfig(3, "Moderate rain", 30.0, interventions={
+                "P29": PipeIntervention("P29", obstruction_pct=80.0, diameter_in_override=14.0)})
+            iv_res = self.engine.run(iv_cfg)
+            iv_md = generate_markdown_report(self.dataset, iv_res, None, os.path.join(tmpdir, "iv.md"))
+            with open(iv_md, "r", encoding="utf-8") as fh:
+                iv_text = fh.read()
+            self.assertIn('Intervenciones activas:** P29 (obst. 80%, Ø 14")', iv_text)
+            self.assertNotIn("## 5. Comparación", iv_text)
             doc = Document(docx_path)
             self.assertIn("Ciudad Bicentenario", "\n".join(p.text for p in doc.paragraphs))
-            self.assertEqual((len(doc.tables), len(doc.tables[3].rows)), (4, 6))
+            self.assertEqual((len(doc.tables), len(doc.tables[2].rows)), (3, 6))  # Indicadores, Top 20, Comparación
+            self.assertGreaterEqual(len(doc.tables[1].rows), 21)  # Top 20 + encabezado
+            self.assertIn("Razón", [c.text for c in doc.tables[1].rows[0].cells])
 
     # ---- Intervenciones, ingreso, caudal sanitario y métricas de sobrecarga ----
     def _cfg(self, intensity=100.0, **kw) -> SimulationConfig:

@@ -9,11 +9,14 @@ DEFAULT_DATA_PATH = os.path.join(
 )
 
 
-def _run_cli_reports(data_path: str, report_md: str | None, report_docx: str | None) -> int:
+def _run_cli_reports(
+    data_path: str, report_md: str | None, report_docx: str | None, technical_docx: str | None = None
+) -> int:
     """Ejecuta los 5 escenarios en modo CLI y exporta los reportes solicitados."""
     from src.io.data_loader import DataLoadError, load_dataset
     from src.simulation import (
         SimulationConfig, compare_all_scenarios, generate_docx_report, generate_markdown_report,
+        generate_technical_document_docx,
     )
 
     try:
@@ -28,7 +31,10 @@ def _run_cli_reports(data_path: str, report_md: str | None, report_docx: str | N
         if report_docx:
             out = generate_docx_report(dataset, primary.result, summaries, report_docx)
             print(f"Reporte Word (.docx) generado en: {out}")
-    except (DataLoadError, OSError, ValueError) as exc:
+        if technical_docx:
+            out = generate_technical_document_docx(dataset, summaries, technical_docx)
+            print(f"Documento Técnico (.docx) generado en: {out}")
+    except (DataLoadError, ImportError, OSError, ValueError) as exc:
         print(f"Error en modo CLI: {exc}", file=sys.stderr)
         return 1
     return 0
@@ -48,12 +54,16 @@ def main() -> int:
     )
     parser.add_argument(
         "--report-docx", default=None,
-        help="Ejecuta comparación de 5 escenarios y genera un reporte Word (.docx).",
+        help="Ejecuta comparación de 5 escenarios y genera un reporte Word (.docx) a dos columnas con ecuaciones OMML.",
+    )
+    parser.add_argument(
+        "--technical-docx", default=None,
+        help="Genera el Documento Técnico completo (.docx) a dos columnas con Anexos A-D.",
     )
     args = parser.parse_args()
 
-    if args.report or args.report_docx:
-        return _run_cli_reports(args.data, args.report, args.report_docx)
+    if args.report or args.report_docx or args.technical_docx:
+        return _run_cli_reports(args.data, args.report, args.report_docx, args.technical_docx)
 
     from src.gui.theme import enable_dpi_awareness
     from src.gui import BicentenarioSewerApp

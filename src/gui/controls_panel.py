@@ -264,7 +264,7 @@ class ControlsPanel(tk.Frame):
 
     def _build_traversal_card(self) -> None:
         body = self._make_card(self._trav_page, "BÚSQUEDA Y RECORRIDOS")
-        self._lbl(body, "Búsqueda O(1) (ID de nodo o tubería)").pack(fill=tk.X)
+        self._lbl(body, "Búsqueda (ID exacto O(1) o texto parcial)").pack(fill=tk.X)
         srow = tk.Frame(body, bg=theme.PAPER_BG)
         srow.pack(fill=tk.X, pady=(2, 6))
         self._search_row = srow
@@ -455,7 +455,7 @@ class ControlsPanel(tk.Frame):
             self.clear_search_feedback()
             self._cb("search", q)
         else:
-            self.show_search_feedback("Ingresa un ID de nodo (ej. 17) o tubería (ej. P30).", is_error=True)
+            self.show_search_feedback("Ingresa un ID (ej. 17, P30) o parte del texto (ej. PTAR).", is_error=True)
             self._search_entry.focus_set()
 
     def _emit_traversal(self, algo: str, animate: bool) -> None:
@@ -493,6 +493,10 @@ class ControlsPanel(tk.Frame):
         self._start_var.set("6" if "6" in node_ids else (sources[0] if sources else (node_ids[0] if node_ids else "")))
         self._target_combo.configure(values=[_NONE_TARGET] + node_ids)
         self._target_var.set("31" if "31" in sinks else (sinks[0] if sinks else _NONE_TARGET))
+
+    def set_start_node(self, node_id: str) -> None:
+        """Fija el nodo «Inicio» de recorridos/trazas (p. ej. al inspeccionar un nodo)."""
+        self._start_var.set(node_id)
 
     def select_scenario_by_id(self, scenario_id: int) -> None:
         """Selecciona un escenario en el desplegable por su identificador."""

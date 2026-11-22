@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import os, time
+from dataclasses import replace
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List, Optional, Tuple
 
-from src.algorithms import TraversalFrame, TraversalResult, bfs, dfs, search_entity, trace_downstream, trace_upstream_result
+from src.algorithms import (
+    TraversalFrame, TraversalResult, bfs, compute_source_attribution, dfs, find_isolated_from_sinks,
+    search_entities, search_entity, trace_downstream, trace_upstream, trace_upstream_result,
+)
 from src.io.data_loader import DataLoadError, NetworkDataset, export_to_csv_dir, load_dataset
 from src.simulation import (
-    MODEL_ASSUMPTIONS_TEXT, ScenarioSummary, SewerSimulationEngine, SimulationConfig,
+    MODEL_ASSUMPTIONS_TEXT, PipeIntervention, ScenarioSummary, SewerSimulationEngine, SimulationConfig,
     SimulationResult, TimeStepSnapshot, compare_all_scenarios, generate_docx_report, generate_markdown_report,
 )
 from . import theme
@@ -24,6 +28,7 @@ from .network_canvas import NetworkCanvas
 _SPEED_MS: Dict[str, int] = theme.PLAY_SPEED_MS
 _ANIM_MS_BY_ALGO: Dict[str, int] = {"BFS": 560, "DFS": 340}
 _TRAVERSAL_ANIM_MS = 560
+_ATTR_THROTTLE_S = 0.25  # composición por fuente durante la reproducción: ≥ 250 ms entre cálculos
 _TYPING_CLASSES = ("Entry", "TEntry", "Spinbox", "TSpinbox", "TCombobox", "Text")
 _BUTTON_CLASSES = ("Button", "TButton", "Menubutton", "Checkbutton", "TCheckbutton")
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -37,7 +42,8 @@ _BTN_PAL = {
 
 def _base_key(c: SimulationConfig) -> tuple:
     return (c.duration_min, c.storm_duration_min, c.dt_min, c.split_rule, c.source_distribution,
-            c.max_manhole_storage_m3, c.ingress_factor, c.dry_weather_flow_per_source_m3s)
+            c.max_manhole_storage_m3, c.ingress_factor, c.dry_weather_flow_per_source_m3s,
+            tuple(sorted(c.interventions.items())))
 
 
 class BicentenarioSewerApp(tk.Tk):
@@ -84,6 +90,15 @@ class BicentenarioSewerApp(tk.Tk):
         self._resize_after_id: Optional[str] = None
         self._closing = False
         self._player_compact: Optional[bool] = None
+        # Intervenciones en vivo, línea base (Antes/Después), cuenca aislada y composición por fuente
+        self.interventions: Dict[str, PipeIntervention] = {}
+        self.previous_result: Optional[SimulationResult] = None   # línea base original para Antes/Después
+        self._baseline_result: Optional[SimulationResult] = None
+        self.isolated_nodes: set = set(); self.isolated_pipes: set = set()
+        self._canvas_int_sig: Optional[tuple] = None
+        self.basin_focus_active = False
+        self._inspector_trace: Optional[Tuple[str, str]] = None   # (nodo, "up"|"down")
+        self._attr_key: Optional[tuple] = None; self._attr_time = 0.0
 
         self._build_ui()
         self._bind_shortcuts()
@@ -162,11 +177,16 @@ class BicentenarioSewerApp(tk.Tk):
         for lbl in self._kpi_labels.values(): lbl.pack(side=tk.LEFT, padx=(0, 14))
 
         self.notebook = ttk.Notebook(self.paned)
-        self.inspector_tab = InspectorTab(self.notebook, self.fonts)
-        self.critical_tab = CriticalPipesTab(self.notebook, self.fonts, on_select_pipe=lambda pid: self.select_entity("pipe", pid))
+        self.inspector_tab = InspectorTab(self.notebook, self.fonts, {
+            "focus": self._action_focus_selected, "basin": self._action_toggle_basin,
+            "trace": self._action_toggle_inspector_trace, "apply": self._action_apply_intervention,
+            "restore_pipe": self._action_restore_pipe, "restore_all": self._action_restore_all,
+        })
+        self.critical_tab = CriticalPipesTab(self.notebook, self.fonts, on_select_pipe=lambda pid: self.select_entity("pipe", pid),
+                                             on_focus_pipe=lambda pid: self.network_canvas.focus_pipe(pid))
         self.charts_panel = ChartsPanel(self.notebook, self.fonts)
         self.comparison_panel = ComparisonPanel(self.notebook, self.fonts, self.run_comparison, lambda sid: (self.controls.select_scenario_by_id(sid), self.run_simulation()))
-        for w, title in ((self.inspector_tab, "Inspector"), (self.critical_tab, "Críticas"), (self.charts_panel, "Gráficas"), (self.comparison_panel, "Comparación")):
+        for w, title in ((self.inspector_tab, "Inspector"), (self.critical_tab, "Tuberías Críticas"), (self.charts_panel, "Gráficas"), (self.comparison_panel, "Comparación")):
             self.notebook.add(w, text=title)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         self._sync_panes()
@@ -351,6 +371,7 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _shortcut_escape(self, _event: object = None) -> None:
         self.clear_traversal()
+        self._clear_basin()
         self.select_entity(None, None)
 
     # ── Layout responsivo ────────────────────────────────────────────────────
@@ -454,26 +475,55 @@ class BicentenarioSewerApp(tk.Tk):
             self._status_lbl.configure(text="Error de carga — se conserva dataset previo"); return False
         self._stop_playback(); self.clear_traversal()
         self.dataset, self.cached_comparisons, self._base_compare_key = ds, None, None
+        self.interventions.clear(); self.previous_result = self._baseline_result = None
+        self.isolated_nodes, self.isolated_pipes, self._canvas_int_sig = set(), set(), None
+        self.basin_focus_active, self._inspector_trace, self._attr_key = False, None, None
         self.selected_kind = self.selected_id = self._last_chart_pipe = None
         self.comparison_panel.set_comparisons(None, is_visible=self._active_tab() == 3)
         self.controls.populate_dataset(ds)
         if any(s.scenario_id == 3 for s in ds.scenarios): self.controls.select_scenario_by_id(3)
-        self.network_canvas.set_graph(ds.graph)
+        self.network_canvas.set_graph(ds.graph)  # también limpia intervenciones y foco de cuenca del lienzo
+        self._sync_inspector_context()
         self._status_lbl.configure(text=f"Dataset cargado: {os.path.basename(ds.source_path)}")
         if run_initial: self.run_simulation()
         return True
 
-    def run_simulation(self, auto_play: bool = False) -> Optional[SimulationResult]:
+    def _build_config(self) -> SimulationConfig:
+        """Configuración del panel de controles más las intervenciones vigentes (ValueError si es inválida)."""
+        cfg = self.controls.get_simulation_config()
+        cfg.interventions = dict(self.interventions)
+        return cfg
+
+    def _invalidate_comparisons(self) -> None:
+        self.cached_comparisons = None; self.comparison_panel.invalidate()
+
+    def run_simulation(self, auto_play: bool = False, preserve_previous: bool = False) -> Optional[SimulationResult]:
+        """Simula con la configuración vigente. La línea base (sin intervenciones) se conserva entre
+        intervenciones sucesivas y se descarta al restaurar la red (`preserve_previous` es solo una pista)."""
         if self.dataset is None: return None
         self._stop_playback()
-        try: cfg = self.controls.get_simulation_config()
+        try: cfg = self._build_config()
         except ValueError as exc: messagebox.showerror("Parámetros inválidos", str(exc), parent=self); return None
         key = _base_key(cfg)
         if self._base_compare_key is not None and key != self._base_compare_key:
-            self.cached_comparisons = None; self.comparison_panel.invalidate()
+            self._invalidate_comparisons()
         self._base_compare_key = key
-        res = SewerSimulationEngine(self.dataset.graph, self.dataset.basin).run(cfg)
-        self.result, self.current_step = res, 0
+        engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
+        base_cfg = replace(cfg, interventions={})
+        if self.interventions:
+            if self._baseline_result is not None and replace(self._baseline_result.config, interventions={}) == base_cfg:
+                pass
+            elif self.result is not None and not self.result.config.interventions and replace(self.result.config, interventions={}) == base_cfg:
+                self._baseline_result = self.result
+            else:
+                self._baseline_result = engine.run(base_cfg)
+            self.previous_result = self._baseline_result
+        else:
+            self.previous_result = None
+        res = engine.run(cfg)
+        if not self.interventions: self._baseline_result = res
+        self.result, self.current_step, self._attr_key = res, 0, None
+        self._sync_isolation()
         snaps = res.snapshots
         self._scale.configure(state=("normal" if len(snaps) > 1 else "disabled"), from_=0, to=max(0, len(snaps) - 1))
         self._scale_min_lbl.configure(text="0m")
@@ -483,6 +533,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._last_chart_pipe = self.selected_id if self.selected_kind == "pipe" else None
         self.charts_panel.set_result(res, self._last_chart_pipe, is_visible=self._active_tab() == 2)
         self.go_to_step(0)
+        self._sync_inspector_context()
         self._status_lbl.configure(text=f"Esc. {cfg.scenario_id} ({theme.translate_scenario_name(cfg.scenario_name)}) en {res.execution_time_ms:.1f} ms")
         if auto_play and len(res.snapshots) > 1:
             self.toggle_play()
@@ -503,7 +554,8 @@ class BicentenarioSewerApp(tk.Tk):
         self._update_play_button()
         self.network_canvas.set_snapshot(snap)
         tab = self._active_tab()
-        self.inspector_tab.update_view(self.dataset.graph, snap, self.result, self.selected_kind, self.selected_id)
+        self._update_inspector_view(snap)
+        self._refresh_source_composition()
         self.critical_tab.update_view(self.dataset.graph, snap, is_visible=tab == 1)
         if tab == 1 and self.selected_kind == "pipe": self.critical_tab.select_pipe(self.selected_id)
         self.charts_panel.update_cursor(snap.time_min, is_visible=tab == 2)
@@ -581,6 +633,7 @@ class BicentenarioSewerApp(tk.Tk):
     def _stop_playback(self, resume: bool = False) -> None:
         self.is_playing = False; self._cancel_timer("_play_after_id")
         if hasattr(self, "_btn_play"): self._update_play_button()
+        if hasattr(self, "inspector_tab") and not self._closing: self._refresh_source_composition()
     def toggle_play(self) -> None:
         if not self.result or not self.result.snapshots: return
         if self.is_playing: self._stop_playback(True); return
@@ -600,19 +653,31 @@ class BicentenarioSewerApp(tk.Tk):
         new_sel = (kind, entity_id) if kind in ("pipe", "node") and entity_id else (None, None)
         if new_sel == (self.selected_kind, self.selected_id):
             return
+        if self._inspector_trace is not None and self._inspector_trace[0] != new_sel[1]:
+            self._inspector_trace = None
         self.selected_kind, self.selected_id = new_sel
         self.network_canvas.set_selected(self.selected_kind, self.selected_id)
-        self.inspector_tab.update_view(self.dataset.graph if self.dataset else None, self._current_snapshot(), self.result, self.selected_kind, self.selected_id)
+        if self.basin_focus_active: self._apply_basin()
+        self._sync_inspector_context()
+        self._update_inspector_view()
+        self._refresh_source_composition(force=True)
         pipe_id = self.selected_id if self.selected_kind == "pipe" else None
         self.critical_tab.select_pipe(pipe_id)
         if pipe_id != self._last_chart_pipe:
             self._last_chart_pipe = pipe_id; self.charts_panel.set_result(self.result, pipe_id, is_visible=self._active_tab() == 2)
 
     def _action_search(self, query: str) -> None:
+        """Búsqueda: ID exacto O(1) y, si no coincide, respaldo por subcadena; centra la cámara en el resultado."""
         if self.dataset is None: return
-        kind, eid = search_entity(self.dataset.graph, query)
+        g = self.dataset.graph
+        kind, eid = search_entity(g, query)
+        n_hits = 1
         if not kind or not eid:
-            g = self.dataset.graph
+            nodes, pipes = search_entities(g, query)
+            if nodes: kind, eid = "node", nodes[0].node_id
+            elif pipes: kind, eid = "pipe", pipes[0].pipe_id
+            n_hits = len(nodes) + len(pipes)
+        if not kind or not eid:
             sample_n = ", ".join(sorted(g.node_ids())[:2]) or "—"
             sample_p = ", ".join(sorted(g.pipe_ids())[:2]) or "—"
             self.controls.show_search_feedback(f"No existe «{query}» en la red. Ej: nodos {sample_n} o tuberías {sample_p}.", is_error=True)
@@ -623,9 +688,142 @@ class BicentenarioSewerApp(tk.Tk):
                 parent=self,
             )
             return
-        self.controls.show_search_feedback(f"Encontrado: {'Tubería' if kind == 'pipe' else 'Nodo'} {eid}", is_error=False)
-        self._status_lbl.configure(text=f"Encontrado O(1): {'Tubería' if kind == 'pipe' else 'Nodo'} {eid}", fg=theme.SHELL_TEXT_MUTED)
+        what = f"{'Tubería' if kind == 'pipe' else 'Nodo'} {eid}"
+        if n_hits > 1:
+            self.controls.show_search_feedback(f"{n_hits} coincidencias para «{query}». Seleccionado: {what}.", is_error=False)
+            self._status_lbl.configure(text=f"Búsqueda «{query}»: {n_hits} coincidencias · {what}", fg=theme.SHELL_TEXT_MUTED)
+        else:
+            self.controls.show_search_feedback(f"Encontrado: {what}", is_error=False)
+            self._status_lbl.configure(text=f"Encontrado O(1): {what}", fg=theme.SHELL_TEXT_MUTED)
         self.select_entity(kind, eid); self.notebook.select(0)
+        (self.network_canvas.focus_pipe if kind == "pipe" else self.network_canvas.focus_node)(eid)
+
+    # ── Inspector: acciones, cuenca aislada, intervenciones y composición por fuente ──
+
+    def _selected_edge(self):
+        return self.dataset.graph.get_pipe(self.selected_id) if (self.dataset and self.selected_kind == "pipe") else None
+
+    def _update_inspector_view(self, snap: Optional[TimeStepSnapshot] = None) -> None:
+        self.inspector_tab.update_view(
+            self.dataset.graph if self.dataset else None, snap or self._current_snapshot(), self.result, self.selected_kind,
+            self.selected_id, self.interventions, self.isolated_nodes, self.isolated_pipes, self.dataset.basin if self.dataset else None,
+        )
+
+    def _sync_inspector_context(self) -> None:
+        edge = self._selected_edge()
+        self.inspector_tab.set_context(
+            self.selected_kind, edge, self.interventions.get(edge.pipe_id) if edge else None, len(self.interventions),
+            self.basin_focus_active, self._inspector_trace[1] if self._inspector_trace else None,
+        )
+
+    def _action_focus_selected(self) -> None:
+        if self.selected_kind == "pipe" and self.selected_id: self.network_canvas.focus_pipe(self.selected_id)
+        elif self.selected_kind == "node" and self.selected_id: self.network_canvas.focus_node(self.selected_id)
+
+    def _basin_sets(self) -> Optional[Tuple[set, set]]:
+        """Nodos y tuberías de la cuenca de la selección: unión de aguas arriba y aguas abajo."""
+        if self.dataset is None or not self.selected_id: return None
+        g = self.dataset.graph
+        if self.selected_kind == "pipe" and (e := g.get_pipe(self.selected_id)) is not None:
+            starts, extra = (e.from_node, e.to_node), {e.pipe_id}
+        elif self.selected_kind == "node" and g.has_node(self.selected_id):
+            starts, extra = (self.selected_id, self.selected_id), set()
+        else:
+            return None
+        up_n, up_p = trace_upstream(g, starts[0])
+        dn = trace_downstream(g, starts[1])
+        return set(up_n) | set(dn.visited_order), {p.pipe_id for p in up_p} | {p.pipe_id for p in dn.traversed_edges} | extra
+
+    def _apply_basin(self) -> None:
+        sets = self._basin_sets() if self.basin_focus_active else None
+        if sets is None:
+            self.basin_focus_active = False
+            self.network_canvas.set_basin_focus(None, None)
+            return
+        self.network_canvas.set_basin_focus(*sets)
+        self._status_lbl.configure(text=f"Cuenca aislada: {len(sets[0])} nodo(s) y {len(sets[1])} tramo(s) hacia/desde la selección.", fg=theme.SHELL_TEXT_MUTED)
+
+    def _clear_basin(self) -> None:
+        self.basin_focus_active = False
+        self.network_canvas.set_basin_focus(None, None)
+        self._sync_inspector_context()
+
+    def _action_toggle_basin(self) -> None:
+        if self.dataset is None or not self.selected_id: return
+        self.basin_focus_active = not self.basin_focus_active
+        self._apply_basin()
+        self._sync_inspector_context()
+
+    def _action_toggle_inspector_trace(self, direction: str) -> None:
+        if self.dataset is None or self.selected_kind != "node" or not self.selected_id: return
+        nid = self.selected_id
+        if self._inspector_trace == (nid, direction):
+            self.clear_traversal()
+            self._status_lbl.configure(text="Vista de red restaurada.", fg=theme.SHELL_TEXT_MUTED)
+        else:
+            self.controls.set_start_node(nid)
+            self._action_trace(nid, direction == "up")
+            self._inspector_trace = (nid, direction)
+        self._sync_inspector_context()
+
+    def _sync_isolation(self) -> None:
+        """Recalcula nodos/tramos incomunicados de la PTAR por cierres totales y actualiza el lienzo si cambió algo."""
+        if self.dataset is None: return
+        blocked = {pid for pid, inv in self.interventions.items() if inv.is_closed}
+        self.isolated_nodes, self.isolated_pipes = find_isolated_from_sinks(self.dataset.graph, blocked)
+        sig = (tuple(sorted(self.interventions.items())), frozenset(self.isolated_nodes), frozenset(self.isolated_pipes))
+        if sig != self._canvas_int_sig:
+            self._canvas_int_sig = sig
+            self.network_canvas.set_interventions(self.interventions, self.isolated_nodes, self.isolated_pipes)
+            if self.basin_focus_active: self._apply_basin()
+
+    def _after_intervention_change(self, status: str = "") -> None:
+        self._invalidate_comparisons()
+        self.run_simulation(preserve_previous=True)
+        self._sync_inspector_context()
+        if status: self._status_lbl.configure(text=status, fg=theme.SHELL_TEXT_MUTED)
+        elif self.isolated_nodes and self.interventions:
+            self._status_lbl.configure(text=f"Intervención: {len(self.isolated_nodes)} nodo(s) aislados de la PTAR 31.", fg=theme.SHELL_TEXT_MUTED)
+
+    def _action_apply_intervention(self, obstruction_pct: float, diameter_in: Optional[float]) -> None:
+        edge = self._selected_edge()
+        if edge is None: return
+        try:
+            inv = PipeIntervention(edge.pipe_id, float(obstruction_pct), diameter_in)
+        except ValueError as exc:
+            self.inspector_tab.show_intervention_error(str(exc)); return
+        if not inv.has_obstruction and inv.diameter_in_override is None: self.interventions.pop(edge.pipe_id, None)
+        else: self.interventions[edge.pipe_id] = inv
+        self._after_intervention_change()
+
+    def _action_restore_pipe(self) -> None:
+        if self.selected_id in self.interventions and self.selected_kind == "pipe":
+            del self.interventions[self.selected_id]
+            self._after_intervention_change(f"Tramo {self.selected_id} restaurado.")
+
+    def _action_restore_all(self) -> None:
+        if self.interventions:
+            self.interventions.clear()
+            self._after_intervention_change("Red restaurada: sin intervenciones.")
+
+    def _refresh_source_composition(self, force: bool = False) -> None:
+        """Composición por fuente de la entidad seleccionada en el paso actual (con throttle durante la reproducción)."""
+        if self.dataset is None or not self.result or not self.selected_id or self.selected_kind not in ("pipe", "node"): return
+        snap = self._current_snapshot()
+        if snap is None: return
+        now = time.perf_counter()
+        if not force and self.is_playing and now - self._attr_time < _ATTR_THROTTLE_S: return
+        cfg = self.result.config
+        key = (id(snap), self.selected_kind, self.selected_id, tuple(sorted(self.interventions.items())), cfg.split_rule, cfg.source_distribution)
+        if key == self._attr_key: return
+        self._attr_key, self._attr_time = key, now
+        qmax = {pid: ps.effective_q_max_m3s for pid, ps in snap.pipe_states.items() if ps.effective_q_max_m3s is not None}
+        attr = compute_source_attribution(self.dataset.graph, snap, cfg.split_rule, qmax, cfg.source_distribution)
+        if self.selected_kind == "pipe":
+            shares, label = attr.pipe_shares.get(self.selected_id, []), f"Tramo {self.selected_id}"
+        else:
+            shares, label = attr.node_shares.get(self.selected_id, []), (f"PTAR {self.selected_id}" if self.selected_id in self.dataset.graph.sink_ids() else f"Pozo {self.selected_id}")
+        self.inspector_tab.set_source_composition(label, shares, cfg.split_rule)
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
         tab = self._active_tab()
@@ -667,7 +865,7 @@ class BicentenarioSewerApp(tk.Tk):
             self._status_lbl.configure(text=msg, fg="#FCA5A5")
             messagebox.showwarning("Nodo no encontrado", msg, parent=self)
             return
-        self._stop_traversal()
+        self._stop_traversal(); self._inspector_trace = None
         algo = algo.upper()
         res = (bfs if algo == "BFS" else dfs)(self.dataset.graph, start_id, target_id, record_frames=True)
         self._last_traversal_algo = algo
@@ -760,7 +958,7 @@ class BicentenarioSewerApp(tk.Tk):
             self._status_lbl.configure(text=msg, fg="#FCA5A5")
             messagebox.showwarning("Nodo no encontrado", msg, parent=self)
             return
-        self._stop_traversal()
+        self._stop_traversal(); self._inspector_trace = None
         res = trace_upstream_result(g, start_id, record_frames=True) if upstream else trace_downstream(g, start_id, record_frames=True)
         self._traversal_mode = "upstream" if upstream else "downstream"
         self._traversal_origin = start_id
@@ -789,7 +987,8 @@ class BicentenarioSewerApp(tk.Tk):
         self._status_lbl.configure(text=msg, fg=theme.SHELL_TEXT_MUTED)
 
     def clear_traversal(self) -> None:
-        self._stop_traversal()
+        self._stop_traversal(); self._inspector_trace = None
+        if hasattr(self, "inspector_tab"): self._sync_inspector_context()
         self._traversal_result, self.traversal_frames, self.anim_idx = None, [], 0
         self._traversal_mode = None
         self._traversal_origin = None
@@ -802,7 +1001,7 @@ class BicentenarioSewerApp(tk.Tk):
 
     def run_comparison(self) -> Optional[List[ScenarioSummary]]:
         if self.dataset is None: return None
-        try: cfg = self.controls.get_simulation_config()
+        try: cfg = self._build_config()
         except ValueError as exc: messagebox.showerror("Parámetros inválidos", str(exc), parent=self); return None
         t0 = time.perf_counter(); summaries = compare_all_scenarios(self.dataset, cfg); elapsed = (time.perf_counter() - t0) * 1000.0
         self.cached_comparisons, self._base_compare_key = summaries, _base_key(cfg)
