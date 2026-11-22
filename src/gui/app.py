@@ -9,9 +9,11 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List, Optional, Tuple
 
 from src.algorithms import (
-    TraversalFrame, TraversalResult, bfs, compute_source_attribution, dfs, find_isolated_from_sinks,
-    search_entities, search_entity, trace_downstream, trace_upstream, trace_upstream_result,
+    OVERLOAD_PERSISTENCE_LEVELS, TraversalFrame, TraversalResult, bfs, classify_overload_persistence, classify_utilization,
+    compute_source_attribution, dfs, find_isolated_from_sinks, search_entities, search_entity, trace_downstream,
+    trace_upstream, trace_upstream_result,
 )
+from src.data_structures import PipeEdge
 from src.io.data_loader import DataLoadError, NetworkDataset, export_to_csv_dir, load_dataset
 from src.simulation import (
     MODEL_ASSUMPTIONS_TEXT, PipeIntervention, ScenarioSummary, SewerSimulationEngine, SimulationConfig,
@@ -28,6 +30,8 @@ from .network_canvas import NetworkCanvas
 _SPEED_MS: Dict[str, int] = theme.PLAY_SPEED_MS
 _ANIM_MS_BY_ALGO: Dict[str, int] = {"BFS": 560, "DFS": 340}
 _TRAVERSAL_ANIM_MS = 560
+_BASE_SPEED_MS = _SPEED_MS["1x"]  # referencia del factor de velocidad de los pulsos de flujo
+_MAP_MODE_IDS = tuple(m for m, _ in theme.MAP_MODES)
 _ATTR_THROTTLE_S = 0.25  # composición por fuente durante la reproducción: ≥ 250 ms entre cálculos
 _TYPING_CLASSES = ("Entry", "TEntry", "Spinbox", "TSpinbox", "TCombobox", "Text")
 _BUTTON_CLASSES = ("Button", "TButton", "Menubutton", "Checkbutton", "TCheckbutton")
@@ -99,6 +103,13 @@ class BicentenarioSewerApp(tk.Tk):
         self.basin_focus_active = False
         self._inspector_trace: Optional[Tuple[str, str]] = None   # (nodo, "up"|"down")
         self._attr_key: Optional[tuple] = None; self._attr_time = 0.0
+        # Modo de lectura cartográfica, ruta activa del recorrido y caché de textos de cabecera
+        self._map_mode = "instant"
+        self._map_mode_buttons: Dict[str, tk.Button] = {}
+        self._map_mode_tier: Optional[str] = None
+        self._active_route: List[PipeEdge] = []
+        self._last_chart_node: Optional[str] = None
+        self._txt_cache: Dict[tk.Widget, tuple] = {}
 
         self._build_ui()
         self._bind_shortcuts()
@@ -168,13 +179,11 @@ class BicentenarioSewerApp(tk.Tk):
         })
 
         self._center = center = tk.Frame(self.paned, bg=theme.DOCK_BG)
+        self._build_kpi_header(center)
+        self._build_map_mode_bar(center)
         self.network_canvas = NetworkCanvas(center, fonts=self.fonts, on_select=self.select_entity)
         self.network_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self._build_player(center)
-        kbar = tk.Frame(center, bg=theme.SHELL_BG, padx=10, pady=5); kbar.pack(side=tk.TOP, fill=tk.X)
-        self._kpi_labels = {k: tk.Label(kbar, text=t, bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, font=self.fonts["mono"])
-                            for k, t in (("inflow", "Entrada: 0.000 m³/s"), ("sink", "PTAR 31: 0.000 m³/s"), ("crit", "Crít. (>75–100%): 0 · Sobr. (>100%): 0"))}
-        for lbl in self._kpi_labels.values(): lbl.pack(side=tk.LEFT, padx=(0, 14))
 
         self.notebook = ttk.Notebook(self.paned)
         self.inspector_tab = InspectorTab(self.notebook, self.fonts, {
@@ -186,7 +195,7 @@ class BicentenarioSewerApp(tk.Tk):
                                              on_focus_pipe=lambda pid: self.network_canvas.focus_pipe(pid))
         self.charts_panel = ChartsPanel(self.notebook, self.fonts)
         self.comparison_panel = ComparisonPanel(self.notebook, self.fonts, self.run_comparison, lambda sid: (self.controls.select_scenario_by_id(sid), self.run_simulation()))
-        for w, title in ((self.inspector_tab, "Inspector"), (self.critical_tab, "Tuberías Críticas"), (self.charts_panel, "Gráficas"), (self.comparison_panel, "Comparación")):
+        for w, title in ((self.inspector_tab, "Inspector"), (self.critical_tab, "Tuberías Críticas"), (self.charts_panel, "Evolución"), (self.comparison_panel, "Comparación")):
             self.notebook.add(w, text=title)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         self._sync_panes()
@@ -230,17 +239,83 @@ class BicentenarioSewerApp(tk.Tk):
         self.menu_btn_file.configure(menu=menu)
 
     def _build_legend_bar(self) -> None:
+        """Leyenda superior dinámica: cabecera del modo + 5 bandas con conteo (cambia con el modo de mapa)."""
         lbar = tk.Frame(self, bg=theme.PAPER_SUBTLE, pady=4, padx=10); lbar.pack(side=tk.TOP, fill=tk.X)
+        self._legend_header = tk.Label(lbar, text="Escala oficial", bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY, font=self.fonts["mono_bold"])
+        self._legend_header.pack(side=tk.LEFT, padx=(0, 12))
         self._legend_labels: List[Tuple[str, tk.Label]] = []
+        self._legend_swatches: List[tk.Frame] = []
         for rng, hex_c, _ in theme.COLOR_SCALE_LEGEND:
-            tk.Frame(lbar, bg=hex_c, width=11, height=11, highlightbackground=theme.INK_PRIMARY, highlightthickness=1).pack(side=tk.LEFT, padx=(0, 4))
+            sw = tk.Frame(lbar, bg=hex_c, width=11, height=11, highlightbackground=theme.INK_PRIMARY, highlightthickness=1)
+            sw.pack(side=tk.LEFT, padx=(0, 4)); self._legend_swatches.append(sw)
             lbl = tk.Label(lbar, text=f"{rng}: 0", bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY, font=self.fonts["mono"])
             lbl.pack(side=tk.LEFT, padx=(0, 12)); self._legend_labels.append((rng, lbl))
         self._btn(lbar, "Centrar vista", lambda: self.network_canvas.reset_view(), padx=7, pady=2).pack(side=tk.RIGHT)
+
+    def _build_kpi_header(self, parent: tk.Frame) -> None:
+        """Cabecera KPI: píldora de contexto (reloj/modo), entrada, checkboxes de etiquetas y 4 tarjetas por modo."""
+        head = tk.Frame(parent, bg=theme.DOCK_BG, highlightthickness=1, highlightbackground=theme.DOCK_BORDER)
+        head.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(8, 0))
+        top = tk.Frame(head, bg=theme.PAPER_BG); top.pack(fill=tk.X)
         self._show_util_var, self._show_ids_var = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+        opts = tk.Frame(top, bg=theme.PAPER_BG); opts.pack(side=tk.RIGHT, padx=8)
         for text, var in (("% Util.", self._show_util_var), ("IDs", self._show_ids_var)):
-            tk.Checkbutton(lbar, text=text, variable=var, command=lambda: self.network_canvas.set_label_options(self._show_ids_var.get(), self._show_util_var.get()),
-                           bg=theme.PAPER_SUBTLE, fg=theme.INK_PRIMARY, activebackground=theme.PAPER_SUBTLE, selectcolor=theme.PAPER_BG, font=self.fonts["small"], cursor="hand2").pack(side=tk.RIGHT, padx=(0, 8))
+            tk.Checkbutton(opts, text=text, variable=var, command=lambda: self.network_canvas.set_label_options(self._show_ids_var.get(), self._show_util_var.get()),
+                           bg=theme.PAPER_BG, fg=theme.INK_PRIMARY, activebackground=theme.PAPER_BG, activeforeground=theme.ACCENT_TEXT_ON_LIGHT,
+                           selectcolor=theme.PAPER_BG, font=(self.fonts["small"][0], 8, "bold"), cursor="hand2").pack(side=tk.RIGHT, padx=(4, 0))
+        pill = tk.Frame(top, bg=theme.SHELL_BG); pill.pack(side=tk.LEFT, padx=8, pady=6)
+        self._lbl_clock = tk.Label(pill, text="t = 0.0 min  ·  Escenario: -", bg=theme.SHELL_BG, fg=theme.SHELL_TEXT, font=self.fonts["mono_bold"], anchor="w", padx=9, pady=3)
+        self._lbl_clock.pack(side=tk.LEFT)
+        self._lbl_inflow = tk.Label(top, text="Entrada: -", bg=theme.PAPER_BG, fg=theme.INK_MUTED, font=self.fonts["mono"], anchor="w")
+        self._lbl_inflow.pack(side=tk.LEFT, padx=(2, 8))
+        tk.Frame(head, bg=theme.DOCK_BORDER, height=1).pack(fill=tk.X)
+        row = tk.Frame(head, bg=theme.DOCK_BG); row.pack(fill=tk.X)
+        self._kpi_keys = ("max_util", "critical", "overloaded", "ptar")
+        self._kpi_cards: Dict[str, tk.Label] = {}; self._kpi_captions: Dict[str, tk.Label] = {}
+        for idx, (key, cap) in enumerate(zip(self._kpi_keys, theme.MAP_MODE_KPI_CAPTIONS["instant"])):
+            cell = tk.Frame(row, bg=theme.PAPER_BG); cell.grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 1, 0))
+            row.columnconfigure(idx, weight=1, uniform="kpi")
+            tk.Frame(cell, bg=theme.ACCENT_PRIMARY, height=2).pack(fill=tk.X)
+            cap_lbl = tk.Label(cell, text=cap, bg=theme.PAPER_BG, fg=theme.INK_MUTED, font=(self.fonts["small"][0], 7, "bold"), anchor="w", padx=8)
+            cap_lbl.pack(anchor="w", pady=(4, 0))
+            val = tk.Label(cell, text="-", bg=theme.PAPER_BG, fg=theme.INK_PRIMARY, font=(self.fonts["mono"][0], 10, "bold"), anchor="w", padx=8)
+            val.pack(anchor="w", pady=(0, 5))
+            self._kpi_captions[key], self._kpi_cards[key] = cap_lbl, val
+
+    def _build_map_mode_bar(self, parent: tk.Frame) -> None:
+        """Selector segmentado de lectura cartográfica (Instantáneo O(t) / Pico Máximo / Minutos en Sobrecarga)."""
+        bar = tk.Frame(parent, bg=theme.DOCK_BG, highlightthickness=1, highlightbackground=theme.DOCK_BORDER)
+        bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(6, 0))
+        self._lbl_map_mode = tk.Label(bar, text="Lectura cartográfica:", bg=theme.DOCK_BG, fg=theme.INK_PRIMARY, font=(self.fonts["small"][0], 8, "bold"), padx=8, pady=4)
+        self._lbl_map_mode.pack(side=tk.LEFT)
+        self._seg_wrap = tk.Frame(bar, bg=theme.DOCK_BORDER); self._seg_wrap.pack(side=tk.LEFT, padx=(4, 8), pady=3)
+        for mode_id, (full, _mid, _short) in theme.MAP_MODES:
+            btn = tk.Button(self._seg_wrap, text=full, command=lambda m=mode_id: self._set_map_mode(m), relief="flat", bd=0, padx=9, pady=2,
+                            activebackground=theme.ACCENT_HOVER, activeforeground=theme.ACCENT_INK, cursor="hand2", highlightthickness=0,
+                            font=(self.fonts["small"][0], 8, "normal"))
+            btn.pack(side=tk.LEFT, padx=1, pady=1); self._map_mode_buttons[mode_id] = btn
+        self._apply_map_mode_button_styles()
+        bar.bind("<Configure>", self._on_map_bar_configure)
+
+    def _on_map_bar_configure(self, event: tk.Event) -> None:
+        """Textos del segmentado según el ancho disponible (completo / medio / corto)."""
+        tier = "full" if event.width >= 660 else ("mid" if event.width >= 480 else "short")
+        if event.width <= 1 or tier == self._map_mode_tier:
+            return
+        self._map_mode_tier = tier
+        if tier == "full":
+            if not self._lbl_map_mode.winfo_ismapped(): self._lbl_map_mode.pack(side=tk.LEFT, before=self._seg_wrap)
+        else:
+            self._lbl_map_mode.pack_forget()
+        idx, padx = {"full": (0, 9), "mid": (1, 8), "short": (2, 6)}[tier]
+        for mid, labels in theme.MAP_MODES:
+            self._map_mode_buttons[mid].configure(text=labels[idx], padx=padx)
+
+    def _apply_map_mode_button_styles(self) -> None:
+        for mid, btn in self._map_mode_buttons.items():
+            on = mid == self._map_mode
+            btn.configure(bg=theme.ACCENT_PRIMARY if on else theme.DOCK_BG, fg=theme.ACCENT_INK if on else theme.INK_PRIMARY,
+                          font=(self.fonts["small"][0], 8, "bold" if on else "normal"))
 
     def _build_player(self, parent: tk.Frame) -> None:
         pbar = tk.Frame(parent, bg=theme.PAPER_SUBTLE, padx=8, pady=5); pbar.pack(side=tk.TOP, fill=tk.X)
@@ -283,6 +358,11 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _on_speed_change(self) -> None:
         self.play_speed_ms = _SPEED_MS.get(self._speed_var.get(), _SPEED_MS["2x"])
+        if self.is_playing: self.network_canvas.set_playing(True, self._pulse_factor())
+
+    def _pulse_factor(self) -> float:
+        """Factor de velocidad de los pulsos de flujo según la velocidad del reproductor (1x = 1.0)."""
+        return _BASE_SPEED_MS / max(1, self.play_speed_ms)
 
     def _on_player_configure(self, event: tk.Event) -> None:
         compact = event.width < 600
@@ -298,6 +378,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._play_btn_sig = None
         self._update_play_button()
         self._update_mass_label()
+        self._update_clock_label()
 
     def _update_play_button(self) -> None:
         """Rotula el botón principal (Reproducir / Pausar / Reanudar) y su icono; solo reconfigura si cambió."""
@@ -478,7 +559,7 @@ class BicentenarioSewerApp(tk.Tk):
         self.interventions.clear(); self.previous_result = self._baseline_result = None
         self.isolated_nodes, self.isolated_pipes, self._canvas_int_sig = set(), set(), None
         self.basin_focus_active, self._inspector_trace, self._attr_key = False, None, None
-        self.selected_kind = self.selected_id = self._last_chart_pipe = None
+        self.selected_kind = self.selected_id = self._last_chart_pipe = self._last_chart_node = None
         self.comparison_panel.set_comparisons(None, is_visible=self._active_tab() == 3)
         self.controls.populate_dataset(ds)
         if any(s.scenario_id == 3 for s in ds.scenarios): self.controls.select_scenario_by_id(3)
@@ -523,6 +604,10 @@ class BicentenarioSewerApp(tk.Tk):
         res = engine.run(cfg)
         if not self.interventions: self._baseline_result = res
         self.result, self.current_step, self._attr_key = res, 0, None
+        if auto_play and self._map_mode != "instant":
+            self._map_mode = "instant"; self._apply_map_mode_button_styles()
+        peak, ov, dur = self._global_stress_maps()
+        self.network_canvas.set_stress_maps(peak, ov, dur)
         self._sync_isolation()
         snaps = res.snapshots
         self._scale.configure(state=("normal" if len(snaps) > 1 else "disabled"), from_=0, to=max(0, len(snaps) - 1))
@@ -530,14 +615,23 @@ class BicentenarioSewerApp(tk.Tk):
         self._scale_max_lbl.configure(text=f"{snaps[-1].time_min:g}m" if snaps else "0m")
         self._sync_slider_programmatic(0)
         self._play_btn_sig = None
-        self._last_chart_pipe = self.selected_id if self.selected_kind == "pipe" else None
-        self.charts_panel.set_result(res, self._last_chart_pipe, is_visible=self._active_tab() == 2)
+        self._push_chart_result()
+        if self.network_canvas.map_mode != self._map_mode: self.network_canvas.set_map_mode(self._map_mode)
         self.go_to_step(0)
         self._sync_inspector_context()
         self._status_lbl.configure(text=f"Esc. {cfg.scenario_id} ({theme.translate_scenario_name(cfg.scenario_name)}) en {res.execution_time_ms:.1f} ms")
         if auto_play and len(res.snapshots) > 1:
             self.toggle_play()
         return res
+
+    def _push_chart_result(self) -> None:
+        """Entrega a Evolución resultado, línea base (Antes/Después), grafo, foco por selección y ruta activa."""
+        self._last_chart_pipe = self.selected_id if self.selected_kind == "pipe" else None
+        self._last_chart_node = self.selected_id if self.selected_kind == "node" else None
+        self.charts_panel.set_route(self._active_route or None)
+        self.charts_panel.set_result(self.result, self._last_chart_pipe, is_visible=self._active_tab() == 2,
+                                     previous_result=self.previous_result, graph=self.dataset.graph if self.dataset else None,
+                                     focus_node_id=self._last_chart_node)
 
     def go_to_step(self, idx: int, from_slider: bool = False) -> None:
         if not self.result or not self.result.snapshots or self.dataset is None: return
@@ -552,20 +646,108 @@ class BicentenarioSewerApp(tk.Tk):
         self._time_lbl.configure(text=f"t = {snap.time_min:.1f} / {snaps[-1].time_min:.1f} min")
         self._update_mass_label(snap)
         self._update_play_button()
-        self.network_canvas.set_snapshot(snap)
+        self.network_canvas.set_snapshot(snap if self._map_mode == "instant" else snaps[-1])
         tab = self._active_tab()
         self._update_inspector_view(snap)
         self._refresh_source_composition()
         self.critical_tab.update_view(self.dataset.graph, snap, is_visible=tab == 1)
         if tab == 1 and self.selected_kind == "pipe": self.critical_tab.select_pipe(self.selected_id)
-        self.charts_panel.update_cursor(snap.time_min, is_visible=tab == 2)
-        counts = [0] * len(theme.COLOR_SCALE_LEGEND)
-        for ps in snap.pipe_states.values():
-            if 0 <= ps.category.tier_index < len(counts): counts[ps.category.tier_index] += 1
-        for (rng, lbl), cnt in zip(self._legend_labels, counts): lbl.configure(text=f"{rng}: {cnt}")
-        for k, txt in (("inflow", f"Entrada: {snap.total_source_inflow_m3s:.4f} m³/s"), ("sink", f"PTAR 31: {snap.total_sink_discharge_m3s:.4f} m³/s"),
-                       ("crit", f"Crít. (>75–100%): {len(snap.near_capacity_pipe_ids)} · Sobr. (>100%): {len(snap.overloaded_pipe_ids)}")):
-            self._kpi_labels[k].configure(text=txt)
+        self.charts_panel.update_cursor(snap.time_min, is_visible=tab == 2, step_index=self.current_step)
+        self._update_header(snap)
+
+    # ── Modos de mapa (G11), cabecera KPI (G10) y leyenda dinámica (G7) ─────────
+
+    def _global_stress_maps(self) -> Tuple[Dict[str, float], Dict[str, float], float]:
+        """(pico de utilización, minutos en sobrecarga, duración total) globales de la simulación vigente."""
+        if self.result is None or not self.result.snapshots: return {}, {}, 90.0
+        dur = max(1.0, float(self.result.snapshots[-1].time_min), float(self.result.config.duration_min))
+        return self.result.peak_pipe_utilization, self.result.pipe_overloaded_minutes, dur
+
+    def _set_text(self, w: tk.Label, text: str, fg: Optional[str] = None) -> None:
+        """`configure` solo si cambió el texto/color (actualización por paso barata)."""
+        key = (text, fg)
+        if self._txt_cache.get(w) != key:
+            self._txt_cache[w] = key
+            w.configure(text=text) if fg is None else w.configure(text=text, fg=fg)
+
+    def _set_map_mode(self, mode: str) -> None:
+        """Cambia la lectura del mapa. Pico/Sobrecarga son vistas globales congeladas: pausan y conservan `current_step`."""
+        if mode not in _MAP_MODE_IDS: return
+        if mode != "instant": self._stop_playback(True)
+        self._map_mode = mode
+        self._apply_map_mode_button_styles()
+        snap = self._current_snapshot()
+        if snap is None:
+            self.network_canvas.set_map_mode(mode); return
+        peak, ov, dur = self._global_stress_maps()
+        self.network_canvas.set_snapshot(snap if mode == "instant" else self.result.snapshots[-1])
+        self.network_canvas.set_map_mode(mode, peak_util=peak, overload_minutes=ov, total_duration_min=dur)
+        self._update_header(snap)
+
+    def _ensure_instant(self) -> None:
+        """Vuelve al modo Instantáneo (restaura el paso conservado) antes de navegar en el tiempo."""
+        if self._map_mode != "instant": self._set_map_mode("instant")
+
+    def _update_clock_label(self, snap: Optional[TimeStepSnapshot] = None) -> None:
+        snap = snap or self._current_snapshot()
+        if snap is None or self.result is None: return
+        cfg, compact = self.result.config, bool(self._player_compact)
+        scen = theme.translate_scenario_name(cfg.scenario_name, short=compact)
+        dur = self._global_stress_maps()[2]
+        if self._map_mode == "peak":
+            txt = f"Pico 0–{dur:.0f}m · {scen}" if compact else f"Pico máximo · 0–{dur:.0f} min  ·  {scen} ({cfg.intensity_mm_h:.0f} mm/h)"
+        elif self._map_mode == "overload_minutes":
+            txt = f"Sobrecarga 0–{dur:.0f}m · {scen}" if compact else f"Sobrecarga acumulada · 0–{dur:.0f} min  ·  {scen} ({cfg.intensity_mm_h:.0f} mm/h)"
+        elif compact:
+            txt = f"t={snap.time_min:.0f}/{cfg.duration_min:.0f}m · {scen} ({snap.rain_intensity_mm_h:.0f} mm/h)"
+        else:
+            txt = f"t = {snap.time_min:.1f} / {cfg.duration_min:.0f} min  ·  {scen} ({snap.rain_intensity_mm_h:.0f} mm/h)"
+        self._set_text(self._lbl_clock, txt)
+
+    def _update_header(self, snap: Optional[TimeStepSnapshot] = None) -> None:
+        """Píldora de contexto, entrada, 4 tarjetas KPI y leyenda según el modo de mapa (solo `configure` de labels)."""
+        snap = snap or self._current_snapshot()
+        if snap is None or self.result is None: return
+        res, mode = self.result, self._map_mode
+        peak, ov, dur = self._global_stress_maps()
+        pids = snap.pipe_states
+        ink, err, tier_txt = theme.INK_PRIMARY, theme.STATUS_ERR_LIGHT, theme.TIER_TEXT_ON_LIGHT
+        counts = [0] * 5
+        if mode == "overload_minutes":
+            levels = OVERLOAD_PERSISTENCE_LEVELS
+            for pid in pids: counts[classify_overload_persistence(ov.get(pid, 0.0), dur)[0]] += 1
+            max_ov = max((ov.get(pid, 0.0) for pid in pids), default=0.0)
+            any_ov = sum(1 for pid in pids if ov.get(pid, 0.0) >= 0.5)
+            vals = [(f"{max_ov:.0f} / {dur:.0f}m", tier_txt[levels[classify_overload_persistence(max_ov, dur)[0]][1]]),
+                    (str(any_ov), err if any_ov else ink), (str(counts[4]), tier_txt["#991b1b"] if counts[4] else ink),
+                    (f"{res.total_sink_discharge_m3:.1f} m³", theme.ACCENT_TEXT_ON_LIGHT)]
+            header, inflow = f"Sobrecarga acumulada · 0–{dur:.0f} min", f"Entrada total: {res.total_inflow_m3:.1f} m³"
+        elif mode == "peak":
+            levels = [(r, c, d) for r, c, d in theme.COLOR_SCALE_LEGEND]
+            for pid in pids: counts[classify_utilization(peak.get(pid, 0.0)).tier_index] += 1
+            max_u = max((peak.get(pid, 0.0) for pid in pids), default=0.0)
+            vals = [(f"{max_u:.1f}%", tier_txt[classify_utilization(max_u).color_hex]), (str(counts[3]), err if counts[3] else ink),
+                    (str(counts[4]), tier_txt["#991b1b"] if counts[4] else ink), (f"{res.peak_sink_discharge_m3s:.4f} m³/s", theme.ACCENT_TEXT_ON_LIGHT)]
+            header = f"Pico máximo · 0–{dur:.0f} min"
+            inflow = f"Entrada pico: {max(s.total_source_inflow_m3s for s in res.snapshots):.4f} m³/s"
+        else:
+            levels = theme.COLOR_SCALE_LEGEND
+            max_u = 0.0
+            for ps in pids.values():
+                counts[ps.category.tier_index] += 1
+                if ps.utilization_pct > max_u: max_u = ps.utilization_pct
+            n_near, n_over = len(snap.near_capacity_pipe_ids), len(snap.overloaded_pipe_ids)
+            vals = [(f"{max_u:.1f}%", tier_txt[classify_utilization(max_u).color_hex]), (str(n_near), err if n_near else ink),
+                    (str(n_over), tier_txt["#991b1b"] if n_over else ink), (f"{snap.total_sink_discharge_m3s:.4f} m³/s", theme.ACCENT_TEXT_ON_LIGHT)]
+            header, inflow = f"Escala oficial · t = {snap.time_min:.0f} min", f"Entrada: {snap.total_source_inflow_m3s:.4f} m³/s"
+        for key, cap, (txt, fg) in zip(self._kpi_keys, theme.MAP_MODE_KPI_CAPTIONS[mode], vals):
+            self._set_text(self._kpi_captions[key], cap); self._set_text(self._kpi_cards[key], txt, fg)
+        self._set_text(self._lbl_inflow, inflow)
+        self._set_text(self._legend_header, header)
+        for (_old, lbl), sw, (rng, col, _d), cnt in zip(self._legend_labels, self._legend_swatches, levels, counts):
+            self._set_text(lbl, f"{rng}: {cnt}")
+            if self._txt_cache.get(sw) != col: self._txt_cache[sw] = col; sw.configure(bg=col)
+        self._update_clock_label(snap)
 
     def _sync_slider_programmatic(self, step: int) -> None:
         self._updating_slider = True
@@ -587,7 +769,7 @@ class BicentenarioSewerApp(tk.Tk):
         if str(self._scale.cget("state")) == "disabled" or not self.result or not self.result.snapshots:
             return None
         self._slider_dragging = True
-        self._stop_playback(True)
+        self._stop_playback(True); self._ensure_instant()
         if self._scale.identify(e.x, e.y) in ("trough1", "trough2"):
             w = max(1, self._scale.winfo_width())
             snaps = self.result.snapshots
@@ -611,9 +793,9 @@ class BicentenarioSewerApp(tk.Tk):
         if self._updating_slider or not self.result or not self.result.snapshots:
             return
         idx = int(round(float(value)))
-        if idx == self.current_step:
+        if idx == self.current_step and self._map_mode == "instant":
             return
-        self._stop_playback(True)
+        self._stop_playback(True); self._ensure_instant()
         if self._slider_dragging:
             self._pending_slider_step = idx
             if self._slider_after_id is None:
@@ -627,18 +809,21 @@ class BicentenarioSewerApp(tk.Tk):
             step = self._pending_slider_step
             self._pending_slider_step = None
             self.go_to_step(step, from_slider=True)
-    def step_forward(self) -> None: self._stop_playback(True); self.go_to_step(self.current_step + 1)
-    def step_backward(self) -> None: self._stop_playback(True); self.go_to_step(self.current_step - 1)
-    def _reset_playback(self) -> None: self._stop_playback(False); self.go_to_step(0)
+    def step_forward(self) -> None: self._stop_playback(True); self._ensure_instant(); self.go_to_step(self.current_step + 1)
+    def step_backward(self) -> None: self._stop_playback(True); self._ensure_instant(); self.go_to_step(self.current_step - 1)
+    def _reset_playback(self) -> None: self._stop_playback(False); self._ensure_instant(); self.go_to_step(0)
     def _stop_playback(self, resume: bool = False) -> None:
         self.is_playing = False; self._cancel_timer("_play_after_id")
+        if hasattr(self, "network_canvas"): self.network_canvas.set_playing(False)
         if hasattr(self, "_btn_play"): self._update_play_button()
         if hasattr(self, "inspector_tab") and not self._closing: self._refresh_source_composition()
     def toggle_play(self) -> None:
         if not self.result or not self.result.snapshots: return
         if self.is_playing: self._stop_playback(True); return
+        self._ensure_instant()
         if self.current_step >= len(self.result.snapshots) - 1: self.go_to_step(0)
         self.is_playing = True; self._update_play_button()
+        self.network_canvas.set_playing(True, self._pulse_factor())
         self._play_after_id = self.after(self.play_speed_ms, self._play_tick)
     def _play_tick(self) -> None:
         self._play_after_id = None
@@ -663,8 +848,8 @@ class BicentenarioSewerApp(tk.Tk):
         self._refresh_source_composition(force=True)
         pipe_id = self.selected_id if self.selected_kind == "pipe" else None
         self.critical_tab.select_pipe(pipe_id)
-        if pipe_id != self._last_chart_pipe:
-            self._last_chart_pipe = pipe_id; self.charts_panel.set_result(self.result, pipe_id, is_visible=self._active_tab() == 2)
+        node_id = self.selected_id if self.selected_kind == "node" else None
+        if pipe_id != self._last_chart_pipe or node_id != self._last_chart_node: self._push_chart_result()
 
     def _action_search(self, query: str) -> None:
         """Búsqueda: ID exacto O(1) y, si no coincide, respaldo por subcadena; centra la cámara en el resultado."""
@@ -874,6 +1059,7 @@ class BicentenarioSewerApp(tk.Tk):
         label = "BFS (Cola FIFO)" if algo == "BFS" else "DFS (Pila LIFO)"
         self._traversal_banner = f"{label} · Inicio {start_id} → Destino {target_id}" if target_id else f"{label} · Desde {start_id}"
         self._traversal_result, self.traversal_frames = res, res.frames
+        self._set_active_route(list(res.path_pipes) if (target_id and res.target_reached) else [])
         self._traversal_log = self._log_traversal(res, start_id, target_id)
         msg = f"{res.algorithm}: {len(res.visited_order)} nodos" + (f" · Ruta ({len(res.path_pipes)}): {' → '.join(res.path_nodes)}" if (target_id and res.target_reached) else (f" · Sin ruta a {target_id}" if target_id else ""))
         if animate:
@@ -889,6 +1075,11 @@ class BicentenarioSewerApp(tk.Tk):
         sample = self.traversal_frames[min(1, len(self.traversal_frames) - 1)] if self.traversal_frames else None
         self._render_traversal_frame(summary_override=self._traversal_log, strip_frame=sample, step_text=f"muestra {res.algorithm}")
         self._status_lbl.configure(text=msg, fg=theme.SHELL_TEXT_MUTED)
+
+    def _set_active_route(self, edges: List[PipeEdge]) -> None:
+        """Ruta activa del último recorrido con destino: tiene prioridad en el perfil longitudinal."""
+        self._active_route = edges
+        if hasattr(self, "charts_panel"): self.charts_panel.set_route(edges or None)
 
     def start_traversal_animation(self, algo: str, start_id: str, target_id: Optional[str] = None) -> None:
         self._action_traversal(algo, start_id, target_id, animate=True)
@@ -921,6 +1112,8 @@ class BicentenarioSewerApp(tk.Tk):
             lr.path_nodes if lr else None, lr.path_pipes if lr else None,
             f.current_node, f.active_edge,
             mode=self._traversal_mode, origin_node=self._traversal_origin, banner_text=self._traversal_banner,
+            active_nodes=f.active_nodes, active_edges=f.active_edges,
+            backtracked_nodes=f.backtracked_nodes, backtracked_edges=f.backtracked_edges,
         )
         if last and not summary_override and not self.anim_playing:
             summary_override = self._traversal_log  # animación terminada: muestra el registro completo
@@ -961,6 +1154,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._stop_traversal(); self._inspector_trace = None
         res = trace_upstream_result(g, start_id, record_frames=True) if upstream else trace_downstream(g, start_id, record_frames=True)
         self._traversal_mode = "upstream" if upstream else "downstream"
+        self._set_active_route([])
         self._traversal_origin = start_id
         self._traversal_result = res
         self.traversal_frames = res.frames
@@ -993,6 +1187,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._traversal_mode = None
         self._traversal_origin = None
         self._traversal_banner = self._traversal_log = ""
+        self._set_active_route([])
         self.network_canvas.clear_traversal_highlight()
         self.controls.update_traversal_view(None, has_frames=False)
         self._status_lbl.configure(text="Recorrido limpiado", fg=theme.SHELL_TEXT_MUTED)
@@ -1040,6 +1235,6 @@ class BicentenarioSewerApp(tk.Tk):
         self._closing = True
         self._stop_playback(); self._stop_traversal(); self._cancel_timer("_slider_after_id"); self._cancel_timer("_resize_after_id")
         self.controls.cancel_pending()
-        self.network_canvas.cancel_pending(); self.charts_panel._cancel_cursor_timer()
+        self.network_canvas.stop_pulse_animation(); self.network_canvas.cancel_pending(); self.charts_panel._cancel_cursor_timer()
         try: self.destroy()
         except tk.TclError: pass

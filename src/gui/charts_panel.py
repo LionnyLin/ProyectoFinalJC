@@ -159,6 +159,7 @@ class ChartsPanel(tk.Frame):
         self._times: List[float] = []
         self._route: List[PipeEdge] = []
         self._route_key: Optional[tuple] = None
+        self._route_override: Optional[List[PipeEdge]] = None   # ruta activa del recorrido (prioridad sobre la selección)
         self._step_index = 0
         self._pending_time = 0.0
         self._is_visible = True
@@ -247,6 +248,17 @@ class ChartsPanel(tk.Frame):
             self._profile_dirty = True
             if self._subtab == "profile" and self._is_visible:
                 self._redraw_profile()
+
+    def set_route(self, edges: Optional[List[PipeEdge]]) -> None:
+        """Fija la ruta activa (p. ej. de un recorrido BFS/DFS con destino); `None` vuelve a la ruta por selección."""
+        new = list(edges) if edges else None
+        if [e.pipe_id for e in new or []] == [e.pipe_id for e in self._route_override or []]:
+            self._route_override = new
+            return
+        self._route_override, self._route_key = new, None
+        self._profile_dirty = True
+        if self._subtab == "profile" and self._is_visible:
+            self._redraw_profile()
 
     def set_result(
         self, result: Optional[SimulationResult], focus_pipe_id: Optional[str] = None, is_visible: bool = True,
@@ -685,12 +697,15 @@ class ChartsPanel(tk.Frame):
 
     # ----------------------------------------------------------------------- perfil longitudinal
     def _resolve_route(self) -> List[PipeEdge]:
-        key = (id(self._graph), self._focus_pipe, self._focus_node)
+        ov = tuple(e.pipe_id for e in self._route_override) if self._route_override else None
+        key = (id(self._graph), self._focus_pipe, self._focus_node, ov)
         if key == self._route_key:
             return self._route
         route: List[PipeEdge] = []
         g = self._graph
-        if g is not None:
+        if ov:
+            route = list(self._route_override)
+        elif g is not None:
             if self._focus_pipe:
                 route = build_route_to_sink(g, pipe_id=self._focus_pipe)
             if not route and self._focus_node:

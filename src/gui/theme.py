@@ -26,6 +26,7 @@ NODE_SINK_FILL, NODE_SINK_OUTLINE, NODE_SINK_TEXT = "#6D8196", "#4A4A4A", "#FFFF
 NODE_MANHOLE_FILL, NODE_MANHOLE_OUTLINE, NODE_MANHOLE_TEXT = "#FFFFE3", "#4A4A4A", "#4A4A4A"
 PIPE_IDLE_COLOR, HIGHLIGHT_PATH_COLOR, SELECTED_HALO = "#6D8196", "#6D8196", "#4A4A4A"
 OVERLOAD_RING_COLOR, OVERLOAD_RING_SEVERE = "#EF4444", "#991B1B"
+STATUS_ERR_LIGHT, ACCENT_TEXT_ON_LIGHT = "#B91C1C", ACCENT_TEXT
 
 # Recorridos direccionales y estados UI
 TRAV_DOWNSTREAM_EDGE = "#0284C7"
@@ -65,6 +66,18 @@ COLOR_SCALE_LEGEND: List[Tuple[str, str, str]] = [
 TIER_TEXT_ON_LIGHT: Dict[str, str] = {
     "#22c55e": "#15803d", "#eab308": "#854d0e", "#f97316": "#c2410c",
     "#ef4444": "#dc2626", "#991b1b": "#991b1b",
+}
+
+# Modos de lectura cartográfica: id, etiqueta por ancho (full / mid / short)
+MAP_MODES: List[Tuple[str, Tuple[str, str, str]]] = [
+    ("instant", ("Instantáneo O(t)", "Instantáneo O(t)", "O(t)")),
+    ("peak", ("Pico Máximo", "Pico Máximo", "Pico")),
+    ("overload_minutes", ("Minutos en Sobrecarga", "Min. Sobrecarga", "Min >100%")),
+]
+MAP_MODE_KPI_CAPTIONS: Dict[str, Tuple[str, str, str, str]] = {
+    "instant": ("UTILIZACIÓN MÁX.", "CRÍTICAS (>75–100%)", "SOBRECARGA (>100%)", "DESCARGA PTAR 31"),
+    "peak": ("PICO MÁX. UTIL.", "CRÍTICAS PICO (>75–100%)", "SOBRECARGA PICO (>100%)", "PICO DESCARGA PTAR 31"),
+    "overload_minutes": ("MÁX. SOBREC. ACUM.", "TUBERÍAS >0 min >100%", "COLAPSO CRÓNICO (>75%)", "VOLUMEN PTAR 31"),
 }
 
 # Traducciones al español

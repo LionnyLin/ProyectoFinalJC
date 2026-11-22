@@ -177,7 +177,7 @@ class TestGuiSmoke(unittest.TestCase):
             self.assertGreater(float(util_str), 100.0)
 
         snap = self.app.result.snapshots[target_step]
-        kpi_crit_text = self.app._kpi_labels["crit"].cget("text")
+        kpi_crit_text = self.app._kpi_cards["critical"].cget("text")
         self.assertIn(str(len(snap.near_capacity_pipe_ids)), kpi_crit_text)
 
     def test_search_error_feedback_on_missing_or_empty_entity(self) -> None:
