@@ -12,10 +12,12 @@ from .queries import (
     trace_upstream_result,
 )
 from .analysis import (
+    OVERLOAD_PERSISTENCE_LEVELS,
     UTILIZATION_LEVELS,
     UTILIZATION_SCALE,
     CriticalPipeRecord,
     UtilizationCategory,
+    classify_overload_persistence,
     classify_utilization,
     rank_critical_pipes,
 )
@@ -34,6 +36,8 @@ __all__ = [
     "trace_downstream",
     "trace_upstream",
     "trace_upstream_result",
+    "OVERLOAD_PERSISTENCE_LEVELS",
+    "classify_overload_persistence",
     "UTILIZATION_SCALE",
     "UTILIZATION_LEVELS",
     "UtilizationCategory",

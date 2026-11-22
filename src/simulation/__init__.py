@@ -2,10 +2,13 @@
 
 from .models import (
     NodeStepState,
+    PipeIntervention,
     PipeStepState,
     SimulationConfig,
     SimulationResult,
     TimeStepSnapshot,
+    compute_symlog_ticks,
+    resolve_pipe_hydraulics,
 )
 from .engine import SewerSimulationEngine
 from .comparison import ScenarioSummary, compare_all_scenarios
@@ -17,6 +20,9 @@ from .reporter import (
 
 __all__ = [
     "SimulationConfig",
+    "PipeIntervention",
+    "resolve_pipe_hydraulics",
+    "compute_symlog_ticks",
     "PipeStepState",
     "NodeStepState",
     "TimeStepSnapshot",

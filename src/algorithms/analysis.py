@@ -96,3 +96,29 @@ def rank_critical_pipes(
         ))
         rank += 1
     return ranked
+
+
+OVERLOAD_PERSISTENCE_LEVELS: List[Tuple[str, str, str]] = [
+    ("0 min", "#22c55e", "Sin sobrecarga"),
+    ("≤25% t", "#eab308", "Sobrecarga puntual"),
+    (">25–50% t", "#f97316", "Estrés moderado"),
+    (">50–75% t", "#ef4444", "Fatiga severa"),
+    (">75% t", "#991b1b", "Colapso crónico"),
+]
+
+
+def classify_overload_persistence(overloaded_minutes: float, total_duration_min: float) -> Tuple[int, str, str]:
+    """Clasifica minutos acumulados en sobrecarga (> 100 %) con la escala de 5 colores de la Sección 7.
+
+    Retorna `(tier_index, color_hex, etiqueta)` según el porcentaje de la duración total en sobrecarga.
+    """
+    if overloaded_minutes <= 1e-6:
+        return (0, "#22c55e", "Sin sobrecarga")
+    pct_time = (overloaded_minutes / max(1e-6, float(total_duration_min))) * 100.0
+    if pct_time <= 25.0:
+        return (1, "#eab308", "Sobrecarga puntual")
+    if pct_time <= 50.0:
+        return (2, "#f97316", "Estrés moderado")
+    if pct_time <= 75.0:
+        return (3, "#ef4444", "Fatiga severa")
+    return (4, "#991b1b", "Colapso crónico")
