@@ -780,7 +780,7 @@ def generate_technical_document_docx(
     _add_single_column_figure(doc, fig_paths[1], "Figura 23. Utilización temporal de las cinco tuberías más exigidas (Escenario 3).")
     _add_single_column_figure(doc, fig_paths[2], "Figura 24. Comparativo de tuberías críticas y sobrecargadas entre los 5 escenarios.")
 
-    _add_heading_1(doc, "7. Datos, Reportes CLI y Validación (41 Pruebas)")
+    _add_heading_1(doc, "7. Datos, Reportes CLI y Validación (43 Pruebas)")
     _add_bullet(
         doc,
         "Carga validada desde Excel (.xlsx) y carpetas CSV con exportación completa mediante export_to_csv_dir().",
@@ -803,13 +803,13 @@ def generate_technical_document_docx(
     )
     _add_bullet(
         doc,
-        "Batería automatizada de 41 pruebas unitarias en tests/ cubriendo estructuras de datos, cargador, algoritmos, motor hidráulico (invariancia Δt, masa ~10^-10 m³), DOCX y GUI.",
-        "Suite de 41 pruebas unitarias: ",
+        "Batería automatizada de 43 pruebas unitarias en tests/ cubriendo estructuras de datos, cargador, algoritmos, motor hidráulico (invariancia Δt, masa ~10^-10 m³), DOCX y GUI.",
+        "Suite de 43 pruebas unitarias: ",
     )
     _add_screenshot_if_exists(
         doc,
         "04_3_tests_41.png",
-        "Figura 27. Ejecución completa de la suite de 41 pruebas unitarias con unittest (OK).",
+        "Figura 27. Ejecución completa de la suite de 43 pruebas unitarias con unittest (OK).",
     )
 
     _add_heading_1(doc, "8. Conclusiones, Limitaciones y Bibliografía")

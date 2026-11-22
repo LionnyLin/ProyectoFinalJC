@@ -1,6 +1,6 @@
 # Reporte de Simulación — Red de Alcantarillado Ciudad Bicentenario
 
-**Fecha de generación:** 2026-11-21 21:48:40  
+**Fecha de generación:** 2026-11-22 01:51:35  
 **Fuente de datos:** `data/DataSetBicentenario.xlsx`  
 **Descarga final (Sumidero):** 31 (PTAR Punta Canoa)  
 
@@ -29,10 +29,10 @@
 - **Caudal pico en PTAR Punta Canoa:** 0.3078 m³/s
 - **Volumen remanente (en pozos + tránsito al cierre):** 202.648 m³
 - **Rebose superficial acumulado en vía:** 86,133.511 m³
-- **Error máximo de balance de masa:** 1.717e-09 m³
+- **Error máximo de balance de masa:** 1.710e-09 m³
 - **Tuberías críticas (>75–100 %):** 20 (P1, P12, P13, P2, P22, P23, P25, P27, P28, P3, P36, P37, P38, P39, P4, P43, P5, P51, P6, P7)
 - **Tuberías sobrecargadas (>100 %):** 18 (P1, P12, P13, P2, P22, P23, P25, P28, P3, P31, P36, P37, P39, P4, P43, P5, P6, P7)
-- **Tiempo de cómputo:** 227.73 ms
+- **Tiempo de cómputo:** 414.05 ms
 
 ## 4. Ranking de Tuberías por Utilización Pico
 | # | Tubería | Tramo | Q_cond (m³/s) | Q_max (m³/s) | Util (%) | Razón Qmax | Estado | Exceso (m³/s) |
@@ -67,7 +67,7 @@
 | Escenario | Condición | Intensidad (mm/h) | Util. Máx (%) | Razón Máx | Tubería Crítica | Críticas (>75–100%) | Sobrec. (>100%) | Pico PTAR (m³/s) | Rebose (m³) | Error Masa (m³) |
 |:---:|:---|---:|---:|---:|:---:|---:|---:|---:|---:|---:|
 | 1 | Dry weather | 0.0 | 0.00% | 0.00x | P1 | 0 | 0 | 0.0000 | 0.00 | 0.00e+00 |
-| 2 | Light rain | 10.0 | 1858.38% | 18.58x | P31 | 20 | 18 | 0.3078 | 27,886.95 | 1.54e-09 |
-| 3 | Moderate rain | 30.0 | 5125.52% | 51.26x | P31 | 20 | 18 | 0.3078 | 86,133.51 | 1.72e-09 |
-| 4 | Heavy rain | 60.0 | 10026.22% | 100.26x | P31 | 20 | 18 | 0.3078 | 173,503.35 | 2.82e-09 |
-| 5 | Extreme rain | 100.0 | 16560.49% | 165.60x | P31 | 20 | 18 | 0.3078 | 289,996.47 | 2.68e-09 |
+| 2 | Light rain | 10.0 | 1858.38% | 18.58x | P31 | 20 | 18 | 0.3078 | 27,886.95 | 1.53e-09 |
+| 3 | Moderate rain | 30.0 | 5125.52% | 51.26x | P31 | 20 | 18 | 0.3078 | 86,133.51 | 1.71e-09 |
+| 4 | Heavy rain | 60.0 | 10026.22% | 100.26x | P31 | 20 | 18 | 0.3078 | 173,503.35 | 2.78e-09 |
+| 5 | Extreme rain | 100.0 | 16560.49% | 165.60x | P31 | 20 | 18 | 0.3078 | 289,996.47 | 2.74e-09 |

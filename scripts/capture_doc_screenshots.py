@@ -410,10 +410,10 @@ def capture_all_screenshots() -> Dict[str, str]:
         "4.2 Generacion Automatica CLI (main.py)", cli_lines, "04_2_cli_reportes.png"
     )
 
-    # 04_3. Suite de 41 pruebas unitarias
+    # 04_3. Suite de 43 pruebas unitarias
     proc_test = subprocess.run(
         [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
-        cwd=ROOT, capture_output=True, text=True, timeout=90,
+        cwd=ROOT, capture_output=True, text=True, timeout=150,
     )
     test_lines = (proc_test.stdout + "\n" + proc_test.stderr).strip().splitlines()
     if len(test_lines) > 22:
@@ -421,7 +421,7 @@ def capture_all_screenshots() -> Dict[str, str]:
     else:
         shown = test_lines
     shots["04_3_tests_41"] = _render_terminal_card(
-        "4.3 Suite de 41 Pruebas Unitarias (unittest)",
+        "4.3 Suite de 43 Pruebas Unitarias (unittest)",
         ["$ python -m unittest discover -s tests -v"] + shown,
         "04_3_tests_41.png",
     )

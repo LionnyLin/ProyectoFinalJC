@@ -23,7 +23,7 @@ El proyecto sigue una arquitectura modular desacoplada por responsabilidades:
 - `src/io/`: Carga y validación estricta de datos desde Excel (`.xlsx`) y carpetas CSV (`data_loader.py`).
 - `src/simulation/`: Motor discreto-temporal conservativo de masa (`engine.py`), comparador multiescenario (`comparison.py`), figuras a una columna (`charts_export.py`) y generadores de reportes Markdown/CSV (`reporter.py`) y Word `.docx` con ecuaciones OMML (`docx_exporter.py`).
 - `src/gui/`: Aplicación de escritorio Tkinter modular con lienzo interactivo del grafo (`network_canvas.py`), gráficas Matplotlib embebidas (`charts_panel.py`), recorrido guiado (`guided_tour.py`), paneles dedicados (`controls_panel.py`, `inspector_panel.py`, `comparison_panel.py`, `widgets.py`, `theme.py`, `icons.py`) y orquestación principal (`app.py`).
-- `tests/`: Suite de 41 pruebas unitarias automatizadas con `unittest`.
+- `tests/`: Suite de 43 pruebas unitarias automatizadas con `unittest`.
 
 ---
 
@@ -92,7 +92,7 @@ Con los parámetros oficiales por defecto (simulación `90 min`, lluvia uniforme
 - **Motor hidráulico (sub-pasos, rebose `4.0 m³`, intervenciones `Antes vs. Después`, reglas):** `01_1_subpasos_transit.png`, `01_2_almacenamiento_rebose.png`, `01_3a_intervencion_mapa.png`, `01_3b_antes_despues.png`, `01_4_reglas_gui.png`.
 - **Algoritmos (BFS `Queue`, DFS `Stack`, `Aislar cuenca`, nodos desconectados, fuentes `F1..F27`, persistencia):** `02_1a_bfs_queue.png`, `02_1b_dfs_stack.png`, `02_2_aguas_arriba_aislar.png`, `02_3_nodos_desconectados.png`, `02_4_composicion_fuentes.png`, `02_5_persistencia_sobrecarga.png`.
 - **GUI cartográfica (3 modos, zoom + anillos rebose, `twinx()` + perfil longitudinal, Recorrido Guiado, comparación y modo compacto):** `03_1a_modo_instantaneo.png`, `03_1b_modo_pico.png`, `03_1c_modo_sobrecarga.png`, `03_2_canvas_zoom_rebose.png`, `03_3a_hidrograma_twinx.png`, `03_3b_perfil_longitudinal.png`, `03_4_recorrido_guiado.png`, `03_5a_comparacion_escenarios.png`, `03_5b_ui_compacta.png`.
-- **CLI, exportación CSV y 41 pruebas unitarias:** `04_1_carga_export_csv.png`, `04_2_cli_reportes.png`, `04_3_tests_41.png`.
+- **CLI, exportación CSV y 43 pruebas unitarias:** `04_1_carga_export_csv.png`, `04_2_cli_reportes.png`, `04_3_tests_41.png`.
 
 ---
 
