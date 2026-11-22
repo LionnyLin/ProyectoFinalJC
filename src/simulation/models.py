@@ -155,3 +155,22 @@ class SimulationResult:
     peak_pipe_demand_flow: Dict[str, float] = field(default_factory=dict)
     total_surface_flooding_m3: float = 0.0
     max_node_flooding_m3: Dict[str, float] = field(default_factory=dict)
+
+
+def compute_symlog_ticks(max_u_val: float) -> List[float]:
+    """Calcula marcas legibles y espaciadas para ejes de utilización en escala symlog."""
+    y_top = max(300.0, float(max_u_val) * 1.28)
+    ticks: List[float] = [0.0]
+    if max_u_val <= 650.0:
+        ticks.append(50.0)
+    ticks.append(100.0)
+    candidates = [200.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0, 10000.0, 20000.0, 50000.0]
+    min_ratio = 1.95 if max_u_val > 1200.0 else 1.85
+    for cand in candidates:
+        if cand > y_top * 0.96:
+            break
+        if cand >= ticks[-1] * min_ratio:
+            ticks.append(cand)
+    if ticks[-1] == 100.0 and max_u_val > 180.0:
+        ticks.append(250.0 if max_u_val <= 300.0 else 500.0)
+    return ticks
