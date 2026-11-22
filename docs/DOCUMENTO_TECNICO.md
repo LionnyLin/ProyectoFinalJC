@@ -22,8 +22,8 @@ El proyecto sigue una arquitectura modular desacoplada por responsabilidades:
 - `src/algorithms/`: Algoritmos de recorrido (`bfs`, `dfs`, `topological_sort`), búsqueda y trazado (`find_node`, `find_pipe`, `search_entities`, `trace_downstream`, `trace_upstream`), y clasificación/ranking de criticidad (`classify_utilization`, `rank_critical_pipes`).
 - `src/io/`: Carga y validación estricta de datos desde Excel (`.xlsx`) y carpetas CSV (`data_loader.py`).
 - `src/simulation/`: Motor discreto-temporal conservativo de masa (`engine.py`), comparador multiescenario (`comparison.py`), figuras a una columna (`charts_export.py`) y generadores de reportes Markdown/CSV (`reporter.py`) y Word `.docx` con ecuaciones OMML (`docx_exporter.py`).
-- `src/gui/`: Aplicación de escritorio Tkinter con lienzo interactivo del grafo (`network_canvas.py`), gráficas Matplotlib embebidas (`charts_panel.py`) y controles completos de simulación (`app.py`).
-- `tests/`: Suite de 35 pruebas unitarias automatizadas con `unittest`.
+- `src/gui/`: Aplicación de escritorio Tkinter modular con lienzo interactivo del grafo (`network_canvas.py`), gráficas Matplotlib embebidas (`charts_panel.py`), recorrido guiado (`guided_tour.py`), paneles dedicados (`controls_panel.py`, `inspector_panel.py`, `comparison_panel.py`, `widgets.py`, `theme.py`, `icons.py`) y orquestación principal (`app.py`).
+- `tests/`: Suite de 41 pruebas unitarias automatizadas con `unittest`.
 
 ---
 
@@ -61,8 +61,8 @@ Para una cuenca con coeficiente de escorrentía $C = 0.75$ y área $A = 388\text
 $$Q_{\text{racional}}(t) = 0.00278 \cdot C \cdot I(t) \cdot A$$
 
 Dado que la red modelada corresponde a conducción sanitaria (`Ø 8"` a `Ø 20"`, capacidades $Q_{\max}$ entre `0.02965` y `0.34140 m³/s`), el modelo incorpora:
-- Un **factor de ingreso pluvial configurable** ($f_{\text{ing}}$, valor calibrado por defecto `2.5%` para representar infiltración y conexiones erradas, con selector directo a `100%` para evaluar el Método Racional puro sin atenuación).
-- Un **caudal sanitario base en tiempo seco** configurable (`0.0030 m³/s` por fuente por defecto), que permite observar flujo base en el Escenario 1 (`0 mm/h`).
+- Un **factor de ingreso pluvial configurable** ($f_{\text{ing}}$, valor oficial por defecto **`100.0%`** según guía, con preset directo a `2.5%` para análisis de sensibilidad por infiltración y conexiones erradas).
+- Un **caudal sanitario base en tiempo seco** configurable (`0.0000 m³/s` por fuente por defecto, calibrable en GUI para evaluar flujo base en el Escenario 1).
 
 El caudal pluvial se distribuye entre los 8 nodos fuente (`1, 6, 9, 17, 18, 19, 20, 27`) mediante selector configurable: **ponderado por capacidad instalada de salida** (predeterminado, evitando castigar artificialmente cabeceras de 8") o **reparto uniforme `1/8`** (comparable con la distribución homogénea).
 
@@ -84,17 +84,15 @@ $$V_{\text{inyectado}}(t) = V_{\text{PTAR}}(t) + V_{\text{pozos}}(t) + V_{\text{
 
 ## 6. Resultados de Simulación y Comparación de Escenarios
 
-Con los parámetros de referencia (simulación `90 min`, lluvia uniforme `60 min`, $\Delta t = 1\text{ min}$, $f_{\text{ing}} = 2.5\%$, reparto por capacidad instalada en fuentes, $Q_{\text{san}} = 0.003\text{ m}^3/\text{s}$ por fuente):
+Con los parámetros oficiales por defecto (simulación `90 min`, lluvia uniforme `60 min`, $\Delta t = 1\text{ min}$, $f_{\text{ing}} = 100\%$, reparto por capacidad instalada en fuentes, $Q_{\text{san}} = 0.0\text{ m}^3/\text{s}$), el reporte completo por escenario y por tubería se genera automáticamente en [`REPORTE_ESCENARIOS.md`](REPORTE_ESCENARIOS.md), [`REPORTE_ESCENARIOS.docx`](REPORTE_ESCENARIOS.docx), `REPORTE_ESCENARIOS_tuberias.csv` y el entregable maestro a dos columnas [`DOCUMENTO_TECNICO.docx`](DOCUMENTO_TECNICO.docx).
 
-| Escenario | Condición | Intensidad (mm/h) | Util. Fís. Máx (%) | Demanda Máx | Tubería Crítica | Críticas (>=75%) | Sobrecargadas (>100%) | Pico PTAR 31 (m³/s) | Rebose (m³) | Error Masa (m³) |
-|:---:|:---|---:|---:|---:|:---:|---:|---:|---:|---:|---:|
-| 1 | Dry weather | 0 | 10.25% | 0.10x | P25 | 0 | 0 | 0.0240 | 0.00 | 2.47e-12 |
-| 2 | Light rain | 10 | 104.46% | 1.22x | P25 | 1 | 1 | 0.2070 | 48.24 | 9.32e-12 |
-| 3 | Moderate rain | 30 | 113.06% | 2.28x | P25 | 21 | 15 | 0.3078 | 1,042.45 | 3.37e-11 |
-| 4 | Heavy rain | 60 | 113.75% | 2.55x | P31 | 21 | 15 | 0.3078 | 3,226.70 | 6.73e-11 |
-| 5 | Extreme rain | 100 | 114.91% | 4.19x | P31 | 21 | 15 | 0.3078 | 6,139.02 | 5.46e-11 |
+### 6.1 Evidencia Visual de Capacidades Avanzadas (`docs/screenshots/`)
 
-El reporte completo por tubería se genera en [`REPORTE_ESCENARIOS.md`](REPORTE_ESCENARIOS.md) y `REPORTE_ESCENARIOS_tuberias.csv`.
+- **Vista general:** ![Vista general](screenshots/00_vista_general.png)
+- **Motor hidráulico (sub-pasos, rebose `4.0 m³`, intervenciones `Antes vs. Después`, reglas):** `01_1_subpasos_transit.png`, `01_2_almacenamiento_rebose.png`, `01_3a_intervencion_mapa.png`, `01_3b_antes_despues.png`, `01_4_reglas_gui.png`.
+- **Algoritmos (BFS `Queue`, DFS `Stack`, `Aislar cuenca`, nodos desconectados, fuentes `F1..F27`, persistencia):** `02_1a_bfs_queue.png`, `02_1b_dfs_stack.png`, `02_2_aguas_arriba_aislar.png`, `02_3_nodos_desconectados.png`, `02_4_composicion_fuentes.png`, `02_5_persistencia_sobrecarga.png`.
+- **GUI cartográfica (3 modos, zoom + anillos rebose, `twinx()` + perfil longitudinal, Recorrido Guiado, comparación y modo compacto):** `03_1a_modo_instantaneo.png`, `03_1b_modo_pico.png`, `03_1c_modo_sobrecarga.png`, `03_2_canvas_zoom_rebose.png`, `03_3a_hidrograma_twinx.png`, `03_3b_perfil_longitudinal.png`, `03_4_recorrido_guiado.png`, `03_5a_comparacion_escenarios.png`, `03_5b_ui_compacta.png`.
+- **CLI, exportación CSV y 41 pruebas unitarias:** `04_1_carga_export_csv.png`, `04_2_cli_reportes.png`, `04_3_tests_41.png`.
 
 ---
 

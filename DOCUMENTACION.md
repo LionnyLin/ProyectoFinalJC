@@ -89,7 +89,9 @@ NetworkDataset (DirectedGraph[46 nodos, 59 aristas] + DrainageBasin + 5 Precipit
 
 ## 2. Análisis Exhaustivo de la Interfaz Gráfica (UI/UX)
 
-La interfaz está construida sobre Tkinter/ttk (`src/gui/app.py`, 4,964 líneas) con gráficos Matplotlib embebidos (`src/gui/charts_panel.py`), un lienzo cartográfico propio (`src/gui/network_canvas.py`), sistema de tokens cromáticos/tipográficos (`src/gui/theme.py`) e iconos vectoriales rasterizados con Pillow (`src/gui/icons.py`).
+La interfaz está construida sobre Tkinter/ttk (`src/gui/app.py`, 2,069 líneas, junto a los paneles desacoplados `controls_panel.py`, `inspector_panel.py`, `comparison_panel.py` y `guided_tour.py`) con gráficos Matplotlib embebidos (`src/gui/charts_panel.py`), un lienzo cartográfico propio (`src/gui/network_canvas.py`), sistema de tokens cromáticos/tipográficos (`src/gui/theme.py`), controles reutilizables (`src/gui/widgets.py`) e iconos vectoriales rasterizados con Pillow (`src/gui/icons.py`).
+
+> **Catálogo visual unificado:** Las 24 capturas de pantalla viñeta por viñeta están en `docs/screenshots/` (regenerables con `python scripts/capture_doc_screenshots.py`) e incrustadas en el entregable maestro a dos columnas [`docs/DOCUMENTO_TECNICO.docx`](docs/DOCUMENTO_TECNICO.docx).
 
 ### 2.1 Sistema Visual, Tipografía, DPI e Iconografía (`theme.py`, `icons.py`)
 

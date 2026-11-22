@@ -420,12 +420,22 @@ def generate_docx_report(
     return os.path.abspath(out_path)
 
 
+def _add_screenshot_if_exists(doc: Document, filename: str, caption: str) -> None:
+    """Incrusta un screenshot de docs/screenshots/ ajustado a una columna (3.45 in)."""
+    shots_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "docs", "screenshots")
+    )
+    img_path = os.path.join(shots_dir, filename)
+    if os.path.isfile(img_path):
+        _add_single_column_figure(doc, img_path, caption)
+
+
 def generate_technical_document_docx(
     dataset: NetworkDataset,
     comparisons: List[ScenarioSummary],
     out_path: str = "docs/DOCUMENTO_TECNICO.docx",
 ) -> str:
-    """Genera el Documento Técnico completo en Word (.docx) con Bibliografía y Anexos A-D."""
+    """Genera el Documento Técnico definitivo en Word (.docx) a dos columnas con capturas y Anexos A-D."""
     doc = _configure_two_column_document()
     if not comparisons:
         from .comparison import compare_all_scenarios
@@ -438,7 +448,7 @@ def generate_technical_document_docx(
     base_res = comparisons[2].result if len(comparisons) > 2 else comparisons[0].result
     n_nodes, n_pipes, n_src, n_snk, total_len = dataset.graph.summary()
 
-    # Encabezado del documento técnico (sin salto a 1 columna)
+    # Encabezado del documento técnico (flujo continuo a 2 columnas)
     p_title = doc.add_paragraph()
     p_title.paragraph_format.space_after = Pt(2)
     rt = p_title.add_run(
@@ -451,7 +461,7 @@ def generate_technical_document_docx(
     p_sub = doc.add_paragraph()
     p_sub.paragraph_format.space_after = Pt(5)
     rs = p_sub.add_run(
-        "Documento Técnico Final · Asignatura: Estructuras de Datos · Caso: Cartagena de Indias (PTAR Punta Canoa)"
+        "Documento Técnico Definitivo · Asignatura: Estructuras de Datos · Caso: Cartagena de Indias (PTAR Punta Canoa)"
     )
     rs.italic = True
     rs.font.size = Pt(8.2)
@@ -465,32 +475,42 @@ def generate_technical_document_docx(
         "de la red de alcantarillado del Macroproyecto Ciudad Bicentenario hasta su descarga en la PTAR "
         "de Punta Canoa (nodo 31). La red se representa mediante un grafo dirigido propio de 46 vértices "
         "y 59 aristas (19,163.57 m) sin delegar las estructuras obligatorias en librerías externas. "
-        "El motor discreto-temporal gestiona retardos de tránsito con una cola de prioridad Min-Heap, "
-        "almacena el historial completo en una lista doblemente enlazada y conserva exactamente la masa "
-        "ante sobrecargas superiores al 100 %.",
+        "El motor discreto-temporal gestiona sub-pasos continuos con una cola de prioridad Min-Heap, "
+        "almacena el historial completo en una lista doblemente enlazada, modela pozos finitos (4.0 m³) "
+        "con rebose superficial y conserva exactamente la masa (~10^-9 m³), incorporando además "
+        "intervenciones en vivo, trazabilidad por fuente, recorrido guiado y generación automática de reportes.",
     )
 
-    _add_heading_1(doc, "1. Introducción")
+    _add_heading_1(doc, "1. Introducción y Cobertura de Requisitos")
     _add_body(
         doc,
         "El crecimiento urbano de Ciudad Bicentenario en Cartagena de Indias exige analizar cómo "
-        "responden sus colectores sanitarios ante diferentes intensidades de lluvia y eventuales "
-        "ingresos pluviales por infiltración o conexiones erradas. Desde el enfoque de Estructuras "
-        "de Datos, el sistema constituye un grafo acíclico dirigido (DAG) donde las alcantarillas fuente "
-        "aportan caudal hacia pozos de inspección intermedios y confluyen en un único sumidero terminal.",
+        "responden sus colectores ante diferentes intensidades de lluvia y eventuales ingresos pluviales. "
+        "Desde el enfoque de Estructuras de Datos, el sistema constituye un grafo acíclico dirigido (DAG) "
+        "donde las alcantarillas fuente aportan caudal hacia pozos de inspección intermedios y confluyen "
+        "en un único sumidero terminal (PTAR 31).",
     )
     _add_body(
         doc,
-        f"A partir de los datos suministrados en DataSetBicentenario.xlsx, la red comprende {n_nodes} "
+        f"A partir de los datos suministrados en DataSetBicentenario.xlsx (y paridad en CSV), la red comprende {n_nodes} "
         f"vértices ({n_src} fuentes: {', '.join(dataset.graph.source_ids())}; {n_nodes - n_src - n_snk} pozos; y {n_snk} sumidero: "
-        f"nodo {', '.join(dataset.graph.sink_ids())}) y {n_pipes} tuberías con diámetros entre 8 y 20 pulgadas.",
+        f"nodo {', '.join(dataset.graph.sink_ids())}) y {n_pipes} tuberías con diámetros entre 8 y 20 pulgadas, "
+        "cubriendo integralmente los requisitos RF01–RF12 de la guía y las capacidades de Nivel Avanzado (5.0).",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "00_vista_general.png",
+        "Figura 1. Vista general de la interfaz en operación activa (Escenario 3, t = 35.0 min, modo Instantáneo).",
     )
 
-    _add_heading_1(doc, "2. Diseño y Estructuras de Datos")
+    _add_heading_1(doc, "2. Arquitectura Modular y Estructuras de Datos")
     _add_body(
         doc,
-        "Todas las estructuras obligatorias fueron programadas desde cero en el paquete src/data_structures/ "
-        "garantizando control total sobre memoria, complejidad asintótica y trazabilidad académica:",
+        "El sistema se organiza en paquetes desacoplados: src/data_structures/ (estructuras propias), "
+        "src/io/ (ingesta dual Excel/CSV y exportación), src/algorithms/ (recorridos, trazado y análisis), "
+        "src/simulation/ (motor hidráulico, comparación y exportadores) y src/gui/ (interfaz Tkinter modular: "
+        "app.py, controls_panel.py, inspector_panel.py, comparison_panel.py, guided_tour.py, charts_panel.py, "
+        "network_canvas.py, widgets.py, theme.py e icons.py).",
     )
     _add_plain_table(
         doc,
@@ -508,13 +528,74 @@ def generate_technical_document_docx(
         font_pt=7.2,
     )
 
-    _add_heading_1(doc, "3. Algoritmos Implementados")
-    _add_bullet(doc, "Recorrido en amplitud (Queue + HashTable) con reconstrucción de camino mínimo en saltos vía Stack.", "BFS: ")
-    _add_bullet(doc, "Recorrido en profundidad iterativo (Stack) que alcanza el nodo 31 desde las 8 fuentes.", "DFS: ")
-    _add_bullet(doc, "Algoritmo de Kahn que confirma la ausencia de ciclos (46/46 nodos) y ordena la propagación.", "Orden Topológico: ")
-    _add_bullet(doc, "Consultas O(1) en HashTable, trazado aguas arriba/abajo y clasificación en 5 rangos de color.", "Consultas y Análisis: ")
+    _add_heading_1(doc, "3. Algoritmos y Análisis Avanzado de Red")
+    _add_bullet(
+        doc,
+        "Recorrido en amplitud (Queue + HashTable) con animación paso a paso y visor en vivo de la Cola (FRENTE -> FINAL).",
+        "BFS animado con Queue: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "02_1a_bfs_queue.png",
+        "Figura 2. Animación BFS paso a paso con visor en vivo de la Cola (Queue) y ruta resaltada.",
+    )
+    _add_bullet(
+        doc,
+        "Recorrido en profundidad iterativo (Stack) con visor en vivo de la Pila y seguimiento de backtracking.",
+        "DFS animado con Stack: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "02_1b_dfs_stack.png",
+        "Figura 3. Animación DFS paso a paso con visor en vivo de la Pila (Stack) y backtracking.",
+    )
+    _add_bullet(
+        doc,
+        "Algoritmo de Kahn que confirma la ausencia de ciclos (46/46 nodos) y ordena la propagación topológica.",
+        "Orden Topológico (DAG): ",
+    )
+    _add_bullet(
+        doc,
+        "Trazado dirigido aguas arriba/abajo y modo Aislar cuenca para enfocar la subcuenca tributaria de cualquier nodo o tramo.",
+        "Trazado y aislamiento de cuenca: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "02_2_aguas_arriba_aislar.png",
+        "Figura 4. Trazado Aguas arriba desde el nodo K con Aislar cuenca activado.",
+    )
+    _add_bullet(
+        doc,
+        "Al obstruir una tubería al 100 %, find_isolated_from_sinks() ejecuta BFS inverso desde la PTAR 31 para marcar vértices y tramos desconectados.",
+        "Detección de nodos desconectados: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "02_3_nodos_desconectados.png",
+        "Figura 5. Cierre total (100 %) de P29 en t = 40.0 min identificando el subgrafo aislado de PTAR 31.",
+    )
+    _add_bullet(
+        doc,
+        "compute_source_attribution() calcula el aporte porcentual de las 8 fuentes (F1..F27) en cualquier nodo o tubería, visualizado como barra apilada en el Inspector.",
+        "Composición por fuente aportante: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "02_4_composicion_fuentes.png",
+        "Figura 6. Barra apilada de composición porcentual por fuente aportante en el nodo confluente 30.",
+    )
+    _add_bullet(
+        doc,
+        "classify_overload_persistence() cuantifica los minutos acumulados con utilización > 100 % y rank_critical_pipes() ordena el listado en Tuberías Críticas.",
+        "Persistencia de sobrecarga y ranking: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "02_5_persistencia_sobrecarga.png",
+        "Figura 7. Pestaña Críticas mostrando tramos ordenados y minutos acumulados en sobrecarga (Escenario 5).",
+    )
 
-    _add_heading_1(doc, "4. Modelo Matemático y Simulación")
+    _add_heading_1(doc, "4. Modelo Matemático y Motor Hidráulico Avanzado")
     _add_body(
         doc,
         f"Para la cuenca de drenaje (C = {dataset.basin.runoff_coefficient_c}, A = {dataset.basin.area_ha} ha), "
@@ -537,17 +618,137 @@ def generate_technical_document_docx(
     add_omml_equation(doc, "transit", "5")
     _add_body(
         doc,
-        "Con integración en sub-pasos continuos (≤10 s) y cola de prioridad de eventos, se evalúa el porcentaje oficial de utilización sin techo artificial:",
+        "Con integración en sub-pasos continuos (<= 10 s) y cola de prioridad de eventos (_TransitEvent), "
+        "se evalúa el porcentaje oficial de utilización sin techo artificial:",
     )
     add_omml_equation(doc, "utilization", "6")
     _add_body(
         doc,
         "Cuando el caudal demandado excede Q_max,i (>100 %), la conducción física aguas abajo se limita a "
-        "la capacidad nominal y el volumen excedente llena el pozo hasta su capacidad útil (4.0 m³), derivando el excedente a rebose superficial en vía con conservación exacta de masa (se conserva P57 = 12\" tal como figura en DataSetBicentenario.xlsx):",
+        "la capacidad nominal y el volumen excedente llena el pozo hasta su capacidad útil (4.0 m³), derivando "
+        "el excedente a rebose superficial en vía con conservación exacta de masa (P57 = 12\" según DataSetBicentenario.xlsx):",
     )
     add_omml_equation(doc, "mass_balance", "7")
 
-    _add_heading_1(doc, "5. Resultados y Comparación")
+    _add_bullet(
+        doc,
+        "La PriorityQueue de eventos de tránsito evita el teletransporte del agua en tramos cortos y garantiza 0.0000 % de variación al cambiar el paso de reporte Δt.",
+        "Sub-pasos continuos con PriorityQueue: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "01_1_subpasos_transit.png",
+        "Figura 8. Telemetría continua en t = 35.0 min (Escenario 3) con balance de masa exacto.",
+    )
+    _add_bullet(
+        doc,
+        "Cada pozo retiene hasta 4.0 m³ antes de derivar el excedente a surface_flooding_m3 manteniendo error de balance ~10^-9 m³.",
+        "Almacenamiento finito en pozos + rebose: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "01_2_almacenamiento_rebose.png",
+        "Figura 9. Inspector en Escenario 5 (t = 45.0 min) mostrando pozo lleno (4.000 m³) y rebose superficial.",
+    )
+    _add_bullet(
+        doc,
+        "PipeIntervention permite obstruir (0–100 %) o cambiar el diámetro comercial (6\"–48\") recalculando Manning (Q ~ D^(8/3), V ~ D^(2/3)) y comparando hidrograma Antes vs. Después.",
+        "Intervenciones en vivo (PipeIntervention): ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "01_3a_intervencion_mapa.png",
+        "Figura 10. Tubería P29 intervenida al 80 % de obstrucción en t = 40.0 min con marcador visual en el plano.",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "01_3b_antes_despues.png",
+        "Figura 11. Hidrograma comparativo Antes vs. Después tras la intervención en vivo sobre P29.",
+    )
+    _add_bullet(
+        doc,
+        "Permite alternar en vivo bifurcación (Proporcional / Equitativa), reparto entre fuentes (Por capacidad / Uniforme) y presets (Oficial Guía 100 % vs. Calibrado 2.5 % + Q_san).",
+        "Reglas configurables desde la GUI: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "01_4_reglas_gui.png",
+        "Figura 12. Panel de controles con reglas configurables y preset Calibrado (2.5% + Q_san) activos.",
+    )
+
+    _add_heading_1(doc, "5. Interfaz Gráfica y Visualización Cartográfica")
+    _add_bullet(
+        doc,
+        "Vistas Instantáneo O(t), Pico Máximo y Minutos en Sobrecarga (0–duración total) sin esperar al final de la animación.",
+        "3 Modos cartográficos: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "03_1a_modo_instantaneo.png",
+        "Figura 13. Modo cartográfico Instantáneo O(t) en Escenario 5 (t = 45.0 min).",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "03_1b_modo_pico.png",
+        "Figura 14. Modo cartográfico Pico Máximo (envolvente global 0–90 min).",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "03_1c_modo_sobrecarga.png",
+        "Figura 15. Modo cartográfico Minutos en Sobrecarga (> 100 %).",
+    )
+    _add_bullet(
+        doc,
+        "Pulsos de flujo proporcionales a la velocidad de Manning, anillos concéntricos de almacenamiento/rebose (_draw_flood_rings), zoom en cursor, paneo, tooltips, placas sin colisión y layout topológico automático.",
+        "Lienzo NetworkCanvas avanzado: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "03_2_canvas_zoom_rebose.png",
+        "Figura 16. Detalle con zoom (185 %) en t = 45.0 min mostrando anillos concéntricos de rebose y etiquetas sin colisión.",
+    )
+    _add_bullet(
+        doc,
+        "TemporalChartsPanel ofrece hidrograma con doble eje Y twinx() (Entrada/Rebose vs. PTAR 31), escala symlog adaptativa, blitting en cursores y perfil longitudinal Q vs Qmax hasta PTAR 31.",
+        "Gráficas avanzadas (charts_panel.py): ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "03_3a_hidrograma_twinx.png",
+        "Figura 17. Hidrograma con doble eje Y (twinx) y gráfico de utilización en escala symlog.",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "03_3b_perfil_longitudinal.png",
+        "Figura 18. Perfil longitudinal Q vs Qmax hasta la PTAR Punta Canoa (Nodo 31).",
+    )
+    _add_bullet(
+        doc,
+        "Presentación interactiva en 4 paradas por escenario con cámara enfocada automáticamente y métricas reales de los snapshots.",
+        "Recorrido Guiado (Guía Esc. N · 4 Hallazgos): ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "03_4_recorrido_guiado.png",
+        "Figura 19. Recorrido Guiado activo con tarjeta flotante de hallazgos y enfoque automático de cámara.",
+    )
+    _add_bullet(
+        doc,
+        "Adaptación automática en 3 tamaños (wide/medium/compact), comparativa global de 5 escenarios, atajos de teclado (Espacio, Flechas, Home, Ctrl+F, Esc) y diálogo de supuestos.",
+        "UI responsiva, comparación y atajos: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "03_5a_comparacion_escenarios.png",
+        "Figura 20. Pestaña Comparación con tabla completa y curvas comparativas de los 5 escenarios.",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "03_5b_ui_compacta.png",
+        "Figura 21. Interfaz adaptada en modo compacto (900x700) con exclusividad de paneles laterales.",
+    )
+
+    _add_heading_1(doc, "6. Resultados y Comparación Multiescenario")
     _add_body(
         doc,
         "La simulación ejecutada durante 90 min (lluvia uniforme de 60 min, paso de reporte de 1 min, f_ing = 100 %, "
@@ -575,28 +776,50 @@ def generate_technical_document_docx(
 
     fig_dir = os.path.join(os.path.dirname(os.path.abspath(out_path)), "figuras")
     fig_paths = generate_single_column_figures(base_res, comparisons, fig_dir)
-    _add_single_column_figure(doc, fig_paths[0], "Figura 1. Hidrograma de entrada total y descarga en PTAR 31 (Escenario 3).")
-    _add_single_column_figure(doc, fig_paths[1], "Figura 2. Utilización temporal de las cinco tuberías más exigidas (Escenario 3).")
-    _add_single_column_figure(doc, fig_paths[2], "Figura 3. Comparativo de tuberías críticas y sobrecargadas entre los 5 escenarios.")
+    _add_single_column_figure(doc, fig_paths[0], "Figura 22. Hidrograma de entrada total y descarga en PTAR 31 (Escenario 3).")
+    _add_single_column_figure(doc, fig_paths[1], "Figura 23. Utilización temporal de las cinco tuberías más exigidas (Escenario 3).")
+    _add_single_column_figure(doc, fig_paths[2], "Figura 24. Comparativo de tuberías críticas y sobrecargadas entre los 5 escenarios.")
 
-    _add_heading_1(doc, "6. Validación y Pruebas Unitarias")
-    _add_body(
+    _add_heading_1(doc, "7. Datos, Reportes CLI y Validación (41 Pruebas)")
+    _add_bullet(
         doc,
-        "Se validó el sistema mediante una suite automatizada con unittest cubriendo estructuras de datos, "
-        "alcance BFS/DFS hacia la PTAR 31, paridad Excel/CSV (19,163.57 m), retardo físico en t = 1 min, "
-        "repetibilidad determinista y errores de balance de masa inferiores a 1.3e-10 m3.",
+        "Carga validada desde Excel (.xlsx) y carpetas CSV con exportación completa mediante export_to_csv_dir().",
+        "Carga dual .xlsx + .csv y exportación: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "04_1_carga_export_csv.png",
+        "Figura 25. Evidencia de carga dual y exportación a archivos CSV normalizados.",
+    )
+    _add_bullet(
+        doc,
+        "Modos --report (Markdown + _tuberias.csv), --report-docx y --technical-docx en Word a dos columnas con OMML nativo sin Pandoc.",
+        "Generación automática por CLI (main.py): ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "04_2_cli_reportes.png",
+        "Figura 26. Ejecución CLI de main.py generando reportes Markdown, CSV y DOCX nativos.",
+    )
+    _add_bullet(
+        doc,
+        "Batería automatizada de 41 pruebas unitarias en tests/ cubriendo estructuras de datos, cargador, algoritmos, motor hidráulico (invariancia Δt, masa ~10^-10 m³), DOCX y GUI.",
+        "Suite de 41 pruebas unitarias: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "04_3_tests_41.png",
+        "Figura 27. Ejecución completa de la suite de 41 pruebas unitarias con unittest (OK).",
     )
 
-    _add_heading_1(doc, "7. Conclusiones y Limitaciones")
+    _add_heading_1(doc, "8. Conclusiones, Limitaciones y Bibliografía")
     _add_bullet(doc, "Las tuberías iniciales de 8 pulgadas (P31, P39, P43, P4, P5) y los tramos convergentes (P25, P3) concentran las primeras sobrecargas desde 30 mm/h.")
-    _add_bullet(doc, "La arquitectura propia sin librerías externas de grafos permite auditar cada operación y ejecutar 90 pasos en menos de 90 ms.")
+    _add_bullet(doc, "La arquitectura propia sin librerías externas de grafos permite auditar cada operación y ejecutar 90 pasos con sub-pasos continuos en menos de 90 ms.")
     _add_bullet(doc, "Limitación: el modelo no resuelve ecuaciones hidrodinámicas de Saint-Venant ni lámina libre; representa una abstracción volumétrica académica.")
-
-    _add_heading_1(doc, "Bibliografía")
-    _add_bullet(doc, "Universidad Tecnológica de Bolívar. Guía del Proyecto Final: Simulación y visualización del flujo en la red de alcantarillado de Ciudad Bicentenario. 2026.")
-    _add_bullet(doc, "Fundación Mario Santo Domingo & UTB. Plano M-07B Infraestructura de Servicios Públicos — Red Alcantarillado Macroproyecto Ciudad del Bicentenario. 2012.")
-    _add_bullet(doc, "Cormen, T. H., Leiserson, C. E., Rivest, R. L., & Stein, C. Introduction to Algorithms (4th ed.). MIT Press, 2022.")
-    _add_bullet(doc, "Chow, V. T., Maidment, D. R., & Mays, L. W. Hidrología Aplicada. McGraw-Hill.")
+    _add_bullet(doc, "Universidad Tecnológica de Bolívar. Guía del Proyecto Final: Simulación y visualización del flujo en la red de alcantarillado de Ciudad Bicentenario. 2026.", "Ref. 1: ")
+    _add_bullet(doc, "Fundación Mario Santo Domingo & UTB. Plano M-07B Infraestructura de Servicios Públicos — Red Alcantarillado Macroproyecto Ciudad del Bicentenario. 2012.", "Ref. 2: ")
+    _add_bullet(doc, "Cormen, T. H., Leiserson, C. E., Rivest, R. L., & Stein, C. Introduction to Algorithms (4th ed.). MIT Press, 2022.", "Ref. 3: ")
+    _add_bullet(doc, "Chow, V. T., Maidment, D. R., & Mays, L. W. Hidrología Aplicada. McGraw-Hill.", "Ref. 4: ")
 
     _add_heading_1(doc, "Anexo A. Complejidad de Estructuras Propias")
     _add_plain_table(

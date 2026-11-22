@@ -2,6 +2,8 @@
 
 Aplicación de escritorio en Python para la representación, simulación temporal y visualización por escala de colores del flujo en la red de alcantarillado del Macroproyecto Ciudad Bicentenario hasta el punto de descarga en la PTAR de Punta Canoa (Nodo `31`).
 
+![Vista general del simulador](docs/screenshots/00_vista_general.png)
+
 ## Características Principales
 
 - **Estructuras de datos implementadas desde cero** (`src/data_structures/`): `DirectedGraph`, `LinkedList` (listas de adyacencia e historial temporal), `Queue`, `PriorityQueue` (Min-Heap para eventos de tránsito y ranking), `Stack` y `HashTable`.
@@ -52,9 +54,10 @@ python main.py --report docs/REPORTE_ESCENARIOS.md
 python -m src.simulation.charts_export
 ```
 
-### Pruebas Unitarias
+### Pruebas Unitarias y Capturas de Documentación
 ```bash
 python -m unittest discover -s tests -v
+python scripts/capture_doc_screenshots.py
 ```
 
 ## Estructura del Proyecto
