@@ -63,7 +63,7 @@ python scripts/capture_doc_screenshots.py     # 24 capturas en docs/screenshots/
 
 El script de capturas abre la aplicación real, reproduce cada escenario de la documentación y compone además tres tarjetas de terminal con la ejecución real de la exportación CSV, el CLI y la suite de pruebas. Debe ejecutarse **antes** de `--technical-docx` para que el documento incruste las capturas.
 
-### 4. Pruebas Automatizadas (127 pruebas en 11 archivos)
+### 4. Pruebas Automatizadas (144 pruebas en 12 archivos)
 
 ```bash
 python -m pytest -q
@@ -84,7 +84,7 @@ Las pruebas de GUI abren ventanas Tk reales; en un entorno sin pantalla se omite
 
 ## Arquitectura Modular del Repositorio
 
-El código ejecutable suma **9 777 líneas** (`main.py` + `src/`), **2 767 líneas** de pruebas (`tests/`) y **465 líneas** del script de capturas, para **13 009 líneas** Python (conteo `wc -l`):
+El código ejecutable suma **9 977 líneas** (`main.py` + `src/`), **3 049 líneas** de pruebas (`tests/`) y **459 líneas** del script de capturas, para **13 485 líneas** Python (conteo `wc -l`):
 
 ```text
 ProyectoFinalJC/
@@ -101,25 +101,25 @@ ProyectoFinalJC/
 │   ├── figuras/                 #   figuras fig1–fig3 a una columna
 │   └── screenshots/             #   24 capturas de la aplicación y de la terminal
 ├── scripts/
-│   └── capture_doc_screenshots.py  # (465 L) Generador reproducible de las 24 capturas
-├── src/                         # (9 699 L) Código fuente modular (sin contar main.py)
+│   └── capture_doc_screenshots.py  # (459 L) Generador reproducible de las 24 capturas
+├── src/                         # (9 899 L) Código fuente modular (sin contar main.py)
 │   ├── data_structures/         # (576 L)   LinkedList, Queue, Stack, HashTable, PriorityQueue, DirectedGraph
 │   ├── io/                      # (336 L)   data_loader.py (carga/validación Excel y CSV + exportación CSV)
-│   ├── algorithms/              # (931 L)   traversals.py (BFS/DFS/Kahn + fotogramas), queries.py, analysis.py
+│   ├── algorithms/              # (935 L)   traversals.py (BFS/DFS/Kahn + fotogramas), queries.py, analysis.py
 │   ├── simulation/              # (2 095 L) models, engine, comparison, reporter (MD/CSV), docx_exporter,
 │   │                            #           omml_equations, charts_export
-│   └── gui/                     # (5 760 L) Interfaz Tkinter + Matplotlib en paneles independientes:
-│       ├── app.py               # (1 253 L) Orquestador y dueño único del estado UI
-│       ├── network_canvas.py    # (1 255 L) Lienzo en 2 fases, modos de mapa, pulsos, intervenciones, cámara
-│       ├── charts_panel.py      # (1 033 L) Hidrograma, perfil longitudinal y gráficas de comparación
-│       ├── inspector_panel.py   # (640 L)   Inspector (intervenciones, composición por fuente) y tuberías críticas
+│   └── gui/                     # (5 956 L) Interfaz Tkinter + Matplotlib en paneles independientes:
+│       ├── app.py               # (1 312 L) Orquestador y dueño único del estado UI
+│       ├── network_canvas.py    # (1 310 L) Lienzo en 2 fases, modos de mapa, pulsos, intervenciones, cámara
+│       ├── charts_panel.py      # (1 034 L) Hidrograma, perfil longitudinal y gráficas de comparación
+│       ├── inspector_panel.py   # (718 L)   Inspector (intervenciones, composición por fuente) y tuberías críticas
 │       ├── controls_panel.py    # (540 L)   Escenarios, parámetros, presets, BFS/DFS y bitácora Queue/Stack
 │       ├── guided_tour.py       # (318 L)   Recorrido guiado de 4 hallazgos por escenario
-│       ├── comparison_panel.py  # (235 L)   Tabla de 8 columnas y recálculo bajo demanda
+│       ├── comparison_panel.py  # (238 L)   Tabla de 9 columnas y recálculo bajo demanda
 │       ├── theme.py             # (225 L)   Paleta cartográfica, fuentes, DPI y breakpoints
 │       ├── icons.py             # (147 L)   Iconos Pillow con supermuestreo
 │       └── widgets.py           # (109 L)   Menubutton de selección y diámetros comerciales
-└── tests/                       # (2 767 L) 127 pruebas en 11 archivos (estructuras, cargador, algoritmos,
+└── tests/                       # (3 049 L) 144 pruebas en 12 archivos (estructuras, cargador, algoritmos,
                                  #           motor, DOCX, lienzo y GUI)
 ```
 

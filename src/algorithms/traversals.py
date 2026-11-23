@@ -44,6 +44,10 @@ class TraversalResult:
     target_reached: bool
     frames: List[TraversalFrame] = field(default_factory=list)
 
+    def __iter__(self):
+        """Compatibilidad con main: `nodos, tuberías = trace_downstream(...)`."""
+        return iter((self.visited_order, self.traversed_edges))
+
 
 class _State:
     """Estado interno compartido por BFS y DFS usando HashTable propias."""

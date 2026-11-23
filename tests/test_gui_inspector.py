@@ -155,8 +155,8 @@ class TestInspectorFeatures(unittest.TestCase):
 
     def test_escape_clears_basin_focus_selection_and_traversal(self) -> None:
         self.app.select_entity("node", "17")
+        self.app._action_toggle_inspector_trace("up")  # el recorrido libera el foco; luego se aísla la cuenca
         self.app._action_toggle_basin()
-        self.app._action_toggle_inspector_trace("up")
         self.assertTrue(self.app.network_canvas._basin_active)
         self.app._shortcut_escape()
         self.assertFalse(self.app.network_canvas._basin_active)

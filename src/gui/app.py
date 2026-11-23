@@ -62,6 +62,7 @@ class BicentenarioSewerApp(tk.Tk):
         self.fonts = theme.resolve_fonts(self)
         self.style = theme.apply_ttk_theme(self, self.fonts)
         self._dpi_scale = theme.resolve_dpi_scale(self)
+        self._mpl_dpi = min(116, max(96, int(round(96.0 * min(1.20, self._dpi_scale)))))  # DPI acotado de Matplotlib
         self._icons = build_icon_set(
             fg_dark=theme.SHELL_TEXT, fg_light=theme.INK_PRIMARY, fg_on_accent=theme.ACCENT_INK,
             accent_color=theme.ACCENT_PRIMARY, scale=self._dpi_scale,
@@ -185,7 +186,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._center = center = tk.Frame(self.paned, bg=theme.DOCK_BG)
         self._build_kpi_header(center)
         self._build_map_mode_bar(center)
-        self.network_canvas = NetworkCanvas(center, fonts=self.fonts, on_select=self.select_entity)
+        self.network_canvas = NetworkCanvas(center, fonts=self.fonts, on_select=self.select_entity, dpi_scale=self._dpi_scale)
         self.network_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.tour.build_card(self.network_canvas)
         self._build_player(center)
@@ -198,8 +199,8 @@ class BicentenarioSewerApp(tk.Tk):
         })
         self.critical_tab = CriticalPipesTab(self.notebook, self.fonts, on_select_pipe=lambda pid: self.select_entity("pipe", pid),
                                              on_focus_pipe=lambda pid: self.network_canvas.focus_pipe(pid))
-        self.charts_panel = ChartsPanel(self.notebook, self.fonts)
-        self.comparison_panel = ComparisonPanel(self.notebook, self.fonts, self.run_comparison, lambda sid: (self.controls.select_scenario_by_id(sid), self.run_simulation()))
+        self.charts_panel = ChartsPanel(self.notebook, self.fonts, dpi=self._mpl_dpi)
+        self.comparison_panel = ComparisonPanel(self.notebook, self.fonts, self.run_comparison, lambda sid: (self.controls.select_scenario_by_id(sid), self.run_simulation()), dpi=self._mpl_dpi)
         for w, title in ((self.inspector_tab, "Inspector"), (self.critical_tab, "Tuberías Críticas"), (self.charts_panel, "Evolución"), (self.comparison_panel, "Comparación")):
             self.notebook.add(w, text=title)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -892,6 +893,7 @@ class BicentenarioSewerApp(tk.Tk):
     def _action_search(self, query: str) -> None:
         """Búsqueda: ID exacto O(1) y, si no coincide, respaldo por subcadena; centra la cámara en el resultado."""
         if self.dataset is None: return
+        self._release_focus_for_navigation()
         g = self.dataset.graph
         kind, eid = search_entity(g, query)
         n_hits = 1
@@ -971,8 +973,14 @@ class BicentenarioSewerApp(tk.Tk):
         self.network_canvas.set_basin_focus(None, None)
         self._sync_inspector_context()
 
+    def _release_focus_for_navigation(self, keep_basin: bool = False) -> None:
+        """Cierra la guía (sin reencuadrar) y apaga el foco de cuenca para que recorridos y búsquedas sean visibles."""
+        if self.tour.active: self.tour.close(reset_view=False)
+        if not keep_basin and self.basin_focus_active: self._clear_basin()
+
     def _action_toggle_basin(self) -> None:
         if self.dataset is None or not self.selected_id: return
+        self._release_focus_for_navigation(keep_basin=True)
         self.basin_focus_active = not self.basin_focus_active
         self._apply_basin()
         self._sync_inspector_context()
@@ -1088,6 +1096,7 @@ class BicentenarioSewerApp(tk.Tk):
             self._status_lbl.configure(text=msg, fg="#FCA5A5")
             messagebox.showwarning("Nodo no encontrado", msg, parent=self)
             return
+        self._release_focus_for_navigation()
         self._stop_traversal(); self._inspector_trace = None
         algo = algo.upper()
         res = (bfs if algo == "BFS" else dfs)(self.dataset.graph, start_id, target_id, record_frames=True)
@@ -1125,6 +1134,7 @@ class BicentenarioSewerApp(tk.Tk):
     def _action_toggle_anim(self) -> None:
         """Botón «Animar recorrido»: alterna la animación; sin recorrido previo usa el último algoritmo."""
         if self.dataset is None: return
+        self._release_focus_for_navigation()
         if self.traversal_frames:
             self.toggle_traversal_animation()
         else:
@@ -1189,6 +1199,7 @@ class BicentenarioSewerApp(tk.Tk):
             self._status_lbl.configure(text=msg, fg="#FCA5A5")
             messagebox.showwarning("Nodo no encontrado", msg, parent=self)
             return
+        self._release_focus_for_navigation()
         self._stop_traversal(); self._inspector_trace = None
         res = trace_upstream_result(g, start_id, record_frames=True) if upstream else trace_downstream(g, start_id, record_frames=True)
         self._traversal_mode = "upstream" if upstream else "downstream"
@@ -1246,9 +1257,15 @@ class BicentenarioSewerApp(tk.Tk):
         p = filedialog.askdirectory(parent=self, title="Seleccionar carpeta CSV") if is_dir else filedialog.askopenfilename(parent=self, title="Cargar dataset Excel", filetypes=[("Excel", "*.xlsx"), ("Todos", "*.*")])
         if p: self.load_data(p)
     def _action_export_csv(self) -> None:
-        if self.dataset and (out_dir := filedialog.askdirectory(parent=self, title="Exportar dataset a carpeta CSV")):
-            try: export_to_csv_dir(self.dataset, out_dir); self._status_lbl.configure(text=f"CSV exportado: {out_dir}")
-            except OSError as exc: messagebox.showerror("Error al exportar CSV", str(exc), parent=self)
+        if self.dataset is None:
+            messagebox.showwarning("Sin datos", "Primero cargue un conjunto de datos.", parent=self); return
+        if out_dir := filedialog.askdirectory(parent=self, title="Exportar dataset a carpeta CSV"):
+            try:
+                export_to_csv_dir(self.dataset, out_dir)
+            except Exception as exc:
+                messagebox.showerror("Error al exportar CSV", f"No se pudieron exportar los archivos CSV:\n{exc}", parent=self); return
+            self._status_lbl.configure(text=f"CSV exportado: {out_dir}")
+            messagebox.showinfo("Exportación completada", f"Archivos CSV exportados en:\n{out_dir}", parent=self)
 
     def _action_export(self, fmt: str) -> None:
         if self.dataset is None or self.result is None:
@@ -1258,7 +1275,24 @@ class BicentenarioSewerApp(tk.Tk):
         p = filedialog.asksaveasfilename(parent=self, title="Exportar reporte Word (.docx)" if is_docx else "Exportar reporte Markdown / CSV",
                                          defaultextension=".docx" if is_docx else ".md", filetypes=[("Word", "*.docx")] if is_docx else [("Markdown", "*.md")])
         if not p: return
-        out = (generate_docx_report if is_docx else generate_markdown_report)(self.dataset, self.result, self.cached_comparisons, p)
+        args = (self.dataset, self.result, self.cached_comparisons)
+        if is_docx:
+            try:
+                out = generate_docx_report(*args, p)
+            except Exception as exc:  # respaldo Markdown/CSV como en main
+                fallback = os.path.splitext(p)[0] + ".md"
+                try:
+                    out = generate_markdown_report(*args, fallback)
+                except Exception as md_exc:
+                    messagebox.showerror("Error al exportar reporte", f"Falló la generación de .docx ({exc}) y el respaldo Markdown ({md_exc}).", parent=self); return
+                self._status_lbl.configure(text=f"Respaldo guardado: {os.path.basename(out)}")
+                messagebox.showwarning("Respaldo Markdown generado", f"No se pudo generar .docx ({exc}).\nSe exportó respaldo Markdown/CSV en:\n{out}", parent=self)
+                return
+        else:
+            try:
+                out = generate_markdown_report(*args, p)
+            except Exception as exc:
+                messagebox.showerror("Error al exportar reporte", f"No se pudo generar el reporte:\n{exc}", parent=self); return
         self._status_lbl.configure(text=f"Reporte guardado: {os.path.basename(out)}")
         messagebox.showinfo("Reporte exportado", f"Archivo generado en:\n{out}", parent=self)
 

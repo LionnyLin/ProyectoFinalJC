@@ -44,16 +44,16 @@ Excel (.xlsx) / CSV ──► src/io/data_loader.py (NetworkDataset validado)
 | `main.py` | 1 | 78 | Entrada GUI y modos CLI (`--data`, `--report`, `--report-docx`, `--technical-docx`) |
 | `src/data_structures/` | 7 | 576 | `LinkedList`, `Queue`, `Stack`, `HashTable`, `PriorityQueue`, `DirectedGraph` |
 | `src/io/` | 2 | 336 | Carga/validación Excel y CSV, coordenadas de nodos y exportación CSV |
-| `src/algorithms/` | 4 | 931 | BFS/DFS (con fotogramas), Kahn, consultas `O(1)`, trazados, aislamiento, clasificación, ranking y atribución por fuente |
+| `src/algorithms/` | 4 | 935 | BFS/DFS (con fotogramas), Kahn, consultas `O(1)`, trazados, aislamiento, clasificación, ranking y atribución por fuente |
 | `src/simulation/` | 8 | 2 095 | Modelos, motor, comparador, reporter MD/CSV, exportador Word (OMML) y figuras |
-| `src/gui/` | 11 | 5 760 | Interfaz Tkinter + Matplotlib: `app`, `network_canvas`, `charts_panel`, `inspector_panel`, `controls_panel`, `guided_tour`, `comparison_panel`, `theme`, `icons`, `widgets` + `__init__` |
+| `src/gui/` | 11 | 5 956 | Interfaz Tkinter + Matplotlib: `app`, `network_canvas`, `charts_panel`, `inspector_panel`, `controls_panel`, `guided_tour`, `comparison_panel`, `theme`, `icons`, `widgets` + `__init__` |
 | `src/__init__.py` | 1 | 1 | Inicialización del paquete `src` |
-| **Subtotal ejecutable (`main.py` + `src/`)** | **34** | **9 777** | **Núcleo completo de la aplicación** |
-| `tests/` | 12 | 2 767 | **127 pruebas** en 11 archivos (ver §7) |
-| `scripts/capture_doc_screenshots.py` | 1 | 465 | Generador de las 24 capturas |
-| **Total Python** | **47** | **13 009** | **Código fuente + pruebas + script de capturas** |
+| **Subtotal ejecutable (`main.py` + `src/`)** | **34** | **9 977** | **Núcleo completo de la aplicación** |
+| `tests/` | 13 | 3 049 | **144 pruebas** en 12 archivos (ver §7) |
+| `scripts/capture_doc_screenshots.py` | 1 | 459 | Generador de las 24 capturas |
+| **Total Python** | **48** | **13 485** | **Código fuente + pruebas + script de capturas** |
 
-Detalle de `src/gui/` (líneas): `app.py` 1 253 · `network_canvas.py` 1 255 · `charts_panel.py` 1 033 · `inspector_panel.py` 640 · `controls_panel.py` 540 · `guided_tour.py` 318 · `comparison_panel.py` 235 · `theme.py` 225 · `icons.py` 147 · `widgets.py` 109 · `__init__.py` 5.
+Detalle de `src/gui/` (líneas): `app.py` 1 312 · `network_canvas.py` 1 310 · `charts_panel.py` 1 034 · `inspector_panel.py` 718 · `controls_panel.py` 540 · `guided_tour.py` 318 · `comparison_panel.py` 238 · `theme.py` 225 · `icons.py` 147 · `widgets.py` 109 · `__init__.py` 5.
 
 ---
 
@@ -73,7 +73,7 @@ Detalle de `src/gui/` (líneas): `app.py` 1 253 · `network_canvas.py` 1 255 · 
 | **RF11 / Sec. 10** | Comparación de los 5 escenarios hasta PTAR Punta Canoa (Nodo `31`) | `comparison.py::compare_all_scenarios` + `ComparisonPanel` + `ComparisonChartsPanel` |
 | **RF12 / Sec. 6 y 13** | Reportes técnicos exportables (escenarios, tiempos, críticas, caudales, %) | `reporter.py` (Markdown + `*_tuberias.csv`), `docx_exporter.py` (Word a 2 columnas con OMML y Documento Técnico) + CLI `main.py` |
 | **Sec. 8 (Algoritmos)** | BFS (`Queue`), DFS (`Stack` + camino) y animación paso a paso | `traversals.py` (`bfs`, `dfs`, `bfs_anim_frames`, `dfs_anim_frames`, `topological_sort`) + bitácora en vivo `Queue`/`Stack` |
-| **Nivel Avanzado (5.0)** | `PriorityQueue`, almacenamiento en pozos, conservación de masa y visor vivo | Balance `< 1e-8 m³`, invarianza ante `Δt`, intervenciones, modos de mapa, recorrido guiado, comparación y 127 pruebas |
+| **Nivel Avanzado (5.0)** | `PriorityQueue`, almacenamiento en pozos, conservación de masa y visor vivo | Balance `< 1e-8 m³`, invarianza ante `Δt`, intervenciones, modos de mapa, recorrido guiado, comparación y 144 pruebas |
 
 ---
 
@@ -172,7 +172,7 @@ Todos los supuestos coinciden con `MODEL_ASSUMPTIONS_TEXT` (`src/simulation/repo
 
 ---
 
-## 6. Arquitectura GUI Tkinter (`src/gui/` — 11 archivos, 5 760 L)
+## 6. Arquitectura GUI Tkinter (`src/gui/` — 11 archivos, 5 956 L)
 
 ### 6.1 Sistema Visual y Layout Responsivo
 
@@ -192,18 +192,18 @@ Todos los supuestos coinciden con `MODEL_ASSUMPTIONS_TEXT` (`src/simulation/repo
    - *Cabecera KPI:* píldora de contexto (`t = X / 90 min · Escenario`, `Pico 0–90m` o `Sobrecarga 0–90m`), casillas `IDs` / `% Util.` y 4 tarjetas KPI sincronizadas con el modo: `Instantáneo O(t)` → `UTILIZACIÓN MÁX.`, `CRÍTICAS (>75–100%)`, `SOBRECARGA (>100%)`, `DESCARGA PTAR 31`; `Pico Máximo` → picos globales; `Minutos en Sobrecarga` → `MÁX. SOBREC. ACUM.`, `TUBERÍAS >0 min >100%`, `COLAPSO CRÓNICO (>75%)`, `VOLUMEN PTAR 31`.
    - *Selector de modo cartográfico:* `Instantáneo O(t)` / `Pico Máximo` / `Minutos en Sobrecarga`. Los dos últimos son **vistas globales congeladas** (`0–duración total`): pausan la reproducción, usan los resultados completos del motor (`peak_pipe_utilization`, `pipe_overloaded_minutes`) y conservan `current_step`, que se restaura al volver a `Instantáneo` o al navegar en el tiempo. La leyenda de la barra superior muestra conteos por banda y cambia según el modo (`Escala oficial · t = X min`, `Pico máximo · 0–X min`, `Sobrecarga acumulada · 0–X min`).
    - *Reproductor:* `Inicio` (`Inicio`), `-1`, `Reproducir/Pausar`, `+1`, velocidades `0.5x`/`1x`/`2x`/`5x`/`10x` (`840/420/210/85/40 ms`), slider robusto, indicador `Masa OK · Err …` y auto-reproducción al ejecutar.
-   - *Lienzo en dos fases:* **Fase A** (`rebuild_geometry`) crea todos los ítems (incluidos los auxiliares ocultos: halos, anillos de rebose, pulsos, barras de obstrucción) solo al cargar, hacer zoom/paneo, redimensionar (*debounce* `80 ms`) o cambiar la forma por una intervención; **Fase B** (`update_visuals`) usa solo `itemconfigure`/`coords` sin borrar ítems. Zoom `0.55–4.5×` con rueda, arrastre para paneo, doble clic para ajustar, barra de zoom `+ − ⟲`, sello de título del mapa y barra de pistas; tooltips con diámetro, $Q$, $Q_{\max}$ efectivo, demanda $\times Q_{\max}$ y rebose; etiquetas sin colisión y radio de nodo responsivo.
+   - *Lienzo en dos fases:* **Fase A** (`rebuild_geometry`) crea todos los ítems (incluidos los auxiliares ocultos: halos, anillos de rebose, pulsos, barras de obstrucción) solo al cargar, hacer zoom/paneo, redimensionar (*debounce* `80 ms`) o cambiar la forma por una intervención; **Fase B** (`update_visuals`) usa solo `itemconfigure`/`coords` sin borrar ítems. Zoom `0.55–4.5×` con rueda, arrastre para paneo, doble clic para ajustar, barra de zoom `+ − ⟲`, sello de título del mapa y barra de pistas; tooltips (tras 220 ms de reposo) con diámetro, $Q$, $Q_{\max}$ efectivo, demanda $\times Q_{\max}$ y rebose; etiquetas sin colisión y radio de nodo responsivo.
    - *Visuales del modelo:* pulsos de flujo animados durante la reproducción (velocidad proporcional a la velocidad efectiva y al factor de reproducción), anillos de rebose/almacenamiento, halo de sobrecarga, doble línea al ampliar el diámetro (`[ØXX"]`), barras de obstrucción (`[OBST XX%]`), `×` de cierre, nodos y tramos aislados punteados (`[AISLADO DE 31]`), insignias `Fuente` y `PTAR Punta Canoa · 31`, atenuación para foco de cuenca y de recorrido, y cámara animada (`animate_focus_region`, `animate_reset_view`, `focus_node`, `focus_pipe`).
-3. **`inspector_panel.py` (640 L) — pestañas `Inspector` y `Tuberías Críticas`:**
+3. **`inspector_panel.py` (718 L) — pestañas `Inspector` y `Tuberías Críticas`:**
    - *Inspector:* barra de acciones (`Centrar`, `Aislar cuenca`, `Aguas arriba` / `Aguas abajo` como *toggles* para nodos), ficha técnica de pozo o tubería (incluye `Qmax` efectivo y base, caudal conducido, demanda retenida, estrés `>100 %` en minutos con su persistencia), tarjeta **`Intervención en vivo`** (obstrucción `0–100 %` en pasos de `5`, diámetro `Original` + comerciales `6"…48"`, `Aplicar y re-simular`, `Restaurar tramo`, `Restaurar red`; conserva el resultado base para `Antes / Después`), tarjeta **`Composición por Fuente Aportante`** (barra apilada monocromática + porcentajes de `compute_source_attribution`) y bloque `RESUMEN DEL ESCENARIO`.
    - *Tuberías Críticas:* filtros `Todas`, `Resto (≤75%)`, `Críticas (>75–100%)` y `Sobrec. (>100%)`, ranking con `Q`, `Qmax`, utilización, razón $\times Q_{\max}$ y estado, selección bidireccional con el grafo y doble clic para centrar la cámara.
-4. **`charts_panel.py` (1 033 L) — pestaña `Evolución`:**
+4. **`charts_panel.py` (1 034 L) — pestaña `Evolución`:**
    - *`Hidrograma y %`:* entrada total, descarga en PTAR `31` con relleno, curva `Antes` tras una intervención, cursor vertical de tiempo, utilización de la tubería seleccionada (o top 3 críticas), línea del `100 %`, eje *symlog* con marcas dinámicas, doble eje y banner de impacto de la intervención.
    - *`Perfil longitudinal`:* ruta hacia la PTAR con `build_route_to_sink` (o la ruta del último recorrido con destino) y barras de utilización coloreadas por banda, con modos `% Uso vs Cap. (100%)` y `Caudal (m³/s)` (Qmax vs $Q(t)$) y nota de cuello de botella.
    - *Rendimiento:* si la pestaña está oculta marca `_dirty` y no redibuja; el cursor temporal actualiza solo el trazo (*throttle* `80 ms`) y el perfil se redibuja con *throttle* de `140 ms`.
-5. **`comparison_panel.py` (235 L) — pestaña `Comparación`:** botón `Recalcular 5 Escenarios` con estado *dirty* y pista con hora y duración del cálculo (se recalcula automáticamente al entrar si hay cambios), tabla de **9 columnas** (`Escenario`, `mm/h`, `Máx %`, `Razón Máx`, `Crítica`, `>75–100%`, `>100%`, `Pico PTAR`, `Rebose (m³)`) con scroll horizontal y vertical (y `Shift`+rueda), doble clic para activar el escenario en la simulación principal, y `ComparisonChartsPanel` con selector de métrica (`Rebose (m³)` / `PTAR 31 (m³/s)`) y reflujo de diseño `2×1` / `1×2` según el espacio.
-6. **`guided_tour.py` (318 L) — recorrido guiado:** 4 hallazgos por escenario en `t = 5, 25, 40 y 65 min` (en el Esc. 2 la tercera parada usa el instante de máxima exigencia de `P25`) con ficha flotante (título, descripción, métricas calculadas del `SimulationResult`, `Anterior` / `Siguiente hallazgo` / `Cerrar`), foco con atenuación del resto del grafo y cámara animada que reserva el ancho de la ficha. Se cierra al reproducir, al cambiar de modo de mapa, con `Esc` o al ejecutar con auto-reproducción; al cambiar de escenario con el recorrido abierto se recalculan las paradas.
-7. **`app.py` (1 253 L):** `BicentenarioSewerApp` ensambla los paneles, mantiene el estado único y coordina simulación, línea base para `Antes / Después`, aislamiento por cierres, composición por fuente (con *throttle* durante la reproducción), caché de comparativa invalidable, exportaciones y el diálogo `Supuestos del Modelo`.
+5. **`comparison_panel.py` (238 L) — pestaña `Comparación`:** botón `Recalcular 5 Escenarios` con estado *dirty* y pista `Al día · HH:MM:SS (N ms) · Doble clic activa` con la hora y duración del cálculo (se recalcula automáticamente al entrar si hay cambios), tabla de **9 columnas** (`Escenario`, `mm/h`, `Máx %`, `Razón Máx`, `Crítica`, `>75–100%`, `>100%`, `Pico PTAR`, `Rebose (m³)`) con scroll horizontal y vertical (y `Shift`+rueda), doble clic para activar el escenario en la simulación principal, y `ComparisonChartsPanel` con selector de métrica (`Rebose (m³)` / `PTAR 31 (m³/s)`) y reflujo de diseño `2×1` / `1×2` según el espacio.
+6. **`guided_tour.py` (318 L) — recorrido guiado:** 4 hallazgos por escenario en `t = 5, 25, 40 y 65 min` (en el Esc. 2 la tercera parada usa el instante de máxima exigencia de `P25`) con ficha flotante (título, descripción, métricas calculadas del `SimulationResult`, `Anterior` / `Siguiente hallazgo` / `Cerrar`), foco con atenuación del resto del grafo y cámara animada que reserva el ancho de la ficha. Se cierra al reproducir, al cambiar de modo de mapa, con `Esc` o al ejecutar con auto-reproducción; al cambiar de escenario con el recorrido abierto se recalculan las paradas. Al lanzar BFS/DFS, trazas aguas arriba/abajo o una búsqueda, la app cierra el recorrido guiado (sin reencuadrar) y apaga el foco de cuenca para que el resultado sea visible (`_release_focus_for_navigation`).
+7. **`app.py` (1 312 L):** `BicentenarioSewerApp` ensambla los paneles, mantiene el estado único y coordina simulación, línea base para `Antes / Después`, aislamiento por cierres, composición por fuente (con *throttle* durante la reproducción), caché de comparativa invalidable, exportaciones y el diálogo `Supuestos del Modelo`.
 
 ### 6.3 Exportación de Reportes RF12, Documento Técnico y CLI (`main.py`, 78 L)
 
@@ -217,11 +217,11 @@ Todos los supuestos coinciden con `MODEL_ASSUMPTIONS_TEXT` (`src/simulation/repo
   python main.py --report docs/REPORTE_ESCENARIOS.md --report-docx docs/REPORTE_ESCENARIOS.docx
   python main.py --technical-docx docs/DOCUMENTO_TECNICO.docx
   ```
-- **Capturas (`scripts/capture_doc_screenshots.py`, 465 L):** abre la app real, reproduce los 24 estados de la documentación y captura con `PrintWindow` (Windows) o ImageMagick (`import -window`, Linux/X11); las tres tarjetas de terminal (`04_1`, `04_2`, `04_3`) ejecutan de verdad la exportación CSV, el CLI y la suite de pruebas. Orden de regeneración: figuras → reportes → capturas → `--technical-docx`.
+- **Capturas (`scripts/capture_doc_screenshots.py`, 459 L):** abre la app real, reproduce los 24 estados de la documentación y captura con `PrintWindow` (Windows) o ImageMagick (`import -window`, Linux/X11); las tres tarjetas de terminal (`04_1`, `04_2`, `04_3`) ejecutan de verdad la exportación CSV, el CLI y la suite de pruebas. Orden de regeneración: figuras → reportes → capturas → `--technical-docx`.
 
 ---
 
-## 7. Verificación y Suite de Pruebas Automatizadas (`tests/` — 127 Pruebas, 2 767 L)
+## 7. Verificación y Suite de Pruebas Automatizadas (`tests/` — 144 Pruebas, 3 049 L)
 
 La calidad funcional y numérica se verifica con `python -m pytest -q` (o `python -m unittest discover -s tests -v`). Las pruebas de GUI abren ventanas Tk reales y se omiten sin display.
 
@@ -232,13 +232,14 @@ La calidad funcional y numérica se verifica con `python -m pytest -q` (o `pytho
 | `tests/test_algorithms.py` | 10 | BFS/DFS desde las 8 fuentes a PTAR `31`, fotogramas (cola/pila y backtracking), Kahn, búsqueda `O(1)` y por subcadena, trazados, aislamiento, ruta al sumidero, escala de 5 colores, ranking con desempate, atribución por fuente y persistencia de sobrecarga |
 | `tests/test_simulation.py` | 13 | Método Racional (incl. `I=0`), retardo físico e invarianza ante `Δt`, intervenciones, factor de ingreso y $Q_{\text{san}}$, API de caudales por fuente, minutos en sobrecarga, reglas de bifurcación/reparto, conservación de masa y rendimiento |
 | `tests/test_docx_exporter.py` | 3 | Figuras a una columna con dimensiones exactas (`3.5 × 2.8 in`), Word a dos columnas con OMML, Documento Técnico y marcas *symlog* |
-| `tests/test_canvas.py` | 16 | Lienzo en 2 fases (guardia de rendimiento de la Fase B), modos de mapa, foco de cuenca y de recorrido, intervenciones visuales y aislados, anillos de rebose, tooltips, insignias, etiquetas sin colisión, pulsos y cámara |
-| `tests/test_charts_panels.py` | 13 | Hidrograma, perfil longitudinal, actualización diferida, cursor, comparación y reflujo |
+| `tests/test_canvas.py` | 17 | Lienzo en 2 fases (guardia de rendimiento de la Fase B), modos de mapa, foco de cuenca y de recorrido, intervenciones visuales y aislados, anillos de rebose, tooltips, insignias, etiquetas sin colisión, pulsos y cámara |
+| `tests/test_charts_panels.py` | 15 | Hidrograma, perfil longitudinal, actualización diferida, cursor, comparación y reflujo |
 | `tests/test_gui.py` | 25 | Tema y escala oficial, humo integral de `BicentenarioSewerApp`, layout responsivo y *toggles* de paneles, atajos (incluida su omisión al escribir), parámetros y presets, velocidades del reproductor, recorridos aguas arriba/abajo con bitácora, iconos y regresiones de selección |
-| `tests/test_gui_inspector.py` | 17 | Búsqueda, inspector, intervención en vivo, composición por fuente y filtros críticos |
+| `tests/test_gui_inspector.py` | 20 | Búsqueda, inspector, intervención en vivo, composición por fuente y filtros críticos |
 | `tests/test_gui_modes.py` | 13 | Modos de mapa, KPI y leyenda por modo, pausa y restauración del paso, pulsos de flujo, backtracking del DFS hacia el lienzo, ruta activa en el perfil y comparación *dirty* |
 | `tests/test_gui_tour.py` | 8 | Recorrido guiado: ficha, paradas por escenario, navegación, cierre con `Esc` y recálculo al cambiar de escenario |
-| **Total** | **127** | `python3 -m pytest -q --collect-only` |
+| `tests/test_audit_gaps.py` | 11 | Brechas de auditoría: liberación de los focos del recorrido guiado y de la cuenca al navegar (BFS/DFS/trazas/búsqueda), escalado DPI, pista de Comparación, respaldo Markdown cuando falla el Word, confirmación de CSV, tooltip diferido del lienzo y desempaquetado de `trace_downstream` |
+| **Total** | **144** | `python3 -m pytest -q --collect-only` |
 
 ---
 
@@ -269,4 +270,4 @@ La calidad funcional y numérica se verifica con `python -m pytest -q` (o `pytho
    En el motor (≈ 36 ms por escenario de 90 min, ≈ 156 ms los cinco): orden topológico y tablas planas de adyacencia precalculados, agrupación de eventos por *slot* temporal en `PriorityQueue` y `HashTable.add()` en un solo lookup. En la GUI: lienzo en 2 fases (`itemconfigure` sin borrar ítems), pestañas ocultas marcadas como *dirty* sin redibujar, cursor temporal ligero en `ChartsPanel`, composición por fuente con *throttle* durante la reproducción y *debounce* de `140 ms` al editar parámetros.
 
 9. **¿Cómo se organiza la GUI y quién es dueño del estado?**
-   Cada panel (`ControlsPanel`, `InspectorTab`, `CriticalPipesTab`, `ChartsPanel`, `ComparisonPanel`, `GuidedTourController` y `NetworkCanvas`) es un componente independiente que recibe callbacks y empuja eventos; `BicentenarioSewerApp` mantiene el único estado (resultado, paso, selección, intervenciones, modo de mapa) y distribuye las actualizaciones, lo que facilita probar cada panel por separado (127 pruebas).
+   Cada panel (`ControlsPanel`, `InspectorTab`, `CriticalPipesTab`, `ChartsPanel`, `ComparisonPanel`, `GuidedTourController` y `NetworkCanvas`) es un componente independiente que recibe callbacks y empuja eventos; `BicentenarioSewerApp` mantiene el único estado (resultado, paso, selección, intervenciones, modo de mapa) y distribuye las actualizaciones, lo que facilita probar cada panel por separado (144 pruebas).

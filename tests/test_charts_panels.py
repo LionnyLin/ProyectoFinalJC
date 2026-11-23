@@ -274,6 +274,21 @@ class TestComparisonPanel(_PanelBase):
         p._on_shift_wheel(SimpleNamespace(delta=120))
         self.root.update()
 
+    def test_table_columns_fit_text_with_row_font(self) -> None:
+        from tkinter import font as tkfont, ttk
+        p, _ = self._panel()
+        p.set_comparisons(self.comps)
+        self.root.update()
+        tree = p.tree
+        style = ttk.Style(self.root)
+        row_font = tkfont.Font(self.root, font=style.lookup("Treeview", "font"))
+        head_font = tkfont.Font(self.root, font=style.lookup("Treeview.Heading", "font"))
+        self.assertEqual(len(tree.get_children()), 5)
+        for i, col in enumerate(tree["columns"]):
+            texts = [str(tree.set(iid, col)) for iid in tree.get_children()]
+            need = max([row_font.measure(t) for t in texts] + [head_font.measure(tree.heading(col, "text"))])
+            self.assertGreaterEqual(int(tree.column(col, "width")), need, f"columna {col} recortada")
+
     def test_metric_selector_and_reflow(self) -> None:
         p, _ = self._panel()
         p.set_comparisons(self.comps)

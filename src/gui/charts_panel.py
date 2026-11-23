@@ -143,8 +143,9 @@ def _set_active(btn: tk.Button, active: bool, size: int, family: str) -> None:
 class ChartsPanel(tk.Frame):
     """Pestaña Evolución: `Hidrograma y %` y `Perfil longitudinal` sincronizados con el paso actual."""
 
-    def __init__(self, parent: tk.Misc, fonts: Optional[Dict[str, Tuple[str, int, str]]] = None) -> None:
+    def __init__(self, parent: tk.Misc, fonts: Optional[Dict[str, Tuple[str, int, str]]] = None, dpi: int = 96) -> None:
         super().__init__(parent, bg=theme.PAPER_BG)
+        self._dpi = int(dpi)
         self._fonts = fonts or {}
         ui = self._fonts.get("body", ("TkDefaultFont", 9, "normal"))[0]
         self._ui = ui
@@ -202,7 +203,7 @@ class ChartsPanel(tk.Frame):
 
         # Sub-vista 1: hidrograma + utilización
         self._hydro_frame = tk.Frame(self._container, bg=theme.PAPER_BG)
-        self.fig = Figure(figsize=(4.4, 5.4), dpi=96, facecolor=theme.PAPER_BG, constrained_layout=True)
+        self.fig = Figure(figsize=(4.4, 5.4), dpi=self._dpi, facecolor=theme.PAPER_BG, constrained_layout=True)
         self.ax_hydro, self.ax_util = self.fig.subplots(2, 1)
         self.ax_hydro_ptar = self.ax_hydro.twinx()
         self.canvas = FigureCanvasTkAgg(self.fig, master=self._hydro_frame)
@@ -227,7 +228,7 @@ class ChartsPanel(tk.Frame):
         self._prof_wrap = tk.Frame(self._profile_frame, bg=theme.PAPER_BG)
         self._prof_wrap.pack(fill=tk.BOTH, expand=True)
         self._profile_frame.bind("<Configure>", lambda e: self._lbl_note.configure(wraplength=max(200, e.width - 18)))
-        self.profile_fig = Figure(figsize=(4.4, 5.4), dpi=96, facecolor=theme.PAPER_BG, constrained_layout=True)
+        self.profile_fig = Figure(figsize=(4.4, 5.4), dpi=self._dpi, facecolor=theme.PAPER_BG, constrained_layout=True)
         self.ax_profile = self.profile_fig.add_subplot(111)
         self.profile_canvas = FigureCanvasTkAgg(self.profile_fig, master=self._prof_wrap)
         self.profile_canvas.get_tk_widget().configure(bg=theme.PAPER_BG, highlightthickness=0, bd=0, width=320, height=340)
@@ -866,8 +867,9 @@ class ChartsPanel(tk.Frame):
 class ComparisonChartsPanel(tk.Frame):
     """Barras Críticas vs Sobrecargadas + hidrogramas/rebose de los escenarios, con reflujo 2×1 / 1×2."""
 
-    def __init__(self, parent: tk.Misc, fonts: Optional[Dict[str, Tuple[str, int, str]]] = None) -> None:
+    def __init__(self, parent: tk.Misc, fonts: Optional[Dict[str, Tuple[str, int, str]]] = None, dpi: int = 96) -> None:
         super().__init__(parent, bg=theme.PAPER_BG)
+        self._dpi = int(dpi)
         self._ui = (fonts or {}).get("body", ("TkDefaultFont", 9, "normal"))[0]
         self._metric_mode = "flood"   # 'flood' (Rebose acumulado) | 'ptar' (hidrogramas PTAR 31)
         self._layout_mode = "stacked"  # 'stacked' (2×1) | 'side' (1×2)
@@ -886,7 +888,7 @@ class ComparisonChartsPanel(tk.Frame):
 
         wrap = tk.Frame(self, bg=theme.PAPER_BG)
         wrap.pack(fill=tk.BOTH, expand=True)
-        self.fig = Figure(figsize=(4.4, 4.4), dpi=96, facecolor=theme.PAPER_BG, constrained_layout=True)
+        self.fig = Figure(figsize=(4.4, 4.4), dpi=self._dpi, facecolor=theme.PAPER_BG, constrained_layout=True)
         self.ax_bar = self.fig.add_subplot(211)
         self.ax_series = self.fig.add_subplot(212)
         self.canvas = FigureCanvasTkAgg(self.fig, master=wrap)

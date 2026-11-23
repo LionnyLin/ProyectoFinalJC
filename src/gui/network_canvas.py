@@ -150,6 +150,9 @@ class _NodeGeom:
     c_iso: object = None
 
 
+_TOOLTIP_DELAY_MS = 220  # reposo sobre la entidad antes de mostrar el tooltip
+
+
 class NetworkCanvas(tk.Canvas):
     """Canvas cartográfico en 2 fases: geometría cacheada (A) y actualización sin borrado (B)."""
 
@@ -158,6 +161,7 @@ class NetworkCanvas(tk.Canvas):
         parent: tk.Misc,
         fonts: Optional[Dict[str, Tuple[str, int, str]]] = None,
         on_select: Optional[Callable[[Optional[str], Optional[str]], None]] = None,
+        dpi_scale: float = 1.0,
         **kwargs,
     ) -> None:
         for k, v in (("bg", theme.CANVAS_BG), ("highlightthickness", 1), ("highlightbackground", theme.PAPER_RULE), ("bd", 0)):
@@ -166,6 +170,10 @@ class NetworkCanvas(tk.Canvas):
 
         self._fonts: Dict[str, Tuple[str, int, str]] = {**_DEFAULT_FONTS, **(fonts or {})}
         self._on_select = on_select
+        self.dpi_scale = max(1.0, float(dpi_scale))  # escala DPI de pantalla (1.0 = sin cambios)
+        self._tip_after: Optional[str] = None  # retardo cancelable del tooltip (220 ms de reposo)
+        self._tip_pending: Optional[Tuple[str, str]] = None
+        self._tip_xy: Tuple[int, int] = (0, 0)
         self._graph: Optional[DirectedGraph] = None
         self._snapshot: Optional[TimeStepSnapshot] = None
         self._selected_kind, self._selected_id, self._show_pipe_labels, self._show_util_labels = None, None, True, True
@@ -262,7 +270,9 @@ class NetworkCanvas(tk.Canvas):
         self._zoom_bar.place(relx=1.0, rely=0.0, x=-12, y=12, anchor="ne")
 
     def _overlay_flags(self, w: float, h: float) -> Tuple[bool, bool]:
-        return (w >= 520 and h >= 340), (w >= 480 and h >= 340 and not self._tour_active)
+        k = min(1.25, self.dpi_scale)
+        min_h = int(340 * k)
+        return (w >= int(520 * k) and h >= min_h), (w >= int(480 * k) and h >= min_h and not self._tour_active)
 
     def _layout_overlays(self, w: float, h: float) -> None:
         show_stamp, show_hint = self._overlay_flags(w, h)
@@ -490,6 +500,7 @@ class NetworkCanvas(tk.Canvas):
 
     def cancel_pending(self) -> None:
         """Cancela redibujado diferido, pulsos y animación de cámara."""
+        self._cancel_tip()
         if self._resize_after is not None:
             try: self.after_cancel(self._resize_after)
             except tk.TclError: pass
@@ -652,7 +663,7 @@ class NetworkCanvas(tk.Canvas):
             for j in range(i + 1, len(pts)):
                 d = math.hypot(pts[j][0] - xi, pts[j][1] - yi)
                 if 1e-3 < d < min_d: min_d = d
-        base_r = 10.4 * sf * math.sqrt(self._zoom)
+        base_r = 10.4 * sf * math.sqrt(self._zoom) * min(1.30, self.dpi_scale)
         safe_r = min_d * 0.30 if min_d < 900.0 else 16.5
         r_node = self._node_r = max(2.8, min(16.5, base_r, safe_r))
         sink_extra = min(3.5, max(1.4, r_node * 0.26))
@@ -1210,17 +1221,39 @@ class NetworkCanvas(tk.Canvas):
         if self._dragged or self._graph is None: return
         hit = self._hit_test(e.x, e.y)
         if hit is None:
-            self._hide_tooltip()
+            self._cancel_tip(); self._hide_tooltip()
             return
-        if hit != self._hover_entity:
-            self._hover_entity = hit
-            self._tooltip_lbl.configure(text=self._format_tooltip(*hit))
+        self._tip_xy = (e.x, e.y)
+        if hit == self._hover_entity:  # ya visible: sigue al cursor
+            self._place_tooltip()
+            return
+        if hit == self._tip_pending: return  # esperando el reposo sobre la misma entidad
+        self._cancel_tip(); self._hide_tooltip()
+        self._tip_pending = hit
+        self._tip_after = self.after(_TOOLTIP_DELAY_MS, self._show_tooltip)
+
+    def _cancel_tip(self) -> None:
+        if self._tip_after is not None:
+            try: self.after_cancel(self._tip_after)
+            except tk.TclError: pass
+        self._tip_after, self._tip_pending = None, None
+
+    def _show_tooltip(self) -> None:
+        hit, self._tip_after, self._tip_pending = self._tip_pending, None, None
+        if hit is None or self._graph is None: return
+        self._hover_entity = hit
+        self._tooltip_lbl.configure(text=self._format_tooltip(*hit))
+        self._place_tooltip()
+
+    def _place_tooltip(self) -> None:
+        x, y = self._tip_xy
         w, h = self._canvas_dims()
         tw = max(160, self._tooltip_lbl.winfo_reqwidth())
         th = max(50, self._tooltip_lbl.winfo_reqheight())
-        self._tooltip_lbl.place(x=min(max(8, e.x + 14), max(8, int(w) - tw)), y=min(max(8, e.y + 14), max(8, int(h) - th)))
+        self._tooltip_lbl.place(x=min(max(8, x + 14), max(8, int(w) - tw)), y=min(max(8, y + 14), max(8, int(h) - th)))
 
     def _hide_tooltip(self) -> None:
+        self._cancel_tip()
         if self._hover_entity is not None:
             self._hover_entity = None
             self._tooltip_lbl.place_forget()

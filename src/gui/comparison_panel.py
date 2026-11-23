@@ -21,6 +21,7 @@ _COLUMNS: Tuple[Tuple[str, str, str, str], ...] = (
     ("ptar", "Pico PTAR", "e", "0.0000"),
     ("flood", "Rebose (m³)", "e", "1,000,000.0"),
 )
+_PAD = 24  # padding de celda del Treeview (≈2×4 px) más holgura para el borde
 _BTN_CLEAN, _BTN_DIRTY = "Recalcular 5 Escenarios", "Recalcular 5 Escenarios *"
 _HINT_DEFAULT = "Doble clic activa escenario"
 
@@ -30,7 +31,7 @@ class ComparisonPanel(tk.Frame):
 
     def __init__(
         self, parent: tk.Misc, fonts: Dict[str, Tuple[str, int, str]],
-        on_recalc: Callable[[], None], on_activate_scenario: Callable[[int], None],
+        on_recalc: Callable[[], None], on_activate_scenario: Callable[[int], None], dpi: int = 96,
     ) -> None:
         super().__init__(parent, bg=theme.PAPER_BG)
         self._fonts = fonts
@@ -48,8 +49,10 @@ class ComparisonPanel(tk.Frame):
         small = fonts.get("small", ("TkDefaultFont", 8, "normal"))
         label = fonts.get("label", ("TkDefaultFont", 9, "bold"))
         body = fonts.get("body", ("TkDefaultFont", 9, "normal"))
-        self._cell_font = tkfont.Font(family=body[0], size=abs(int(body[1])))
-        self._head_font = tkfont.Font(family=label[0], size=abs(int(label[1])), weight="bold")
+        # Mismas fuentes que usa realmente el Treeview (estilo ttk), no las del tema genérico.
+        _style = ttk.Style(self)
+        self._cell_font = tkfont.Font(self, font=_style.lookup("Treeview", "font") or body)
+        self._head_font = tkfont.Font(self, font=_style.lookup("Treeview.Heading", "font") or label)
 
         top = tk.Frame(self, bg=theme.PAPER_SUBTLE)
         top.pack(side=tk.TOP, fill=tk.X)
@@ -68,7 +71,7 @@ class ComparisonPanel(tk.Frame):
         self._col_min: Dict[str, int] = {}
         self._tree = ttk.Treeview(wrap, columns=[c[0] for c in _COLUMNS], show="headings", height=5, selectmode="browse")
         for cid, head, anchor, sample in _COLUMNS:
-            self._col_min[cid] = max(self._head_font.measure(head), self._cell_font.measure(sample)) + 20
+            self._col_min[cid] = max(self._head_font.measure(head), self._cell_font.measure(sample)) + _PAD
             self._tree.heading(cid, text=head, anchor=anchor)
             self._tree.column(cid, width=self._col_min[cid], minwidth=self._col_min[cid], stretch=False, anchor=anchor)
         self._yscroll = ttk.Scrollbar(wrap, orient=tk.VERTICAL, command=self._tree.yview)
@@ -87,7 +90,7 @@ class ComparisonPanel(tk.Frame):
         self._tree.bind("<Shift-Button-4>", lambda e: self._on_shift_wheel(e, -1))
         self._tree.bind("<Shift-Button-5>", lambda e: self._on_shift_wheel(e, 1))
 
-        self.charts = ComparisonChartsPanel(self, fonts)
+        self.charts = ComparisonChartsPanel(self, fonts, dpi=dpi)
         self.charts.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
     # ----------------------------------------------------------------------- API pública
@@ -160,7 +163,7 @@ class ComparisonPanel(tk.Frame):
     def _refresh_hint(self) -> None:
         if self._summaries and self._computed_at:
             dur = f" · {self._elapsed_ms:.0f} ms" if self._elapsed_ms is not None else ""
-            self._hint.configure(text=f"Calculado {self._computed_at}{dur} · Doble clic activa", fg=theme.INK_MUTED)
+            self._hint.configure(text=f"Al día · {self._computed_at}{dur} · Doble clic activa", fg=theme.INK_MUTED)
         else:
             self._hint.configure(text=_HINT_DEFAULT, fg=theme.INK_MUTED)
 
@@ -203,7 +206,7 @@ class ComparisonPanel(tk.Frame):
         """Ajusta el mínimo de cada columna al texto real (nombres de escenario sin recortes)."""
         for i, (cid, head, _a, sample) in enumerate(_COLUMNS):
             widest = max([self._cell_font.measure(sample)] + [self._cell_font.measure(r[i]) for r in rows])
-            self._col_min[cid] = max(self._head_font.measure(head), widest) + 20
+            self._col_min[cid] = max(self._head_font.measure(head), widest) + _PAD
             self._tree.column(cid, minwidth=self._col_min[cid], width=max(int(self._tree.column(cid, "width")), self._col_min[cid]))
 
     def _populate_table(self, summaries: List[ScenarioSummary]) -> None:

@@ -23,7 +23,7 @@ El proyecto sigue una arquitectura modular desacoplada por responsabilidades:
 - `src/io/`: Carga y validación estricta de datos desde Excel (`.xlsx`) y carpetas CSV (`data_loader.py`).
 - `src/simulation/`: Motor discreto-temporal conservativo de masa con intervenciones por tubería (`engine.py`, `models.py`), comparador multiescenario (`comparison.py`), figuras a una columna (`charts_export.py`) y generadores de reportes Markdown/CSV (`reporter.py`) y Word `.docx` a dos columnas con ecuaciones OMML (`docx_exporter.py`, `omml_equations.py`).
 - `src/gui/`: Aplicación de escritorio Tkinter organizada en **paneles independientes** (`tk.Frame` con callbacks) cuyo único dueño del estado es `app.py`: lienzo interactivo del grafo en dos fases (`network_canvas.py`), controles (`controls_panel.py`), inspector y tuberías críticas (`inspector_panel.py`), gráficas Matplotlib embebidas (`charts_panel.py`), comparación (`comparison_panel.py`), recorrido guiado (`guided_tour.py`) y soporte visual (`theme.py`, `widgets.py`, `icons.py`).
-- `tests/`: Suite de **127 pruebas automatizadas** (`pytest`/`unittest`) en 11 archivos: estructuras, cargador, algoritmos, motor, exportadores DOCX, lienzo y GUI (inspector, modos de mapa, recorrido guiado).
+- `tests/`: Suite de **144 pruebas automatizadas** (`pytest`/`unittest`) en 12 archivos: estructuras, cargador, algoritmos, motor, exportadores DOCX, lienzo y GUI (inspector, modos de mapa, recorrido guiado).
 - `scripts/capture_doc_screenshots.py`: genera las 24 capturas de `docs/screenshots/` (Windows con `PrintWindow`, Linux/X11 con ImageMagick).
 
 ---
@@ -108,13 +108,13 @@ El pico en la PTAR `31` satura en `0.3078 m³/s` (suma de $Q_{\max}$ de las tube
 - **Motor hidráulico (sub-pasos, rebose `4.0 m³`, intervenciones `Antes vs. Después`, reglas):** `01_1_subpasos_transit.png`, `01_2_almacenamiento_rebose.png`, `01_3a_intervencion_mapa.png`, `01_3b_antes_despues.png`, `01_4_reglas_gui.png`.
 - **Algoritmos (BFS `Queue`, DFS `Stack`, `Aislar cuenca`, nodos desconectados, fuentes `F1..F27`, persistencia):** `02_1a_bfs_queue.png`, `02_1b_dfs_stack.png`, `02_2_aguas_arriba_aislar.png`, `02_3_nodos_desconectados.png`, `02_4_composicion_fuentes.png`, `02_5_persistencia_sobrecarga.png`.
 - **GUI cartográfica (3 modos, zoom + anillos rebose, doble eje + perfil longitudinal, Recorrido Guiado, comparación y modo compacto):** `03_1a_modo_instantaneo.png`, `03_1b_modo_pico.png`, `03_1c_modo_sobrecarga.png`, `03_2_canvas_zoom_rebose.png`, `03_3a_hidrograma_twinx.png`, `03_3b_perfil_longitudinal.png`, `03_4_recorrido_guiado.png`, `03_5a_comparacion_escenarios.png`, `03_5b_ui_compacta.png`.
-- **CLI, exportación CSV y 127 pruebas automatizadas:** `04_1_carga_export_csv.png`, `04_2_cli_reportes.png`, `04_3_tests.png`.
+- **CLI, exportación CSV y 144 pruebas automatizadas:** `04_1_carga_export_csv.png`, `04_2_cli_reportes.png`, `04_3_tests.png`.
 
 ---
 
 ## 7. Validación y Pruebas
 
-La suite automatizada (`python -m pytest -q`, 127 pruebas; también ejecutable con `python -m unittest discover -s tests`) verifica de extremo a extremo:
+La suite automatizada (`python -m pytest -q`, 144 pruebas; también ejecutable con `python -m unittest discover -s tests`) verifica de extremo a extremo:
 1. Operaciones, colisiones, redimensionamiento y ordenamiento de `HashTable`, `LinkedList`, `Queue`, `PriorityQueue`, `Stack` y `DirectedGraph`, y ausencia de `collections`/`heapq` en `src/data_structures` (prueba AST).
 2. Recorridos `BFS` y `DFS` alcanzando la PTAR (`31`) desde los 8 nodos fuente, fotogramas de animación con backtracking, trazados, aislamiento por cierres, `search_entities`, atribución por fuente y persistencia de sobrecarga.
 3. Paridad exacta entre carga desde `DataSetBicentenario.xlsx` y `data/csv/` (`46` nodos, `59` tuberías, `19,163.57 m`), más rechazo controlado de archivos inválidos.
