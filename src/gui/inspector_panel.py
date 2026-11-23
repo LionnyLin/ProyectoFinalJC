@@ -2,7 +2,7 @@
 
 import math
 import tkinter as tk
-from tkinter import ttk
+from tkinter import font as tkfont, ttk
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from src.algorithms.analysis import classify_overload_persistence, classify_utilization, rank_critical_pipes
@@ -36,6 +36,8 @@ _COLS = (
     ("#", 26, "e", False), ("ID", 40, "center", False), ("Tramo", 56, "center", True), ("Q (m³/s)", 58, "e", False),
     ("Qmax", 54, "e", False), ("Util. %", 52, "e", False), ("Razón", 46, "e", False), ("Estado", 80, "w", True),
 )
+_COMPACT_STATE = {"Baja": "Baja", "Moderada": "Mod.", "Alta": "Alta", "Cercana máx.": "Cerc.", "Excedida": "Exc.", "Cerrada 100%": "Cerr."}
+_COL_PAD = 12
 _MONO_TONES = ("#4A4A4A", "#6D8196", "#5A6570", "#9BA5B0", "#CBCBCB", "#7D8E9F", "#3A3A3A", "#B3B8BE")
 _LIGHT_TONES = ("#CBCBCB", "#B3B8BE", "#9BA5B0")
 _RED = "#991b1b"
@@ -85,6 +87,8 @@ class InspectorTab(tk.Frame):
         self._ent_slot = tk.Frame(self._inner, bg=theme.PAPER_BG); self._ent_slot.pack(fill=tk.X, padx=10, pady=(0, 4))
         self._interv_slot = tk.Frame(self._inner, bg=theme.PAPER_BG); self._interv_slot.pack(fill=tk.X, padx=10)
         self._source_slot = tk.Frame(self._inner, bg=theme.PAPER_BG); self._source_slot.pack(fill=tk.X, padx=10)
+        self._slot_end = tk.Frame(self._inner, bg=theme.PAPER_BG, height=0); self._slot_end.pack(fill=tk.X)
+        self._slot_sig: Tuple[bool, ...] = (True, True, True, True)
         self._build_actions()
         self._empty_lbl = tk.Label(self._ent_slot, text=_EMPTY_MSG, bg=theme.PAPER_SUBTLE, fg=theme.INK_MUTED, font=fonts["small"], justify="left", anchor="w", padx=8, pady=8, wraplength=240)
         self._empty_lbl.pack(fill=tk.X)
@@ -233,6 +237,20 @@ class InspectorTab(tk.Frame):
             rows.append((row, kl, vl))
         return rows
 
+    def _sync_slots(self) -> None:
+        """Quita del layout las ranuras sin contenido (un Frame vacío conserva su última altura) y las recoloca en orden."""
+        slots = (self._actions_slot, self._ent_slot, self._interv_slot, self._source_slot)
+        sig = tuple(bool(sl.pack_slaves()) for sl in slots)
+        if sig == self._slot_sig:
+            return
+        self._slot_sig = sig
+        pads = ({"padx": 10}, {"padx": 10, "pady": (0, 4)}, {"padx": 10}, {"padx": 10})
+        for sl in slots:
+            sl.pack_forget()
+        for sl, used, kw in zip(slots, sig, pads):
+            if used:
+                sl.pack(fill=tk.X, before=self._slot_end, **kw)
+
     def _set_entity(self, pairs: List[_KvPair]) -> None:
         self._empty_lbl.pack_forget()
         if not self._ent_box.winfo_ismapped():
@@ -243,6 +261,7 @@ class InspectorTab(tk.Frame):
                 kl.configure(text=k); vl.configure(text=v, fg=fg or theme.INK_PRIMARY, font=self._fonts["mono_bold"] if fg else self._fonts["mono"]); row.grid()
             else:
                 row.grid_remove()
+        self._sync_slots()
 
     def entity_values(self) -> Dict[str, str]:
         """Pares clave-valor visibles de la ficha técnica (para pruebas y diagnóstico)."""
@@ -257,6 +276,7 @@ class InspectorTab(tk.Frame):
         self._ent_box.pack_forget()
         if not self._empty_lbl.winfo_ismapped():
             self._empty_lbl.pack(fill=tk.X)
+        self._sync_slots()
 
     # ── Acciones, intervención y composición (estado empujado por la app) ────
 
@@ -291,6 +311,7 @@ class InspectorTab(tk.Frame):
                 self.btn_restore_all.pack(side=tk.RIGHT, padx=(0, 6))
             else:
                 self.btn_restore_all.pack_forget()
+            self._sync_slots()
         if kind == "pipe" and edge is not None:
             esig = (edge.pipe_id, intervention)
             if esig != self._edge_sig:
@@ -526,7 +547,12 @@ class CriticalPipesTab(tk.Frame):
             self._tree.heading(col, text=col, anchor=anc); self._tree.column(col, width=w, minwidth=24, anchor=anc, stretch=st)
         vsb = ttk.Scrollbar(wrap, orient=tk.VERTICAL, command=self._tree.yview)
         self._tree.configure(yscrollcommand=vsb.set)
+        self._hsb = ttk.Scrollbar(wrap, orient=tk.HORIZONTAL, command=self._tree.xview)
+        self._tree.configure(xscrollcommand=self._on_xscroll)
         vsb.pack(side=tk.RIGHT, fill=tk.Y); self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._rows_full: List[Tuple] = []
+        self._compact_state = False
+        self._tree.bind("<Configure>", lambda _e: self._fit_columns())
         self._empty_lbl = tk.Label(wrap, text="", bg=theme.PAPER_BG, fg=theme.INK_MUTED, font=fonts["body"], justify="center")
         for idx, (_, hex_c, _) in enumerate(theme.COLOR_SCALE_LEGEND):
             fg = theme.TIER_TEXT_ON_LIGHT.get(hex_c.lower(), theme.INK_PRIMARY)
@@ -558,6 +584,7 @@ class CriticalPipesTab(tk.Frame):
         try:
             self._iid_to_pipe.clear(); self._pipe_to_iid.clear()
             existing = len(self._row_iids)
+            full_rows: List[Tuple] = []
             for idx, rec in enumerate(records):
                 cat = rec.category or classify_utilization(rec.utilization_pct)
                 if rec.q_max_m3s <= 1e-12:
@@ -567,6 +594,8 @@ class CriticalPipesTab(tk.Frame):
                 vals = (rec.rank, rec.pipe_id, f"{rec.from_node}→{rec.to_node}", f"{rec.flow_m3s:.4f}", f"{rec.q_max_m3s:.4f}",
                         f"{rec.utilization_pct:.1f}%", f"{rec.demand_ratio_pct / 100.0:.2f}×", tier_txt)
                 tag = (f"t{cat.tier_index}_{idx % 2}",)
+                full_rows.append(vals)
+                vals = self._shown(vals)
                 if idx < existing:
                     iid = self._row_iids[idx]; self._tree.item(iid, values=vals, tags=tag)
                 else:
@@ -574,6 +603,7 @@ class CriticalPipesTab(tk.Frame):
                 self._iid_to_pipe[iid], self._pipe_to_iid[rec.pipe_id] = rec.pipe_id, iid
             if existing > len(records):
                 self._tree.delete(*self._row_iids[len(records):]); del self._row_iids[len(records):]
+            self._rows_full = full_rows
             self._count_lbl.configure(text=f"{len(records)} tubería{'s' if len(records) != 1 else ''}")
             if records:
                 self._empty_lbl.place_forget()
@@ -586,6 +616,54 @@ class CriticalPipesTab(tk.Frame):
                 self._tree.selection_set(target)
         finally:
             self._suppress_select = False
+        self._fit_columns()
+
+    def _shown(self, vals: Tuple) -> Tuple:
+        """Valores a mostrar: etiqueta de estado compacta cuando el panel es estrecho."""
+        return vals[:-1] + (_COMPACT_STATE.get(vals[-1], vals[-1]),) if self._compact_state else vals
+
+    def _on_xscroll(self, lo: str, hi: str) -> None:
+        """Scrollbar horizontal que se oculta sola cuando todo el contenido cabe."""
+        self._hsb.set(lo, hi)
+        if float(lo) <= 0.0 and float(hi) >= 1.0:
+            if self._hsb.winfo_manager():
+                self._hsb.pack_forget()
+        elif not self._hsb.winfo_manager():
+            self._hsb.pack(side=tk.BOTTOM, fill=tk.X, before=self._tree)
+
+    def _needed_widths(self, compact: bool) -> List[int]:
+        """Ancho mínimo por columna midiendo encabezado y contenido real con la fuente del Treeview."""
+        style = ttk.Style()
+        body = tkfont.Font(font=style.lookup("Treeview", "font") or "TkDefaultFont")
+        head = tkfont.Font(font=style.lookup("Treeview.Heading", "font") or style.lookup("Treeview", "font") or "TkDefaultFont")
+        widths = [head.measure(c[0]) + _COL_PAD for c in _COLS]
+        for vals in self._rows_full:
+            vals = vals[:-1] + (_COMPACT_STATE.get(vals[-1], vals[-1]),) if compact else vals
+            for i, v in enumerate(vals):
+                widths[i] = max(widths[i], body.measure(str(v)) + _COL_PAD)
+        return widths
+
+    def _fit_columns(self) -> None:
+        """Dimensiona columnas al contenido; si no cabe usa estados compactos y, de último, scroll horizontal."""
+        avail = self._tree.winfo_width()
+        if avail <= 1:
+            avail = 420
+        compact = self._compact_state
+        widths = self._needed_widths(False)
+        if sum(widths) > avail:
+            compact, widths = True, self._needed_widths(True)
+        if compact != self._compact_state:
+            self._compact_state = compact
+            self._suppress_select = True
+            try:
+                for iid, vals in zip(self._row_iids, self._rows_full):
+                    self._tree.item(iid, values=self._shown(vals))
+            finally:
+                self._suppress_select = False
+        spare = max(0, avail - sum(widths))
+        for i, ((col, _w, anc, _st), w) in enumerate(zip(_COLS, widths)):
+            extra = spare // 2 if col in ("Tramo", "Estado") else 0
+            self._tree.column(col, width=w + extra, minwidth=w, stretch=False)
 
     def update_view(self, graph: Optional[DirectedGraph], snapshot: Optional[TimeStepSnapshot], is_visible: bool = True) -> None:
         """Actualiza la tabla o difiere el redibujo si la pestaña no está visible."""

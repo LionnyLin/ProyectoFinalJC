@@ -778,6 +778,7 @@ class NetworkCanvas(tk.Canvas):
                     if any(_box_hits_segment(box, *s) for s in pipe_segments): continue
                     badge_plan[n.node_id] = (cx, cy, "Fuente", badge_font_px, box); placed.append(box); break
 
+        ring_boxes: List[_Box] = [(x - r_node - 7.0, y - r_node - 7.0, x + r_node + 7.0, y + r_node + 7.0) for x, y in pts]
         lbl_spec = (mono, -self._lbl_font_px, "bold")
         queue = []
         snap_ps = self._snapshot.pipe_states if self._snapshot else {}
@@ -795,25 +796,46 @@ class NetworkCanvas(tk.Canvas):
             mx, my = (g.sx1 + sx2) / 2.0, (g.sy1 + sy2) / 2.0
             txt = ("[OBST 100%] " if g.obstructed else "") + ('[Ø99"] ' if g.enlarged else "") + f"{g.pid} · 100%"
             tw, th = self._text_size(txt, lbl_spec)
+            if g.has_mark:  # reserva el peor caso del texto real (pico alto o insignia «NNNm >100%») para que no invada vecinos
+                tw = max(tw, self._text_size(txt.rsplit(" · ", 1)[0] + f" · {_fmt_pct(max(u, 100.0))}", lbl_spec)[0],
+                         self._text_size(txt.rsplit(" · ", 1)[0] + " · 999m >100%", lbl_spec)[0])
             nx_p, ny_p = -g.uy, g.ux
             if ny_p > 0.35: nx_p, ny_p = -nx_p, -ny_p
             if abs(g.ux) < 0.35:
                 side = -1.0 if mx > w * 0.72 else 1.0
                 cands = [(mx + side * 9.0, my, "w" if side > 0 else "e")]
                 cands.append((mx - side * 9.0, my, "e" if side > 0 else "w"))
+                if g.has_mark:
+                    seg = (g.sy2 - g.sy1) * 0.3
+                    cands += [(mx + s_ * 9.0, my + d_ * seg, "w" if s_ > 0 else "e") for d_ in (0.0, 1.0, -1.0) for s_ in (side, -side)][2:]
+                    cands += [(mx + s_ * 22.0, my, "w" if s_ > 0 else "e") for s_ in (side, -side)]
             else:
-                cands = [(mx + nx_p * off, my + ny_p * off, "center") for off in (13.0, 17.0, 20.0)]
-                cands += [(mx - nx_p * off, my - ny_p * off, "center") for off in (13.0, 17.0)]
+                offs = (13.0, 17.0, 20.0) + ((26.0, 32.0, 40.0, 48.0) if g.has_mark else ())
+                cands = [(mx + nx_p * off, my + ny_p * off, "center") for off in offs]
+                cands += [(mx - nx_p * off, my - ny_p * off, "center") for off in offs[:2] + ((26.0, 32.0, 40.0) if g.has_mark else ())]
+                if g.has_mark:
+                    ex, ey = (g.sx2 - g.sx1) * 0.28, (g.sy2 - g.sy1) * 0.28
+                    for sgn in (1.0, -1.0):
+                        for off in (13.0, 17.0, 20.0):
+                            cands.append((mx + sgn * ex + nx_p * off, my + sgn * ey + ny_p * off, "center"))
+                            cands.append((mx + sgn * ex - nx_p * off, my + sgn * ey - ny_p * off, "center"))
+            best: Optional[Tuple[int, Tuple[float, float, str], _Box]] = None
             for lx, ly, anchor in cands:
                 x0 = lx - tw / 2.0 if anchor == "center" else (lx if anchor == "w" else lx - tw)
                 box = (x0 - 3.0, ly - th / 2.0 - 1.0, x0 + tw + 3.0, ly + th / 2.0 + 1.0)
                 if box[0] < 2.0 or box[2] > w - 2.0 or box[1] < 2.0 or box[3] > h - 2.0: continue
-                if any(_boxes_overlap(box, b) for b in placed): continue
-                g.slot, g.lbl_ok = (lx, ly, anchor), True
-                placed.append(box)
-                break
+                hits = 10 * sum(1 for b in placed if _boxes_overlap(box, b))
+                if g.has_mark:  # las marcas de intervención también esquivan los anillos de rebose de los nodos
+                    hits += sum(1 for b in ring_boxes if _boxes_overlap(box, b))
+                if hits == 0:
+                    g.slot, g.lbl_ok = (lx, ly, anchor), True
+                    placed.append(box)
+                    break
+                if g.has_mark and (best is None or hits < best[0]):
+                    best = (hits, (lx, ly, anchor), box)
             else:
-                g.slot = cands[0]  # sin hueco libre: solo se muestra si está seleccionada o marcada
+                g.slot = best[1] if best is not None else cands[0]  # sin hueco libre: solo se muestra si está seleccionada o marcada
+                if best is not None: placed.append(best[2])
         for g in plans:
             if g.slot is None: continue
             g.lbl_rect = self.create_rectangle(0, 0, 0, 0, fill=theme.PAPER_BG, outline=theme.PAPER_BORDER, state="hidden")

@@ -625,6 +625,7 @@ class ChartsPanel(tk.Frame):
         ax.clear()
         _style_axis(ax, "", "% Cap.")
         max_u = 105.0
+        tie_note = ""
         focus = pids[0] if pids else None
         series = lambda r, pid: [s.pipe_states[pid].utilization_pct if pid in s.pipe_states else 0.0 for s in r.snapshots]
         if self._focus_pipe and focus == self._focus_pipe or (has_prev and focus and len(pids) == 1):
@@ -666,12 +667,10 @@ class ChartsPanel(tk.Frame):
             if len(peaks_seen) >= 2 and max(peaks_seen) > 5.0:
                 tied = [p for p, k in zip(pids, peaks_seen) if abs(k - peaks_seen[0]) <= 1.0]
                 if len(tied) >= 2:
-                    ax.text(0.02, 0.94, f"Empate en pico: {' = '.join(tied)} ({_fmt_pct_compact(peaks_seen[0])})",
-                            transform=ax.transAxes, ha="left", va="top", fontsize=6.1, color=theme.INK_PRIMARY, zorder=6,
-                            bbox=dict(boxstyle="round,pad=0.18", facecolor=theme.PAPER_BG, edgecolor=theme.PAPER_BORDER, alpha=0.92))
+                    tie_note = f"Empate en pico: {' = '.join(tied)} ({_fmt_pct_compact(peaks_seen[0])})"
         ax.set_title(title, fontsize=8.5, fontweight="bold", color=theme.INK_PRIMARY, loc="left", pad=4)
         self._configure_util_axis(ax, max_u)
-        ax.set_xlabel("Tiempo (min)", fontsize=7.5, color=theme.INK_PRIMARY)
+        ax.set_xlabel(f"Tiempo (min)  ·  {tie_note}" if tie_note else "Tiempo (min)", fontsize=7.5, color=theme.INK_PRIMARY)
         ax.set_xlim(times[0], x_end)
         ax.legend(loc="upper left", fontsize=6.1, ncol=2, **_LEGEND_KW)
 

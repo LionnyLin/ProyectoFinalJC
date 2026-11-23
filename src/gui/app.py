@@ -6,6 +6,7 @@ import os, time
 from dataclasses import replace
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 from typing import Callable, Dict, List, Optional, Tuple
 
 from src.algorithms import (
@@ -94,6 +95,7 @@ class BicentenarioSewerApp(tk.Tk):
         self._topbar_sig: Optional[tuple] = None
         self._resize_after_id: Optional[str] = None
         self._closing = False
+        self._player_width = 0
         self._player_compact: Optional[bool] = None
         # Intervenciones en vivo, línea base (Antes/Después), cuenca aislada y composición por fuente
         self.interventions: Dict[str, PipeIntervention] = {}
@@ -370,8 +372,14 @@ class BicentenarioSewerApp(tk.Tk):
 
     def _on_player_configure(self, event: tk.Event) -> None:
         compact = event.width < 600
-        if event.width <= 1 or compact == self._player_compact:
+        if event.width <= 1:
             return
+        if compact == self._player_compact:
+            if event.width != self._player_width:
+                self._player_width = event.width
+                self._update_mass_label()
+            return
+        self._player_width = event.width
         self._player_compact = compact
         for b, txt in ((self._btn_reset, " Inicio"), (self._btn_step_back, " -1"), (self._btn_step_fwd, " +1")):
             b.configure(text="" if compact else txt)
@@ -402,11 +410,28 @@ class BicentenarioSewerApp(tk.Tk):
             return
         err = snap.mass_balance_error_m3
         ok = abs(err) < theme.MASS_BALANCE_OK_M3
+        word = "OK" if ok else "ERROR"
+        options = (f"Balance masa {word} · Err {err:.2e} m³", f"Masa {word} · {err:.1e}", f"{word} · {err:.1e}", word)
         if self._player_compact:
-            text = f"Masa {'OK' if ok else 'ERROR'} · {err:.1e}"
-        else:
-            text = f"Balance masa {'OK' if ok else 'ERROR'} · Err {err:.2e} m³"
+            options = options[1:]
+        text = options[-1]
+        avail = self._mass_available_width()
+        font = tkfont.Font(font=self.fonts["mono_bold"])
+        extra = 2 * (8 + 1 + 2)  # padx + highlightthickness + padx externo del Label
+        for cand in options:
+            if font.measure(cand) + extra <= avail:
+                text = cand
+                break
         self._mass_lbl.configure(text=text, fg=theme.OK_TEXT if ok else theme.ERROR_TEXT)
+
+    def _mass_available_width(self) -> int:
+        """Ancho libre de la fila 1 del reproductor para el indicador de balance (resto de controles + margen)."""
+        row1 = self._mass_lbl.master
+        width = self._player_width - 16 if self._player_width > 1 else row1.winfo_width()  # pbar: padx 8 + 8
+        if width <= 1:
+            return 10_000
+        used = sum(w.winfo_reqwidth() + 8 for w in row1.pack_slaves() if w is not self._mass_lbl)
+        return max(0, width - used - 12)
 
     # ── Atajos de teclado ────────────────────────────────────────────────────
 

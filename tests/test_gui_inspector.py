@@ -2,6 +2,7 @@
 
 import os
 import tkinter as tk
+from tkinter import font as tkfont, ttk
 import unittest
 from types import SimpleNamespace
 
@@ -242,7 +243,8 @@ class TestInspectorFeatures(unittest.TestCase):
         self.app.update()
         tab = self.app.critical_tab
         iid = tab._pipe_to_iid["P30"]
-        self.assertEqual(tab._tree.item(iid, "values")[7], "Cerrada 100%")
+        self.assertIn(tab._tree.item(iid, "values")[7], ("Cerrada 100%", "Cerr."))
+        self.assertEqual(next(v for v in tab._rows_full if v[1] == "P30")[7], "Cerrada 100%")
 
     def test_double_click_on_critical_row_moves_camera(self) -> None:
         self.app.go_to_step(30)
@@ -283,6 +285,75 @@ class TestInspectorFeatures(unittest.TestCase):
         self.assertEqual((self.app.selected_kind, self.app.selected_id), ("pipe", "P30"))
         self.assertIn("P30", self.app.controls._search_feedback.cget("text"))
         self.assertNotEqual((cv._zoom, cv._pan_x, cv._pan_y), before)
+
+
+class TestInspectorLayoutRegressions(unittest.TestCase):
+    """Regresiones visuales: ranuras vacías, indicador de masa compacto y columnas de críticas."""
+
+    def setUp(self) -> None:
+        if not _has_display():
+            self.skipTest("Entorno headless sin display X11 disponible")
+        self.app = gui_app.BicentenarioSewerApp(initial_data_path=DATA_XLSX)
+        self.app.withdraw()
+        self.app.controls.select_scenario_by_id(5)
+        self.app.run_simulation(auto_play=False)
+        self.app.update()
+
+    def tearDown(self) -> None:
+        self.app._on_close()
+
+    def _assert_slots_collapsed(self) -> None:
+        tab = self.app.inspector_tab
+        self.app.update()
+        for slot in (tab._actions_slot, tab._ent_slot, tab._interv_slot, tab._source_slot):
+            if not slot.pack_slaves():
+                self.assertFalse(slot.winfo_manager(), "ranura vacía debe salir del layout")
+                self.assertLessEqual(slot.winfo_height() if slot.winfo_manager() else 0, 2)
+
+    def test_empty_inspector_slots_collapse_after_deselect_and_kind_change(self) -> None:
+        app, tab = self.app, self.app.inspector_tab
+        app.select_entity("pipe", "P29"); app.update()
+        self.assertTrue(tab._interv_slot.winfo_manager() and tab._source_slot.winfo_manager())
+        app.select_entity(None, None)
+        self._assert_slots_collapsed()
+        self.assertFalse(tab._actions_slot.winfo_manager())
+        self.assertFalse(tab._interv_slot.winfo_manager())
+        self.assertFalse(tab._source_slot.winfo_manager())
+        app.select_entity("pipe", "P29"); app.update()
+        app.select_entity("node", app.dataset.graph.node_ids()[3]); self.app.update()
+        self.assertFalse(tab._interv_slot.winfo_manager(), "un nodo no muestra la tarjeta de intervención")
+        self._assert_slots_collapsed()
+        order = [str(w) for w in tab._inner.pack_slaves()]
+        slots = [str(sl) for sl in (tab._actions_slot, tab._ent_slot, tab._source_slot)]
+        self.assertEqual([o for o in order if o in slots], slots, "las ranuras conservan el orden")
+        app.select_entity(None, None); app.update()
+        self.assertLessEqual(tab._inner.winfo_reqheight(), 600)
+
+    def test_mass_indicator_never_exceeds_available_width(self) -> None:
+        app = self.app
+        app.go_to_step(10)
+        for width in (330, 420, 520, 640, 900):
+            app._on_player_configure(type("E", (), {"width": width})())
+            app._update_mass_label()
+            need = tkfont.Font(font=app.fonts["mono_bold"]).measure(app._mass_lbl.cget("text")) + 2 * (8 + 1 + 2)
+            avail = app._mass_available_width()
+            self.assertTrue(need <= avail or app._mass_lbl.cget("text") in ("OK", "ERROR"), (width, need, avail))
+        app._on_player_configure(type("E", (), {"width": 900})())
+        self.assertTrue(app._mass_lbl.cget("text").startswith("Balance masa OK"))
+        row1 = app._mass_lbl.master
+        app._on_player_configure(type("E", (), {"width": 460})())
+        self.assertNotIn("Balance", app._mass_lbl.cget("text"))
+        used = sum(w.winfo_reqwidth() for w in row1.pack_slaves() if w is not app._mass_lbl)
+        self.assertLessEqual(app._mass_lbl.winfo_reqwidth() + used, 460)
+
+    def test_critical_columns_fit_longest_content(self) -> None:
+        app = self.app
+        tab = app.critical_tab
+        app.go_to_step(40); app.notebook.select(1); app.update()
+        longest = max((v[5] for v in tab._rows_full), key=len)
+        body = tkfont.Font(font=ttk.Style().lookup("Treeview", "font") or "TkDefaultFont")
+        self.assertGreaterEqual(int(tab._tree.column("Util. %", "width")), body.measure(longest) + 8)
+        self.assertGreaterEqual(int(tab._tree.column("Util. %", "minwidth")), body.measure(longest) + 8)
 
 
 if __name__ == "__main__":

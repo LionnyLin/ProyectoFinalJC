@@ -146,13 +146,7 @@ def _goto_step(app, target_min: float) -> None:
 
 
 def _select(app, kind, entity_id) -> None:
-    """Selecciona (o limpia) la entidad del Inspector.
-
-    Las ranuras vacías del Inspector conservan la altura de la selección anterior (un `tk.Frame` sin hijos no
-    se encoge), lo que deja huecos en blanco en las capturas; se colapsan antes de cambiar la selección."""
-    tab = app.inspector_tab
-    for slot in (tab._actions_slot, tab._ent_slot, tab._interv_slot, tab._source_slot):
-        slot.configure(height=1)
+    """Selecciona (o limpia) la entidad del Inspector."""
     app.select_entity(kind, entity_id)
     _pump(app)
 

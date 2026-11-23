@@ -358,5 +358,26 @@ class TestNetworkCanvas(unittest.TestCase):
         self.assertIsNone(c._cam_after)
 
 
+    def test_intervention_label_avoids_ptar_badge_and_other_labels(self) -> None:
+        c = self.canvas
+        c.set_snapshot(self.peak_snap)
+        c.set_interventions({"P29": PipeIntervention("P29", 80.0)})
+        c.rebuild_geometry(); self.root.update()
+        g = c._geoms["P29"]
+        self.assertTrue(g.has_mark)
+        self.assertEqual(c.itemcget(g.lbl_rect, "state"), "normal")
+        lb = c.bbox(g.lbl_rect)
+        sink = next(n for n in self.graph.nodes() if n.node_type == "sink").node_id
+        badge = c._ngeoms[sink].badge
+        self.assertIsNotNone(badge)
+        bb = c.bbox(badge[0])
+        self.assertTrue(lb[2] <= bb[0] or lb[0] >= bb[2] or lb[3] <= bb[1] or lb[1] >= bb[3], (lb, bb))
+        for pid, other in c._geoms.items():
+            if pid == "P29" or other.lbl_rect is None or c.itemcget(other.lbl_rect, "state") != "normal":
+                continue
+            ob = c.bbox(other.lbl_rect)
+            self.assertTrue(lb[2] <= ob[0] or lb[0] >= ob[2] or lb[3] <= ob[1] or lb[1] >= ob[3], (pid, lb, ob))
+
+
 if __name__ == "__main__":
     unittest.main()

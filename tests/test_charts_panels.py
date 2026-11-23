@@ -53,6 +53,22 @@ class _PanelBase(unittest.TestCase):
 
 
 class TestChartsPanel(_PanelBase):
+    def test_tie_note_does_not_overlap_legend(self) -> None:
+        from matplotlib.text import Text
+        p = ChartsPanel(self.root, self.fonts)
+        self._pack(p)
+        p.set_result(self.base, None, is_visible=True)
+        p.set_subtab("hydro"); self.root.update()
+        p.canvas.draw()
+        rend = p.canvas.get_renderer()
+        notes = [t for t in p.fig.findobj(Text) if "Empate en pico" in t.get_text()]
+        if not notes:
+            self.skipTest("el escenario no produce empate de picos")
+        legend_box = p.ax_util.get_legend().get_window_extent(rend)
+        for t in notes:
+            self.assertFalse(t.get_window_extent(rend).overlaps(legend_box))
+
+
     def test_legacy_calls_still_work(self) -> None:
         p = ChartsPanel(self.root, self.fonts)
         self._pack(p)
