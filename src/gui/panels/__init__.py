@@ -6,6 +6,7 @@ from .comparison_panel import ComparisonPanel
 from .controls_panel import ControlsPanel
 from .critical_panel import CriticalPipesPanel
 from .inspector_panel import InspectorPanel, parse_diameter_override
+from .max_flow_panel import MaxFlowPanel
 from .top_bar import TopBar
 from .tour_overlay import GuidedTourCard, TourStop, build_tour_stops
 
@@ -17,6 +18,7 @@ __all__ = [
     "CriticalPipesPanel",
     "GuidedTourCard",
     "InspectorPanel",
+    "MaxFlowPanel",
     "TemporalChartsPanel",
     "TopBar",
     "TourStop",

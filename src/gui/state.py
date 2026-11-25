@@ -3,10 +3,11 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-from src.algorithms import SourceAttributionResult, TraversalAnimFrame
+from src.algorithms import MaxFlowResult, SourceAttributionResult, TraversalAnimFrame
 from src.data_structures import PipeEdge
 from src.io.data_loader import NetworkDataset
 from src.simulation import (
+    MaxFlowEstimationRow,
     PipeIntervention,
     ScenarioSummary,
     SewerSimulationEngine,
@@ -26,6 +27,10 @@ class AppState:
     previous_result: Optional[SimulationResult] = None
     comparisons: List[ScenarioSummary] = field(default_factory=list)
     comparisons_dirty: bool = True
+    max_flow_result: Optional[MaxFlowResult] = None
+    max_flow_estimations: List[MaxFlowEstimationRow] = field(default_factory=list)
+    max_flow_dirty: bool = True
+    active_target_fmax_pct: Optional[float] = None
 
     current_step: int = 0
     is_playing: bool = False
@@ -110,6 +115,10 @@ class AppState:
         self.previous_result = None
         self.comparisons = []
         self.comparisons_dirty = True
+        self.max_flow_result = None
+        self.max_flow_estimations = []
+        self.max_flow_dirty = True
+        self.active_target_fmax_pct = None
         self.current_step = 0
         self.is_playing = False
         self.selected_pipe_id = None

@@ -15,8 +15,8 @@ El proyecto implementa un **simulador hidráulico discreto de red de alcantarill
 | [main.py](<main.py>) | Punto de entrada CLI y GUI | `main()`, `_build_parser()` |
 | `src/data_structures/` | Estructuras de datos propias (sin `collections` ni `heapq`) | `HashTable`, `LinkedList`, `Queue`, `Stack`, `PriorityQueue`, `DirectedGraph` |
 | `src/io/` | Ingesta, validación topológica/hidráulica y exportación | `load_dataset()`, `load_from_excel()`, `load_from_csv_dir()`, `export_to_csv_dir()` |
-| `src/algorithms/` | Recorridos, consultas topológicas y análisis de criticidad | `bfs()`, `dfs()`, `topological_sort()`, `classify_utilization()`, `rank_critical_pipes()`, `compute_source_attribution()` |
-| `src/simulation/` | Motor hidráulico discreto, comparación y generación de reportes | `SewerSimulationEngine`, `SimulationConfig`, `PipeIntervention`, `compare_all_scenarios()`, `generate_markdown_report()`, `generate_docx_report()` |
+| `src/algorithms/` | Recorridos, flujo máximo, consultas y análisis | `bfs()`, `dfs()`, `ford_fulkerson_max_flow()`, `topological_sort()`, `classify_utilization()`, `rank_critical_pipes()`, `compute_source_attribution()` |
+| `src/simulation/` | Motor hidráulico discreto, estimador F_max, comparación y reportes | `SewerSimulationEngine`, `SimulationConfig`, `PipeIntervention`, `estimate_fmax_scenarios()`, `compare_all_scenarios()`, `generate_markdown_report()`, `generate_docx_report()` |
 | `src/gui/` | Interfaz gráfica modular Tkinter + Matplotlib embebido | `BicentenarioSewerApp`, `ControlsPanelMixin`, `InspectorPanelMixin`, `ComparisonPanelMixin`, `GuidedTourMixin`, `NetworkCanvas`, `TemporalChartsPanel`, `ComparisonChartsPanel`, `widgets`, `theme`, `icons` |
 | `data/` | Conjunto de datos oficial (Excel y CSV equivalentes) | `DataSetBicentenario.xlsx`, `data/csv/*.csv` |
 | `tests/` | Suite de pruebas unitarias e integración GUI/DOCX | `test_data_structures.py`, `test_loader.py`, `test_algorithms.py`, `test_simulation.py`, `test_gui.py`, `test_docx_exporter.py` |
@@ -266,10 +266,14 @@ En cada intervalo del motor (`SewerSimulationEngine.run()`, `src/simulation/engi
    - Caudal de demanda total sobre el tramo (considerando el aporte solicitado desde el nodo más el caudal en tránsito):
      $$Q_{\text{dem},i}(t) = \max\!\left(\frac{V_{\text{dem},i}}{\Delta t_{\text{sim}}},\; Q_{\text{cond},i}(t),\; \frac{V_{\text{tránsito},i}}{t_{\text{trans},\text{ef},i}}\right)$$
 
-2. **Cálculo del porcentaje de utilización oficial $O_i(t)$ sin techo artificial:**
+2. **Cálculo del porcentaje de utilización recalculado con Ford-Fulkerson y tope físico $U_{\text{tope}}$ (`120 %` por defecto, configurable):**
+   - El algoritmo `ford_fulkerson_max_flow()` (`src/algorithms/max_flow.py`) determina el flujo máximo del sistema $F_{\max} = 0.35915\;\text{m}^3/\text{s}$ y su corte mínimo (`P28, P3, P43, P53`) sobre las capacidades efectivas de Manning.
+   - La admisión global se limita a $Q_{\text{adm,max}} = (U_{\text{tope}} / 100) \cdot F_{\max}$ (`0.43097 m³/s` al `120 %`); el excedente $Q_{\text{req}} - Q_{\text{adm}}$ rebosa inmediatamente en las entradas preservando exactamente la masa total.
    - **Caso tubo cerrado ($Q_{\max,\text{ef},i} \le 10^{-12}$):** `is_closed = True`, $Q_{\text{cond},i} = 0$, $O_i(t) = 0.0\%$ y `is_overloaded = False`.
-   - **Caso tubo abierto ($Q_{\max,\text{ef},i} > 10^{-12}$):** aplicando directamente la fórmula de la guía (§5.5) sobre la demanda real del tramo, sin techo artificial de `115 %`:
-     $$O_i(t) = \frac{Q_{\text{dem},i}(t)}{Q_{\max,\text{ef},i}} \times 100, \qquad D_i(t) = O_i(t), \qquad \text{PipeStepState.flow\_m3s} = Q_{\text{cond},i}(t)$$
+   - **Caso tubo abierto ($Q_{\max,\text{ef},i} > 10^{-12}$):** el porcentaje del sistema y el de cada tubería quedan acotados al tope físico $U_{\text{tope}}$ (cuando alcanza el `120 %`, no entra más agua y el porcentaje deja de aumentar por rebose):
+     $$U_{\text{sis}}(t) = \min\!\left(U_{\text{tope}},\; \frac{Q_{\text{req}}(t)}{F_{\max}} \times 100\right), \qquad O_i(t) = \min\!\left(U_{\text{tope}},\; \frac{Q_{\text{dem},i}(t)}{Q_{\max,\text{ef},i}} \times 100\right)$$
+   - `demand_ratio_pct` y `system_demand_ratio_pct` conservan el valor sin recorte para auditoría técnica y desempates en `rank_critical_pipes()`.
+   - Además, `estimate_fmax_scenarios()` (`src/simulation/max_flow_estimator.py`) ejecuta estimaciones y simulaciones en distintos porcentajes de $F_{\max}$ (`0%` a `200%`), visualizadas en la pestaña **`Flujo Máx.`** de la interfaz PySide6.
 
 3. **Máximos en todo el horizonte y tiempo en sobrecarga (`engine.py:397-412`):**
    - `peak_pipe_utilization[pid]` $= \max_{t} U_i(t)$ y `peak_pipe_demand_ratio[pid]` $= \max_{t} D_i(t)$.

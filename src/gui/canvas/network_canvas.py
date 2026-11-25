@@ -722,17 +722,20 @@ class NetworkCanvas(QWidget):
             lines.append("[AISLADO DE 31] Aguas arriba de un cierre al 100%")
         if self.snapshot and pipe.pipe_id in self.snapshot.pipe_states:
             ps = self.snapshot.pipe_states[pipe.pipe_id]
+            if ps.in_min_cut:
+                lines.append("[CORTE MÍNIMO FORD-FULKERSON] Cuello del flujo máximo")
             if ps.is_closed:
                 lines.append(
                     f"Estado (t={self.snapshot.time_min:.0f}m): CERRADA 100%  ·  Caudal conducido: 0.0000 m³/s"
                 )
             else:
+                cap_tag = " (Tope rebose)" if ps.is_overflow_capped else ""
                 lines.append(
-                    f"Caudal conducido (t={self.snapshot.time_min:.0f}m): {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}% ({ps.category.label})"
+                    f"Caudal conducido (t={self.snapshot.time_min:.0f}m): {ps.flow_m3s:.4f} m³/s  ·  Utilización: {ps.utilization_pct:.1f}%{cap_tag} ({ps.category.label})"
                 )
-                if ps.utilization_pct > 100.5:
+                if ps.demand_ratio_pct > 100.5:
                     lines.append(
-                        f"Demanda: {ps.demand_flow_m3s:.4f} m³/s ({ps.utilization_pct / 100.0:.2f}× Qmax)  ·  Exceso: {ps.excess_flow_m3s:.4f} m³/s"
+                        f"Demanda: {ps.demand_flow_m3s:.4f} m³/s ({ps.demand_ratio_pct / 100.0:.2f}× Qmax)  ·  Exceso: {ps.excess_flow_m3s:.4f} m³/s"
                     )
         dur_lbl = f"0–{self._total_duration_min:.0f} min"
         if self.snapshot and pipe.pipe_id in self._peak_util_map:

@@ -7,10 +7,10 @@ Aplicación de escritorio en Python para la representación, simulación tempora
 ## Características Principales
 
 - **Estructuras de datos implementadas desde cero** (`src/data_structures/`): `DirectedGraph`, `LinkedList` (listas de adyacencia e historial temporal), `Queue`, `PriorityQueue` (Min-Heap para eventos de tránsito y ranking), `Stack` y `HashTable`.
-- **Algoritmos propios** (`src/algorithms/`): `BFS`, `DFS` iterativo con reconstrucción de caminos, ordenamiento topológico, búsqueda y trazado aguas arriba/abajo, y clasificación de criticidad según la escala de 5 colores de la guía (`0–25%`, `>25–50%`, `>50–75%`, `>75–100%`, `>100%`).
+- **Algoritmos propios** (`src/algorithms/`): `BFS`, `DFS` iterativo con reconstrucción de caminos, **Ford-Fulkerson (Edmonds-Karp)** para flujo máximo del sistema ($F_{\max} = 0.35915\;\text{m}^3/\text{s}$) y corte mínimo (`P28, P3, P43, P53`), ordenamiento topológico, búsqueda y trazado aguas arriba/abajo, y clasificación de criticidad según la escala de 5 colores de la guía (`0–25%`, `>25–50%`, `>50–75%`, `>75–100%`, `>100%`).
 - **Carga dual validada** (`src/io/`): Lectura desde `data/DataSetBicentenario.xlsx` y desde archivos CSV normalizados en `data/csv/`.
-- **Motor temporal conservativo de masa** (`src/simulation/`): Método racional ($Q = 0.00278 \cdot C \cdot I \cdot A$), velocidades de Manning, tiempos de tránsito $t_i = L_i / V_i$, distribución configurable en bifurcaciones y almacenamiento temporal en pozos ante sobrecarga.
-- **Interfaz gráfica interactiva** (`src/gui/`): Lienzo con zoom/paneo y tooltips, reproductor temporal (iniciar, pausar, reanudar, paso a paso y barra de tiempo), tabla de tuberías críticas, gráficas Matplotlib y comparación entre los 5 escenarios.
+- **Motor temporal conservativo de masa** (`src/simulation/`): Método racional ($Q = 0.00278 \cdot C \cdot I \cdot A$), velocidades de Manning, tiempos de tránsito $t_i = L_i / V_i$, admisión acotada por $F_{\max}$ con tope físico por rebose configurable (`120%` por defecto, donde no ingresa más agua y el porcentaje deja de crecer), simulador/estimador por `% de F_max` y almacenamiento temporal en pozos.
+- **Interfaz gráfica interactiva** (`src/gui/`): Lienzo con zoom/paneo y tooltips, reproductor temporal (iniciar, pausar, reanudar, paso a paso y barra de tiempo), tabla de tuberías críticas, gráficas Matplotlib, comparación entre los 5 escenarios y pestaña **Flujo Máx. (FF)**.
 
 ## Requisitos
 

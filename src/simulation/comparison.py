@@ -27,6 +27,11 @@ class ScenarioSummary:
     max_demand_ratio_pct: float = 0.0
     total_surface_flooding_m3: float = 0.0
     num_near_capacity_pipes: int = 0  # > 75% y <= 100%
+    system_max_flow_m3s: float = 0.0
+    peak_system_utilization_pct: float = 0.0
+    peak_system_demand_ratio_pct: float = 0.0
+    total_admitted_inflow_m3: float = 0.0
+    total_inlet_overflow_m3: float = 0.0
 
 
 def compare_all_scenarios(
@@ -51,6 +56,8 @@ def compare_all_scenarios(
             source_distribution=base_config.source_distribution,
             max_manhole_storage_m3=base_config.max_manhole_storage_m3,
             max_physical_utilization_pct=base_config.max_physical_utilization_pct,
+            use_ford_fulkerson_admission=base_config.use_ford_fulkerson_admission,
+            target_fmax_pct=None,
             interventions=dict(base_config.interventions),
         )
         res = engine.run(cfg)
@@ -81,6 +88,11 @@ def compare_all_scenarios(
                 max_demand_ratio_pct=max_dem,
                 total_surface_flooding_m3=res.total_surface_flooding_m3,
                 num_near_capacity_pipes=len(res.ever_near_capacity_pipes),
+                system_max_flow_m3s=res.system_max_flow_m3s,
+                peak_system_utilization_pct=res.peak_system_utilization_pct,
+                peak_system_demand_ratio_pct=res.peak_system_demand_ratio_pct,
+                total_admitted_inflow_m3=res.total_admitted_inflow_m3,
+                total_inlet_overflow_m3=res.total_inlet_overflow_m3,
             )
         )
 

@@ -15,7 +15,10 @@ from src.simulation import (
     generate_docx_report,
     generate_technical_document_docx,
 )
-from src.simulation.charts_export import generate_single_column_figures
+from src.simulation.charts_export import (
+    generate_max_flow_figure,
+    generate_single_column_figures,
+)
 from src.simulation.models import compute_symlog_ticks
 
 DATA_XLSX = os.path.abspath(
@@ -82,6 +85,16 @@ class TestDocxExporter(unittest.TestCase):
                 with Image.open(p) as im:
                     self.assertEqual(im.size, (1050, 840))  # 3.5 x 2.8 in @ 300 DPI
 
+            from src.simulation import SimulationConfig, estimate_fmax_scenarios
+
+            ff_res, rows = estimate_fmax_scenarios(
+                self.dataset,
+                SimulationConfig(scenario_id=0, scenario_name="Est", intensity_mm_h=0.0),
+            )
+            p4 = generate_max_flow_figure(ff_res, rows, td)
+            with Image.open(p4) as im:
+                self.assertEqual(im.size, (1050, 840))
+
     def test_generate_docx_report_and_technical_document(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             rep_path = os.path.join(td, "reporte.docx")
@@ -96,8 +109,8 @@ class TestDocxExporter(unittest.TestCase):
             self.assertTrue(os.path.isfile(out1))
             self.assertTrue(os.path.isfile(out2))
 
-            self._assert_docx_rules(out1, expected_min_omml=6)
-            self._assert_docx_rules(out2, expected_min_omml=7)
+            self._assert_docx_rules(out1, expected_min_omml=9)
+            self._assert_docx_rules(out2, expected_min_omml=10)
 
     def test_symlog_ticks_coverage(self) -> None:
         for peak, min_top in ((420.0, 250.0), (5126.0, 2500.0), (16560.0, 10000.0)):

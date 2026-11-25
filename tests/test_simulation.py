@@ -10,6 +10,8 @@ from src.simulation import (
     SewerSimulationEngine,
     SimulationConfig,
     compare_all_scenarios,
+    compute_fmax_calibrated_ingress,
+    estimate_fmax_scenarios,
     generate_markdown_report,
 )
 
@@ -163,10 +165,24 @@ class TestSimulation(unittest.TestCase):
                 storm_duration_min=60.0,
             )
         )
-        self.assertGreater(mod.pipe_overloaded_minutes["P31"], 20.0)
-        self.assertLessEqual(mod.pipe_overloaded_minutes["P31"], 90.0)
+        # Con admisión limitada por F_max (tope 120%) y reparto por capacidad, P25 se sobrecarga (>100%)
+        self.assertGreater(mod.pipe_overloaded_minutes["P25"], 20.0)
+        self.assertLessEqual(mod.pipe_overloaded_minutes["P25"], 90.0)
 
-    def test_unbounded_utilization_defaults_and_surface_flooding(self) -> None:
+        # Con reparto uniforme 1/8, P31 también supera el 100% y acumula minutos de sobrecarga
+        mod_eq = engine.run(
+            SimulationConfig(
+                scenario_id=3,
+                scenario_name="Moderate rain",
+                intensity_mm_h=30.0,
+                duration_min=90.0,
+                storm_duration_min=60.0,
+                source_distribution="equal",
+            )
+        )
+        self.assertGreater(mod_eq.pipe_overloaded_minutes["P31"], 20.0)
+
+    def test_ford_fulkerson_bounded_utilization_and_surface_flooding(self) -> None:
         engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
         # E2: valores por defecto oficiales -> ingress=1.0, Q_san=0.0; Tiempo seco produce 0 m³
         dry_res = engine.run(
@@ -174,44 +190,128 @@ class TestSimulation(unittest.TestCase):
         )
         self.assertAlmostEqual(dry_res.total_inflow_m3, 0.0, places=9)
         self.assertAlmostEqual(max(dry_res.peak_pipe_utilization.values()), 0.0, places=9)
+        self.assertAlmostEqual(dry_res.peak_system_utilization_pct, 0.0, places=9)
 
-        # E1: utilización real sin recorte de 115%, pozos <= 4 m³ y rebose superficial > 0
-        cfg_cap = SimulationConfig(
-            scenario_id=5,
-            scenario_name="Extreme rain",
-            intensity_mm_h=100.0,
-            duration_min=90.0,
-            storm_duration_min=60.0,
-            source_distribution="capacity",
-            max_manhole_storage_m3=4.0,
+        # Meseta del tope 120% de F_max en E3 y E5, con rebose de entrada > 0 y pozos <= 4 m³
+        for scen_id, scen_name, intensity in [(3, "Moderate rain", 30.0), (5, "Extreme rain", 100.0)]:
+            cfg_cap = SimulationConfig(
+                scenario_id=scen_id,
+                scenario_name=scen_name,
+                intensity_mm_h=intensity,
+                duration_min=90.0,
+                storm_duration_min=60.0,
+                source_distribution="capacity",
+                max_manhole_storage_m3=4.0,
+            )
+            res_cap = engine.run(cfg_cap)
+            self.assertLess(res_cap.max_mass_balance_error_m3, 1e-6)
+            self.assertAlmostEqual(res_cap.system_max_flow_m3s, 0.35914566, places=5)
+            self.assertAlmostEqual(res_cap.utilization_cap_pct, 120.0, places=6)
+            self.assertAlmostEqual(res_cap.peak_system_utilization_pct, 120.0, places=6)
+            self.assertAlmostEqual(max(res_cap.peak_pipe_utilization.values()), 120.0, places=6)
+            self.assertGreater(res_cap.peak_system_demand_ratio_pct, 120.0)
+            self.assertGreater(res_cap.total_inlet_overflow_m3, 0.0)
+            self.assertGreater(res_cap.total_surface_flooding_m3, 0.0)
+            self.assertLess(res_cap.total_admitted_inflow_m3, res_cap.total_inflow_m3)
+            for v_st in res_cap.max_manhole_storage_m3.values():
+                self.assertLessEqual(v_st, 4.0 + 1e-9)
+
+        # Tope configurable a 135%
+        res_135 = engine.run(
+            SimulationConfig(
+                scenario_id=5,
+                scenario_name="Extreme rain 135%",
+                intensity_mm_h=100.0,
+                duration_min=90.0,
+                storm_duration_min=60.0,
+                source_distribution="capacity",
+                max_physical_utilization_pct=135.0,
+            )
         )
-        res_cap = engine.run(cfg_cap)
-        self.assertLess(res_cap.max_mass_balance_error_m3, 1e-6)
-        self.assertGreater(max(res_cap.peak_pipe_utilization.values()), 115.0)
-        self.assertAlmostEqual(
-            max(res_cap.peak_pipe_utilization.values()),
-            max(res_cap.peak_pipe_demand_ratio.values()),
-            places=6,
-        )
-        self.assertGreater(res_cap.total_surface_flooding_m3, 0.0)
-        for v_st in res_cap.max_manhole_storage_m3.values():
-            self.assertLessEqual(v_st, 4.0 + 1e-9)
+        self.assertLess(res_135.max_mass_balance_error_m3, 1e-6)
+        self.assertAlmostEqual(res_135.peak_system_utilization_pct, 135.0, places=6)
+        self.assertAlmostEqual(max(res_135.peak_pipe_utilization.values()), 135.0, places=6)
 
         # Comparación con reparto uniforme 1/8
-        cfg_eq = SimulationConfig(
-            scenario_id=5,
-            scenario_name="Extreme rain",
-            intensity_mm_h=100.0,
-            duration_min=90.0,
-            storm_duration_min=60.0,
-            source_distribution="equal",
+        res_eq = engine.run(
+            SimulationConfig(
+                scenario_id=5,
+                scenario_name="Extreme rain equal",
+                intensity_mm_h=100.0,
+                duration_min=90.0,
+                storm_duration_min=60.0,
+                source_distribution="equal",
+            )
         )
-        res_eq = engine.run(cfg_eq)
+        res_cap_e5 = engine.run(
+            SimulationConfig(
+                scenario_id=5,
+                scenario_name="Extreme rain cap",
+                intensity_mm_h=100.0,
+                duration_min=90.0,
+                storm_duration_min=60.0,
+                source_distribution="capacity",
+            )
+        )
         self.assertLess(res_eq.max_mass_balance_error_m3, 1e-6)
         self.assertGreater(
-            res_eq.peak_pipe_demand_ratio["P31"],
-            res_cap.peak_pipe_demand_ratio["P31"],
+            res_eq.peak_pipe_utilization["P31"],
+            res_cap_e5.peak_pipe_utilization["P31"],
         )
+
+    def test_fmax_estimator_plateau_and_calibration(self) -> None:
+        base_cfg = SimulationConfig(
+            scenario_id=0,
+            scenario_name="Estimador",
+            intensity_mm_h=0.0,
+            duration_min=90.0,
+            storm_duration_min=60.0,
+        )
+        ff_res, rows = estimate_fmax_scenarios(self.dataset, base_cfg)
+        self.assertAlmostEqual(ff_res.max_flow_m3s, 0.35914566, places=5)
+        by_pct = {round(r.target_fmax_pct): r for r in rows}
+        self.assertIn(0, by_pct)
+        self.assertIn(100, by_pct)
+        self.assertIn(120, by_pct)
+        self.assertIn(150, by_pct)
+        self.assertIn(200, by_pct)
+
+        self.assertAlmostEqual(by_pct[0].system_utilization_pct, 0.0, places=6)
+        self.assertAlmostEqual(by_pct[100].system_utilization_pct, 100.0, places=6)
+        # Meseta constante al llegar al tope de rebose (120%, 150%, 200%)
+        for pct in (120, 150, 200):
+            self.assertAlmostEqual(by_pct[pct].system_utilization_pct, 120.0, places=6)
+            self.assertAlmostEqual(
+                by_pct[pct].admitted_flow_m3s,
+                1.20 * ff_res.max_flow_m3s,
+                places=5,
+            )
+            self.assertTrue(by_pct[pct].is_overflow_capped)
+        self.assertGreater(by_pct[150].total_surface_flooding_m3, by_pct[120].total_surface_flooding_m3)
+        self.assertGreater(by_pct[200].total_surface_flooding_m3, by_pct[150].total_surface_flooding_m3)
+
+        # Factor de ingreso calibrado para que 30 mm/h corresponda al 100% de F_max
+        f_cal = compute_fmax_calibrated_ingress(
+            ff_res.max_flow_m3s,
+            self.dataset.basin.runoff_coefficient_c,
+            self.dataset.basin.area_ha,
+            reference_intensity_mm_h=30.0,
+        )
+        self.assertGreater(f_cal, 0.01)
+        self.assertLess(f_cal, 0.05)
+        engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
+        res_cal = engine.run(
+            SimulationConfig(
+                scenario_id=3,
+                scenario_name="E3 Calibrado",
+                intensity_mm_h=30.0,
+                ingress_factor=f_cal,
+                duration_min=90.0,
+                storm_duration_min=60.0,
+            )
+        )
+        self.assertAlmostEqual(res_cal.peak_system_utilization_pct, 100.0, places=2)
+        self.assertAlmostEqual(res_cal.total_inlet_overflow_m3, 0.0, places=6)
 
     def test_e3_transit_delay_dt_invariance_and_e4_flow_coherence(self) -> None:
         engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)

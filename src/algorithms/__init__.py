@@ -29,6 +29,11 @@ from .analysis import (
     compute_source_attribution,
     rank_critical_pipes,
 )
+from .max_flow import (
+    AugmentingPathStep,
+    MaxFlowResult,
+    ford_fulkerson_max_flow,
+)
 
 __all__ = [
     "TraversalResult",
@@ -45,6 +50,9 @@ __all__ = [
     "trace_upstream",
     "find_isolated_from_sinks",
     "build_route_to_sink",
+    "AugmentingPathStep",
+    "MaxFlowResult",
+    "ford_fulkerson_max_flow",
     "UTILIZATION_LEVELS",
     "OVERLOAD_PERSISTENCE_LEVELS",
     "UtilizationCategory",

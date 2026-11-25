@@ -15,6 +15,7 @@ from src.algorithms import (
     find_isolated_from_sinks,
     find_node,
     find_pipe,
+    ford_fulkerson_max_flow,
     rank_critical_pipes,
     search_entities,
     topological_sort,
@@ -142,6 +143,83 @@ class TestAlgorithms(unittest.TestCase):
             self.graph, snapshot=None, pipe_qmax_overrides={"P31": 0.0}
         )
         self.assertEqual(attr_closed.pipe_shares["P31"], [])
+
+    def test_ford_fulkerson_max_flow_and_min_cut(self) -> None:
+        from src.data_structures import DirectedGraph, ManholeNode, PipeEdge
+
+        res = ford_fulkerson_max_flow(self.graph)
+        self.assertAlmostEqual(res.max_flow_m3s, 0.35914566, places=5)
+        self.assertAlmostEqual(res.max_flow_m3s, res.min_cut_capacity_m3s, places=9)
+        self.assertEqual(sorted(res.min_cut_pipes), ["P28", "P3", "P43", "P53"])
+        self.assertGreater(res.iterations, 0)
+        self.assertEqual(len(res.augmenting_paths), res.iterations)
+
+        # Conservación de flujo en fuentes, sumideros y nodos intermedios
+        self.assertAlmostEqual(sum(res.source_flows.values()), res.max_flow_m3s, places=8)
+        self.assertAlmostEqual(sum(res.sink_flows.values()), res.max_flow_m3s, places=8)
+        in_node_flow = {nid: 0.0 for nid in self.graph.node_ids()}
+        out_node_flow = {nid: 0.0 for nid in self.graph.node_ids()}
+        for pid, q_val in res.edge_flows.items():
+            pipe = self.graph.get_pipe(pid)
+            cap = res.edge_capacities[pid]
+            self.assertGreaterEqual(q_val, -1e-9)
+            self.assertLessEqual(q_val, cap + 1e-9)
+            out_node_flow[pipe.from_node] += q_val
+            in_node_flow[pipe.to_node] += q_val
+        for nid in self.graph.node_ids():
+            node = self.graph.get_node(nid)
+            if node.node_type not in ("source", "sink"):
+                self.assertAlmostEqual(in_node_flow[nid], out_node_flow[nid], places=8)
+
+        # Intervenciones: reducir tubería de corte mínimo y cerrar todo el corte mínimo
+        p28_cap = self.graph.get_pipe("P28").q_max_m3s
+        res_reduced = ford_fulkerson_max_flow(
+            self.graph, pipe_capacities={"P28": 0.5 * p28_cap}
+        )
+        self.assertLess(res_reduced.max_flow_m3s, res.max_flow_m3s)
+
+        p29_cap = self.graph.get_pipe("P29").q_max_m3s
+        res_p29 = ford_fulkerson_max_flow(
+            self.graph, pipe_capacities={"P29": 0.8 * p29_cap}
+        )
+        self.assertLessEqual(res_p29.max_flow_m3s, res.max_flow_m3s + 1e-12)
+
+        res_blocked = ford_fulkerson_max_flow(
+            self.graph,
+            pipe_capacities={pid: 0.0 for pid in res.min_cut_pipes},
+        )
+        self.assertAlmostEqual(res_blocked.max_flow_m3s, 0.0, places=9)
+
+        # Grafo sintético con aristas paralelas y cancelación en arista inversa residual
+        g = DirectedGraph()
+        g.add_node(ManholeNode(node_id="1", node_type="source"))
+        g.add_node(ManholeNode(node_id="2", node_type="manhole"))
+        g.add_node(ManholeNode(node_id="3", node_type="manhole"))
+        g.add_node(ManholeNode(node_id="4", node_type="sink"))
+        for pid, u, v, cap in [
+            ("E1", "1", "2", 1.0),
+            ("E2", "1", "2", 0.5),  # paralela 1 -> 2
+            ("E3", "1", "3", 1.0),
+            ("E4", "2", "3", 1.0),
+            ("E5", "2", "4", 1.0),
+            ("E6", "3", "4", 1.5),
+        ]:
+            g.add_pipe(
+                PipeEdge(
+                    pipe_id=pid,
+                    from_node=u,
+                    to_node=v,
+                    diameter_in=20.0,
+                    diameter_m=0.5,
+                    manning_n=0.013,
+                    slope=0.01,
+                    q_max_m3s=cap,
+                    length_m=10.0,
+                )
+            )
+        syn = ford_fulkerson_max_flow(g)
+        self.assertAlmostEqual(syn.max_flow_m3s, 2.5, places=9)
+        self.assertAlmostEqual(syn.min_cut_capacity_m3s, 2.5, places=9)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ from src.algorithms import (
     compute_source_attribution,
     dfs_anim_frames,
     find_isolated_from_sinks,
+    ford_fulkerson_max_flow,
     search_entities,
     trace_downstream,
     trace_upstream,
@@ -51,8 +52,11 @@ from src.simulation import (
     SimulationConfig,
     TimeStepSnapshot,
     compare_all_scenarios,
+    compute_fmax_calibrated_ingress,
+    estimate_fmax_scenarios,
     generate_docx_report,
     generate_markdown_report,
+    resolve_pipe_hydraulics,
 )
 from . import theme
 from .icons import build_icon_set
@@ -62,12 +66,13 @@ from .panels import (
     ControlsPanel,
     CriticalPipesPanel,
     InspectorPanel,
+    MaxFlowPanel,
     TopBar,
     build_tour_stops,
     parse_diameter_override,
 )
 from .state import AppState
-from .widgets import make_separator
+from .widgets import blocked_signals, make_separator
 from .workers import AsyncTaskRunner
 
 
@@ -152,6 +157,12 @@ class BicentenarioSewerApp(QMainWindow):
         self._deferred_compare_timer.setInterval(15)
         self._deferred_compare_timer.timeout.connect(self._launch_pending_comparison)
         self._pending_compare_job = None
+
+        self._deferred_fmax_timer = QTimer(self)
+        self._deferred_fmax_timer.setSingleShot(True)
+        self._deferred_fmax_timer.setInterval(15)
+        self._deferred_fmax_timer.timeout.connect(self._launch_pending_max_flow)
+        self._pending_fmax_job = None
 
         self._build_layout()
         self._connect_signals()
@@ -286,11 +297,19 @@ class BicentenarioSewerApp(QMainWindow):
             parent=self.right_tabs,
         )
         self.comparison_charts = self.comparison_panel.charts
+        self.max_flow_panel = MaxFlowPanel(
+            dpi=self._mpl_dpi,
+            ui_font=self.ui_font,
+            mono_font=self.mono_font,
+            display_font=self.display_font,
+            parent=self.right_tabs,
+        )
 
         self.right_tabs.addTab(self.inspector_panel, "Inspector")
         self.right_tabs.addTab(self.critical_panel, "Tuberías Críticas")
         self.right_tabs.addTab(self.temporal_charts, "Evolución")
         self.right_tabs.addTab(self.comparison_panel, "Comparación")
+        self.right_tabs.addTab(self.max_flow_panel, "Flujo Máx.")
 
         sf_lay.addWidget(self.right_tabs)
         rp_lay.addWidget(sheet_frame)
@@ -343,13 +362,12 @@ class BicentenarioSewerApp(QMainWindow):
         # Panel izquierdo
         self.controls_panel.railTabChanged.connect(self._on_rail_tab_changed)
         self.controls_panel.aboutToOpenSelector.connect(self.pause)
-        self.controls_panel.scenarioChanged.connect(
-            lambda: self._on_simulation_option_changed(mark_comp=False)
-        )
+        self.controls_panel.scenarioChanged.connect(self._on_scenario_changed)
         self.controls_panel.paramsChanged.connect(self._on_params_changed)
-        self.controls_panel.executeSimulationRequested.connect(
-            lambda: self.run_simulation(preserve_previous=False, auto_play=True)
-        )
+        self.controls_panel.executeSimulationRequested.connect(self._on_execute_sim_clicked)
+        self.controls_panel.calibrateFmaxRequested.connect(self._action_calibrate_fmax)
+        self.controls_panel.simulateTargetFmaxRequested.connect(self._action_simulate_target_fmax)
+        self.controls_panel.maxFlowHighlightRequested.connect(self._action_highlight_ford_fulkerson)
         self.controls_panel.searchRequested.connect(self._action_search)
         self.controls_panel.traversalRequested.connect(self._run_traversal)
         self.controls_panel.toggleTraversalAnimRequested.connect(self._action_toggle_traversal_anim)
@@ -392,6 +410,16 @@ class BicentenarioSewerApp(QMainWindow):
 
         self.comparison_panel.compareRequested.connect(self._action_compare_scenarios)
         self.comparison_panel.scenarioActivated.connect(self._on_comparison_scenario_activated)
+
+        self.max_flow_panel.recalculateRequested.connect(
+            self._action_compute_max_flow_estimations
+        )
+        self.max_flow_panel.highlightMinCutRequested.connect(
+            self._action_highlight_ford_fulkerson
+        )
+        self.max_flow_panel.targetFmaxActivated.connect(
+            self._action_simulate_target_fmax
+        )
 
     def _bind_shortcuts(self) -> None:
         self._shortcuts = [
@@ -541,12 +569,15 @@ class BicentenarioSewerApp(QMainWindow):
                 self.right_tabs.setTabText(1, "Críticas")
                 self.right_tabs.setTabText(2, "Evolución")
                 self.right_tabs.setTabText(3, "Comparar")
+                self.right_tabs.setTabText(4, "F_max")
             else:
                 self.right_tabs.setTabText(0, "Inspector")
                 self.right_tabs.setTabText(1, "Tuberías Críticas")
                 self.right_tabs.setTabText(2, "Evolución")
                 self.right_tabs.setTabText(3, "Comparación")
+                self.right_tabs.setTabText(4, "Flujo Máx.")
         self.comparison_panel.set_hint_visible(rw >= 365)
+        self.max_flow_panel.set_hint_visible(rw >= 365)
 
     def toggle_left_panel(self) -> None:
         self.state.show_left = not self.state.show_left
@@ -593,13 +624,18 @@ class BicentenarioSewerApp(QMainWindow):
         self._stop_traversal_anim(clear_canvas=False)
         self._close_guided_tour()
         self._task_runner.cancel_channel("comparison")
+        self._task_runner.cancel_channel("max_flow")
         self._task_runner.cancel_channel("report")
         if self._deferred_charts_timer.isActive():
             self._deferred_charts_timer.stop()
         if self._deferred_compare_timer.isActive():
             self._deferred_compare_timer.stop()
+        if self._deferred_fmax_timer.isActive():
+            self._deferred_fmax_timer.stop()
         self._pending_compare_job = None
+        self._pending_fmax_job = None
         self.comparison_panel.set_loading(False)
+        self.max_flow_panel.set_loading(False)
         self.temporal_charts.set_loading(False)
 
         n_nodes, n_pipes, _n_src, _n_snk, total_len = dataset.graph.summary()
@@ -608,10 +644,16 @@ class BicentenarioSewerApp(QMainWindow):
         )
         engine = SewerSimulationEngine(dataset.graph, dataset.basin)
         self.state.reset_for_dataset(dataset, engine, summary_text)
+        self.state.max_flow_result = ford_fulkerson_max_flow(dataset.graph)
+        self.controls_panel.update_fmax_summary(
+            self.state.max_flow_result, self.controls_panel.read_util_cap_pct()
+        )
 
         self.comparison_panel.clear_table()
         self.comparison_charts.update_comparison([])
         self.comparison_panel.reset_hint()
+        self.max_flow_panel.clear_table()
+        self.max_flow_panel.reset_hint()
         self.network_canvas.set_graph(dataset.graph)
 
         scen_labels = []
@@ -659,12 +701,14 @@ class BicentenarioSewerApp(QMainWindow):
         _, duration, storm_dur, dt, ingress, dry_flow, split_rule, source_dist = (
             self.controls_panel.read_sim_inputs()
         )
+        util_cap_pct = self.controls_panel.read_util_cap_pct()
         for val, name in (
             (duration, "Duración simulación"),
             (storm_dur, "Duración lluvia"),
             (dt, "Paso temporal Δt"),
             (ingress, "Ingreso pluvial (%)"),
             (dry_flow, "Caudal sanitario"),
+            (util_cap_pct, "Tope físico uso (%)"),
         ):
             if not math.isfinite(val):
                 raise ValueError(f"{name} debe ser un número finito.")
@@ -678,6 +722,8 @@ class BicentenarioSewerApp(QMainWindow):
             raise ValueError("Ingreso pluvial (%) debe estar entre > 0 y 100 %.")
         if dry_flow < 0.0 or dry_flow > 10.0:
             raise ValueError("Caudal sanitario debe estar entre 0 y 10 m³/s.")
+        if util_cap_pct < 100.0 or util_cap_pct > 300.0:
+            raise ValueError("Tope físico uso (%) debe estar entre 100 % y 300 %.")
 
         return SimulationConfig(
             scenario_id=sc.scenario_id,
@@ -690,12 +736,25 @@ class BicentenarioSewerApp(QMainWindow):
             dry_weather_flow_per_source_m3s=max(0.0, dry_flow),
             split_rule=split_rule,
             source_distribution=source_dist,
+            max_physical_utilization_pct=util_cap_pct,
+            use_ford_fulkerson_admission=True,
+            target_fmax_pct=self.state.active_target_fmax_pct,
             interventions=dict(self.state.interventions),
         )
 
     def _mark_comparisons_dirty(self) -> None:
         self.state.comparisons_dirty = True
         self.comparison_panel.mark_dirty(bool(self.state.comparisons))
+        self.state.max_flow_dirty = True
+        self.max_flow_panel.mark_dirty(bool(self.state.max_flow_estimations))
+
+    def _on_scenario_changed(self) -> None:
+        self.state.active_target_fmax_pct = None
+        self._on_simulation_option_changed(mark_comp=False)
+
+    def _on_execute_sim_clicked(self) -> None:
+        self.state.active_target_fmax_pct = None
+        self.run_simulation(preserve_previous=False, auto_play=True)
 
     def _on_params_changed(self) -> None:
         self._mark_comparisons_dirty()
@@ -749,6 +808,10 @@ class BicentenarioSewerApp(QMainWindow):
             self.state.previous_result = None
 
         self.state.result = self.state.engine.run(cfg)
+        self.state.max_flow_result = self.state.result.max_flow_result
+        self.controls_panel.update_fmax_summary(
+            self.state.max_flow_result, cfg.max_physical_utilization_pct
+        )
         if not self.state.interventions:
             self.state.baseline_result = self.state.result
         self.state.last_attr_key = None
@@ -823,7 +886,12 @@ class BicentenarioSewerApp(QMainWindow):
             dur_total=dur_total,
         )
         self.controls_panel.update_legend(
-            self.state.map_mode, snap, peak_all, ov_all, dur_total
+            self.state.map_mode,
+            snap,
+            peak_all,
+            ov_all,
+            dur_total,
+            cap_pct=self.state.result.utilization_cap_pct,
         )
 
         active_tab = self.right_tabs.currentIndex()
@@ -955,7 +1023,14 @@ class BicentenarioSewerApp(QMainWindow):
                 ov_all=ov_all,
                 dur_total=dur_total,
             )
-            self.controls_panel.update_legend(mode, snap_cur, peak_all, ov_all, dur_total)
+            self.controls_panel.update_legend(
+                mode,
+                snap_cur,
+                peak_all,
+                ov_all,
+                dur_total,
+                cap_pct=self.state.result.utilization_cap_pct,
+            )
         else:
             self.network_canvas.set_map_mode(mode)
 
@@ -1259,6 +1334,15 @@ class BicentenarioSewerApp(QMainWindow):
             return build_route_to_sink(g, pipe_id=self.state.selected_pipe_id, sink_id="31")
         if self.state.selected_node_id and g.has_node(self.state.selected_node_id):
             return build_route_to_sink(g, node_id=self.state.selected_node_id, sink_id="31")
+        if self.state.result is not None and self.state.result.peak_pipe_utilization:
+            top_pid, top_u = max(
+                self.state.result.peak_pipe_utilization.items(),
+                key=lambda kv: (kv[1], self.state.result.peak_pipe_demand_ratio.get(kv[0], 0.0)),
+            )
+            if top_u > 1e-6 and g.has_pipe(top_pid):
+                return build_route_to_sink(g, pipe_id=top_pid, sink_id="31")
+        if g.has_pipe("P25"):
+            return build_route_to_sink(g, pipe_id="P25", sink_id="31")
         if g.has_pipe("P31"):
             return build_route_to_sink(g, pipe_id="P31", sink_id="31")
         srcs = g.source_ids()
@@ -1312,10 +1396,17 @@ class BicentenarioSewerApp(QMainWindow):
         elif idx == 3 and (not self.state.comparisons or self.state.comparisons_dirty):
             if not self.is_comparison_running():
                 self._action_compare_scenarios()
+        elif idx == 4 and (not self.state.max_flow_estimations or self.state.max_flow_dirty):
+            if not self.is_max_flow_running():
+                self._action_compute_max_flow_estimations()
 
     def is_comparison_running(self) -> bool:
         """Indica si hay una comparación diferida o ejecutándose en segundo plano."""
         return self._deferred_compare_timer.isActive() or self._task_runner.is_busy("comparison")
+
+    def is_max_flow_running(self) -> bool:
+        """Indica si hay una estimación Ford-Fulkerson diferida o en segundo plano."""
+        return self._deferred_fmax_timer.isActive() or self._task_runner.is_busy("max_flow")
 
     def _action_compare_scenarios(self) -> None:
         if self.state.dataset is None:
@@ -1390,6 +1481,166 @@ class BicentenarioSewerApp(QMainWindow):
             on_finally=lambda: self.comparison_panel.set_loading(False),
         )
 
+    def _action_compute_max_flow_estimations(self) -> None:
+        if self.state.dataset is None:
+            return
+        try:
+            cfg = self._build_sim_config()
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Parámetros inválidos", f"Revise los parámetros numéricos: {exc}"
+            )
+            return
+
+        dataset = self.state.dataset
+        cfg_copy = replace(cfg, target_fmax_pct=None, interventions=dict(cfg.interventions))
+        self._task_runner.cancel_channel("max_flow")
+        self._pending_fmax_job = (dataset, cfg_copy)
+        self.max_flow_panel.set_loading(
+            True, "Calculando flujo máximo Ford-Fulkerson y curvas de saturación..."
+        )
+        self._set_status("Calculando estimaciones Ford-Fulkerson por % de F_max...")
+        self._deferred_fmax_timer.start()
+
+    def _launch_pending_max_flow(self) -> None:
+        job = self._pending_fmax_job
+        self._pending_fmax_job = None
+        if job is None or self.state.dataset is None:
+            return
+        dataset, cfg_copy = job
+        if self.state.dataset is not dataset:
+            return
+
+        def _compute_task() -> Tuple[object, list, float]:
+            t_start = time.perf_counter()
+            ff_res, rows = estimate_fmax_scenarios(dataset, cfg_copy)
+            elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+            return ff_res, rows, elapsed_ms
+
+        def _on_done(payload: Tuple[object, list, float]) -> None:
+            if self.state.dataset is not dataset:
+                return
+            ff_res, rows, elapsed_ms = payload
+            try:
+                cur_cfg = replace(self._build_sim_config(), target_fmax_pct=None)
+                still_fresh = cur_cfg == cfg_copy
+            except Exception:
+                still_fresh = False
+            self.state.max_flow_result = ff_res
+            self.state.max_flow_estimations = rows
+            self.state.max_flow_dirty = not still_fresh
+            if still_fresh:
+                self.max_flow_panel.mark_clean(elapsed_ms)
+            else:
+                self.max_flow_panel.mark_dirty(True)
+            self.max_flow_panel.populate(
+                ff_res, rows, cfg_copy.max_physical_utilization_pct
+            )
+            self.controls_panel.update_fmax_summary(
+                ff_res, cfg_copy.max_physical_utilization_pct
+            )
+            self._set_status(
+                f"Estimaciones Ford-Fulkerson actualizadas (F_max = {ff_res.max_flow_m3s:.4f} m³/s) en {elapsed_ms:.0f} ms."
+            )
+
+        def _on_err(exc: Exception) -> None:
+            self.max_flow_panel.reset_hint()
+            QMessageBox.critical(
+                self,
+                "Error en análisis Ford-Fulkerson",
+                f"No se pudo completar el cálculo de flujo máximo:\n{exc}",
+            )
+            self._set_status("Error al calcular estimaciones Ford-Fulkerson.")
+
+        self._task_runner.submit(
+            "max_flow",
+            _compute_task,
+            on_success=_on_done,
+            on_error=_on_err,
+            on_finally=lambda: self.max_flow_panel.set_loading(False),
+        )
+
+    def _action_calibrate_fmax(self) -> None:
+        if self.state.dataset is None:
+            return
+        g = self.state.dataset.graph
+        eff_caps = {
+            p.pipe_id: resolve_pipe_hydraulics(p, self.state.interventions.get(p.pipe_id))[0]
+            for p in g.pipes()
+        }
+        ff_res = ford_fulkerson_max_flow(g, pipe_capacities=eff_caps)
+        f_ing = compute_fmax_calibrated_ingress(
+            ff_res.max_flow_m3s,
+            self.state.dataset.basin.runoff_coefficient_c,
+            self.state.dataset.basin.area_ha,
+            reference_intensity_mm_h=30.0,
+        )
+        self.state.active_target_fmax_pct = None
+        self.controls_panel.apply_preset(f_ing * 100.0, 0.0)
+        self._set_status(
+            f"Calibrado a F_max = {ff_res.max_flow_m3s:.4f} m³/s (ingreso = {f_ing * 100.0:.2f}% para E3 = 100%)."
+        )
+
+    def _action_simulate_target_fmax(self, target_pct: float) -> None:
+        if self.state.dataset is None:
+            return
+        pct = max(0.0, min(300.0, float(target_pct)))
+        with blocked_signals(self.controls_panel.spin_target_fmax_pct):
+            self.controls_panel.spin_target_fmax_pct.setValue(pct)
+        self.state.active_target_fmax_pct = pct
+        self.run_simulation(preserve_previous=False, auto_play=True)
+
+    def _action_highlight_ford_fulkerson(self) -> None:
+        if self.state.dataset is None:
+            return
+        g = self.state.dataset.graph
+        eff_caps = {
+            p.pipe_id: resolve_pipe_hydraulics(p, self.state.interventions.get(p.pipe_id))[0]
+            for p in g.pipes()
+        }
+        ff_res = ford_fulkerson_max_flow(g, pipe_capacities=eff_caps)
+        self.state.max_flow_result = ff_res
+        self.controls_panel.update_fmax_summary(
+            ff_res, self.controls_panel.read_util_cap_pct()
+        )
+        self._stop_traversal_anim(clear_canvas=False)
+        self._deactivate_focus_filters_for_traversal()
+
+        sat_pipes = {
+            pid
+            for pid, sat in ff_res.edge_saturation_pct.items()
+            if sat >= 99.9 and ff_res.edge_capacities.get(pid, 0.0) > 1e-12
+        }
+        cut_pipes = set(ff_res.min_cut_pipes)
+        hl_pipes = cut_pipes | sat_pipes
+        hl_nodes: Set[str] = set()
+        for pid in cut_pipes:
+            edge = g.get_pipe(pid)
+            if edge is not None:
+                hl_nodes.update((edge.from_node, edge.to_node))
+        self.network_canvas.set_highlights(hl_pipes, hl_nodes)
+
+        self.controls_panel.update_structure_strip(
+            "Queue",
+            ff_res.min_cut_pipes,
+            f"F_max {ff_res.max_flow_m3s:.4f}",
+        )
+        lines = [
+            f"[Ford-Fulkerson (Edmonds-Karp)] F_max = {ff_res.max_flow_m3s:.5f} m³/s ({ff_res.iterations} rutas)",
+            f"Corte mínimo ({len(ff_res.min_cut_pipes)} tramos = {ff_res.min_cut_capacity_m3s:.5f} m³/s): {', '.join(ff_res.min_cut_pipes) or 'Ninguno'}",
+            f"Tramos saturados (100%): {', '.join(sorted(sat_pipes)) or 'Ninguno'}",
+        ]
+        for step in ff_res.augmenting_paths[:6]:
+            lines.append(
+                f"  #{step.iteration}: {'→'.join(step.nodes)} (+{step.bottleneck_m3s:.4f} ⇒ {step.cumulative_flow_m3s:.4f})"
+            )
+        if len(ff_res.augmenting_paths) > 6:
+            lines.append(f"  ... (+{len(ff_res.augmenting_paths) - 6} caminos aumentantes)")
+        self.controls_panel.set_traversal_text("\n".join(lines))
+        self._set_status(
+            f"Ford-Fulkerson: F_max = {ff_res.max_flow_m3s:.4f} m³/s · Corte mín.: {', '.join(ff_res.min_cut_pipes) or '-'}."
+        )
+
     def wait_for_background_tasks(self, timeout_ms: int = 5000) -> bool:
         """Espera a que finalicen las tareas en segundo plano y el render diferido."""
         if self._deferred_charts_timer.isActive():
@@ -1398,6 +1649,9 @@ class BicentenarioSewerApp(QMainWindow):
         if self._deferred_compare_timer.isActive():
             self._deferred_compare_timer.stop()
             self._launch_pending_comparison()
+        if self._deferred_fmax_timer.isActive():
+            self._deferred_fmax_timer.stop()
+            self._launch_pending_max_flow()
         return self._task_runner.wait_all(timeout_ms)
 
     def _on_comparison_scenario_activated(self, sid: int) -> None:
@@ -1833,10 +2087,10 @@ class BicentenarioSewerApp(QMainWindow):
         msg = (
             "Supuestos del Modelo Computacional (Ciudad Bicentenario):\n\n"
             "1. Grafo Dirigido Propio: 46 vértices (8 fuentes, 37 pozos, 1 sumidero PTAR 31) y 59 aristas.\n"
-            "2. Método Racional: Q = 0.00278 · C · I(t) · A (por defecto al 100% y Q_san=0 según guía; opcionalmente calibrable en parámetros).\n"
-            "3. Tiempo de Tránsito Continuo: t_i = L_i / V_i con sub-paso hidráulico interno (≤10 s) y cola de prioridad de eventos.\n"
-            "4. Porcentaje Oficial de Utilización: O_i(t) = (Q_dem,i(t) / Q_max,i) × 100 sin techo artificial, mientras el caudal conducido se limita físicamente a Q_max,i.\n"
-            "5. Pozos Finitos y Rebose: Cada pozo retiene hasta 4.0 m³ antes de derivar el excedente a rebose superficial en vía con conservación exacta de masa."
+            "2. Flujo Máximo (Ford-Fulkerson / Edmonds-Karp): F_max = 0.3591 m³/s (corte mínimo: P28, P3, P43, P53).\n"
+            "3. Admisión y Tope Físico por Rebose (120% configurable): el sistema admite hasta (tope/100)·F_max; al llegar al tope no entra más agua y el porcentaje deja de crecer mientras el exceso rebosa.\n"
+            "4. Tiempo de Tránsito Continuo: t_i = L_i / V_i con sub-paso hidráulico interno (≤10 s) y cola de prioridad de eventos.\n"
+            "5. Pozos Finitos y Conservación de Masa: cada pozo retiene hasta 4.0 m³ antes de derivar el excedente a rebose superficial en vía (~10⁻⁹ m³)."
         )
         QMessageBox.information(self, "Supuestos del Modelo", msg)
 
@@ -1852,13 +2106,18 @@ class BicentenarioSewerApp(QMainWindow):
             self._deferred_charts_timer.stop()
         if self._deferred_compare_timer.isActive():
             self._deferred_compare_timer.stop()
+        if self._deferred_fmax_timer.isActive():
+            self._deferred_fmax_timer.stop()
         self._pending_compare_job = None
+        self._pending_fmax_job = None
         self._task_runner.cancel_channel("comparison")
+        self._task_runner.cancel_channel("max_flow")
         self._task_runner.cancel_channel("report")
         self._task_runner.wait_all(3000)
         self.network_canvas.close_overlays()
         self.temporal_charts.stop_timers()
         self.comparison_panel.stop_timers()
+        self.max_flow_panel.stop_timers()
         super().closeEvent(event)
 
 

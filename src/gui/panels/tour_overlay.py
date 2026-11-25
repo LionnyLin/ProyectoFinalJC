@@ -195,30 +195,32 @@ def build_tour_stops(
     if sc_id == 2:
         idx3, s3 = _snap_for_min(50.0)
         q25, u25, d25 = _pipe_qud(s3, "P25")
+        fmax2 = result.system_max_flow_m3s if result else 0.3591
+        sys_u2 = s1.system_utilization_pct if s1 else 0.0
         return [
             TourStop(
-                title="Escorrentía ligera (10 mm/h) en las 8 fuentes",
+                title="Admisión acotada por F_max en lluvia ligera (10 mm/h)",
                 target_min=5.0,
                 step_idx=idx1,
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    "La lluvia ligera activa el Método Racional (C=0.75, A=388 ha) ponderado por "
-                    "capacidad instalada o 1/8 más el caudal sanitario base."
+                    f"La demanda racional supera el tope del 120% de F_max ({1.2 * fmax2:.4f} m³/s); "
+                    "el sistema admite hasta el tope físico y el exceso rebosa en entrada sin seguir subiendo el % de uso."
                 ),
-                metrics=f"Q_in = {q_in1:.4f} m³/s  ·  Pozo/Rebose: {stor1:.1f}/{flood1:.1f} m³",
+                metrics=f"Uso Sis.: {sys_u2:.1f}%  ·  F_max = {fmax2:.4f} m³/s  ·  Rebose: {flood1:.0f} m³",
             ),
             TourStop(
-                title='Cabeceras de 8" sin congestión severa',
+                title='Cabeceras de 8" bajo admisión F_max (10 mm/h)',
                 target_min=25.0,
                 step_idx=idx2,
                 nodes=n_head8,
                 pipes=set(p_head8),
                 desc=(
-                    'Con reparto por capacidad, P31, P39 y P43 (8") operan cerca del 48%–96% sin '
-                    "desbordar sus pozos (17, 19 y 20)."
+                    'Al limitar el ingreso al 120% de F_max con reparto por capacidad, P31, P39 y P43 (8") '
+                    "operan cerca del 87%–94% de su capacidad sin saturarse localmente."
                 ),
-                metrics=f"Util. máx: {u2_max:.2f}% ({d2_max:.2f}×)  ·  Rebose: {v2_flood:.2f} m³",
+                metrics=f"Util. máx: {u2_max:.2f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",
             ),
             TourStop(
                 title="Convergencia máxima en colector P25 (23 → J)",
@@ -227,10 +229,10 @@ def build_tour_stops(
                 nodes=n_25,
                 pipes=set(p_25),
                 desc=(
-                    'La suma de aportes aguas arriba lleva a P25 (12") al punto de mayor exigencia '
-                    "de toda la red en lluvia ligera, marcando el primer cuello local."
+                    'La confluencia de subcuencas sobre P25 (12") eleva su uso hasta el tope físico del 120% '
+                    "con rebose controlado en el pozo 23."
                 ),
-                metrics=f"P25: Q = {q25:.4f} m³/s  ·  Util. física = {u25:.1f}% (Dem. {d25:.2f}×)",
+                metrics=f"P25: Q = {q25:.4f} m³/s  ·  Uso tope = {u25:.1f}% (Dem. {d25:.2f}×)",
             ),
             TourStop(
                 title="Recesión limpia hacia PTAR Punta Canoa",
@@ -259,40 +261,41 @@ def build_tour_stops(
         _, u28, _ = _pipe_qud(s3, "P28")
         p4_pipes = _existing_pipes("P29", "P30", "P3")
         n4_nodes = n_ptar | _endpoints(p4_pipes)
+        fmax4 = result.system_max_flow_m3s if result else 0.3591
         return [
             TourStop(
-                title="Sobrecarga temprana en las 8 fuentes (60 mm/h)",
+                title="Tope 120% F_max alcanzado en lluvia fuerte (60 mm/h)",
                 target_min=5.0,
                 step_idx=idx1,
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    "Con 60 mm/h, las cabeceras superan el 100% de su capacidad Qmax y "
-                    "llenan los pozos de 4 m³, iniciando rebose superficial en vía."
+                    f"Con 60 mm/h, la red alcanza inmediatamente el tope del 120% de F_max ({1.2 * fmax4:.4f} m³/s): "
+                    "no ingresa más caudal adicional y el excedente rebosa en superficie."
                 ),
-                metrics=f"Q_in = {q_in1:.4f} m³/s  ·  Pozos: {stor1:.1f} m³  ·  Rebose: {flood1:.1f} m³",
+                metrics=f"Q_in = {q_in1:.2f} m³/s  ·  Admitido ≤ {1.2*fmax4:.3f} m³/s  ·  Rebose: {flood1:.0f} m³",
             ),
             TourStop(
-                title='Tope físico en 8" y 10" (P1, P2) con rebose',
+                title='Tope físico en cabeceras 8" y 10" (60 mm/h)',
                 target_min=25.0,
                 step_idx=idx2,
                 nodes=n2_nodes,
                 pipes=set(p2_pipes),
                 desc=(
-                    "Las cabeceras conducen al límite Qmax mientras la demanda racional "
-                    "supera con holgura su capacidad, derivando el excedente a rebose superficial."
+                    "Gracias a la admisión acotada por Ford-Fulkerson, el porcentaje de uso de las cabeceras "
+                    "se mantiene estable sin crecer indefinidamente mientras el exceso rebosa en las entradas."
                 ),
                 metrics=f'8": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P1/P2: {u_p12:.1f}% ({d_p12:.2f}×)  ·  Rebose: {v2_flood:.0f} m³',
             ),
             TourStop(
-                title='Cuello en cascada: P23, P25 y P28 (16")',
+                title='Cuello en cascada: P23, P25, P3 y P28 (16")',
                 target_min=40.0,
                 step_idx=idx3,
                 nodes=n3_nodes,
                 pipes=set(p3_pipes),
                 desc=(
-                    'La congestión avanza sobre los colectores de 16" (P23 y P28) mientras el tramo '
-                    'P25 (12") concentra la mayor restricción hidráulica del eje central.'
+                    'P25 (12") y P23 (16") alcanzan el tope de uso del 120% mientras P28 (16", corte mínimo) '
+                    "opera por encima del 100% restringiendo el paso hacia la troncal final."
                 ),
                 metrics=f"P25: {u25:.1f}% ({d25:.2f}×)  ·  P23: {u23:.1f}%  ·  P28: {u28:.1f}%",
             ),
@@ -303,8 +306,8 @@ def build_tour_stops(
                 nodes=n4_nodes,
                 pipes=set(p4_pipes),
                 desc=(
-                    "P3 y P29/P30 sostienen la descarga máxima posible hacia la PTAR 31 mientras la "
-                    "masa no absorbida por la red queda contabilizada exactamente como rebose en vía."
+                    "P3 (corte mínimo, tope 120%) y P29/P30 sostienen la descarga máxima posible hacia la PTAR 31 "
+                    "con conservación exacta de masa."
                 ),
                 metrics=f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Rebose: {flood4:.0f} m³  ·  Err = {err4:.1e} m³",
             ),
@@ -322,6 +325,7 @@ def build_tour_stops(
         flood3 = s3.total_surface_flooding_m3 if s3 else 0.0
         p4_pipes = _existing_pipes("P29", "P30", "P3")
         n4_nodes = n_ptar | _endpoints(p4_pipes)
+        fmax5 = result.system_max_flow_m3s if result else 0.3591
         return [
             TourStop(
                 title="Aporte extremo en las 8 fuentes (100 mm/h)",
@@ -330,20 +334,20 @@ def build_tour_stops(
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    "El evento extremo satura de inmediato las cabeceras por encima de Qmax "
-                    "llenando los pozos y generando escorrentía superficial por rebose."
+                    f"El evento extremo supera con holgura el límite 120%·F_max ({1.2 * fmax5:.4f} m³/s): "
+                    "el % de uso del sistema queda acotado en 120% y no entra más agua; el excedente rebosa."
                 ),
-                metrics=f"Q_in = {q_in1:.4f} m³/s  ·  Pozos: {stor1:.1f} m³  ·  Rebose: {flood1:.1f} m³",
+                metrics=f"Q_in = {q_in1:.2f} m³/s  ·  Uso Sis: 120.0%  ·  Rebose: {flood1:.0f} m³",
             ),
             TourStop(
-                title='Presurización en cabeceras (8", 10" y 14")',
+                title='Estabilidad por tope 120% en cabeceras (100 mm/h)',
                 target_min=25.0,
                 step_idx=idx2,
                 nodes=n2_nodes,
                 pipes=set(p2_pipes),
                 desc=(
-                    "Los tubos conducen exactamente hasta Qmax mientras la utilización de demanda "
-                    "supera ampliamente el 100%; el exceso rebosa en superficie sin romper la masa."
+                    "Aunque la lluvia pasa de 60 a 100 mm/h, las tuberías no aumentan su % de uso físico por encima del tope "
+                    "porque la red ya no puede admitir más agua y rebosa en superficie."
                 ),
                 metrics=f'8": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P13: {u_p13:.1f}% ({d_p13:.2f}×)  ·  Rebose: {v2_flood:.0f} m³',
             ),
@@ -354,8 +358,8 @@ def build_tour_stops(
                 nodes=n3_nodes,
                 pipes=set(p3_pipes),
                 desc=(
-                    "Los ejes colectores hacia PTAR 31 operan a capacidad física plena mientras la "
-                    "vía absorbe el excedente superficial acumulado durante el aguacero."
+                    "Los ejes del corte mínimo (P3 y P28) y convergencias (P25, P23) operan en el tope del sistema "
+                    "mientras la vía absorbe el excedente superficial."
                 ),
                 metrics=f"P25: {u25:.1f}% ({d25:.2f}×)  ·  P3: {u_p3:.1f}%  ·  Rebose red: {flood3:.0f} m³",
             ),
@@ -366,7 +370,7 @@ def build_tour_stops(
                 nodes=n4_nodes,
                 pipes=set(p4_pipes),
                 desc=(
-                    "Finalizada la tormenta, PTAR 31 mantiene su caudal máximo laminado mientras la "
+                    "Finalizada la tormenta, PTAR 31 mantiene su descarga laminada dentro de F_max mientras la "
                     "ecuación de masa audita exactamente descarga + pozos + tránsito + rebose."
                 ),
                 metrics=f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Rebose: {flood4:.0f} m³  ·  Err = {err4:.1e} m³",
@@ -376,42 +380,44 @@ def build_tour_stops(
     if sc_id == 3:
         idx3, s3 = _snap_for_min(40.0)
         q25, u25, d25 = _pipe_qud(s3, "P25")
+        fmax3 = result.system_max_flow_m3s if result else 0.3591
+        sys_u3 = s1.system_utilization_pct if s1 else 120.0
         return [
             TourStop(
-                title="Inyección en las 8 alcantarillas fuente",
+                title="Inyección acotada por F_max en las 8 fuentes",
                 target_min=5.0,
                 step_idx=idx1,
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    "Los 8 nodos fuente (1, 6, 9, 17, 18, 19, 20 y 27) inyectan el aporte del Método "
-                    "Racional (C=0.75, A=388 ha) más el caudal sanitario según Manning."
+                    f"Ford-Fulkerson determina F_max = {fmax3:.4f} m³/s. Con 30 mm/h, el sistema llega a su tope "
+                    "del 120% (0.4310 m³/s admitidos) y deriva el resto a rebose sin dejar entrar más agua."
                 ),
-                metrics=f"Q_in = {q_in1:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
+                metrics=f"Uso Sis.: {sys_u3:.1f}%  ·  F_max = {fmax3:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
             ),
             TourStop(
-                title='Saturación física inicial en tuberías de 8"',
+                title='Respuesta en cabeceras de 8" (Lluvia moderada)',
                 target_min=25.0,
                 step_idx=idx2,
                 nodes=n_head8,
                 pipes=set(p_head8),
                 desc=(
-                    'Los tramos iniciales P31, P39 y P43 (8") operan en sobrecarga (>100% de Qmax), '
-                    "llenan la capacidad de sus pozos y generan rebose superficial controlado."
+                    'Al acotar la admisión al 120%·F_max, P31, P39 y P43 (8") conducen cerca del 90%–94% '
+                    "mientras el excedente pluvial rebosa en las alcantarillas de entrada."
                 ),
-                metrics=f"Util. fís: {u2_max:.1f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",
+                metrics=f"Util. máx: {u2_max:.1f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",
             ),
             TourStop(
-                title="Convergencia crítica en el tramo P25",
+                title="Convergencia crítica en el tramo P25 (tope 120%)",
                 target_min=40.0,
                 step_idx=idx3,
                 nodes=n_25,
                 pipes=set(p_25),
                 desc=(
-                    "La unión de varias subcuencas sobre el pozo 23 hacia J (P25) lleva el tubo al "
-                    "límite presurizado mientras la demanda supera más del doble de Qmax."
+                    "La unión de subcuencas sobre el pozo 23 hacia J (P25) lleva la tubería al tope físico "
+                    "del 120% (demanda 3.0× Qmax), deteniendo el incremento de % de uso por rebose en pozo."
                 ),
-                metrics=f"P25: Q_fís = {q25:.4f} m³/s  ·  Util. = {u25:.1f}% (Dem. {d25:.2f}×)",
+                metrics=f"P25: Q_fís = {q25:.4f} m³/s  ·  Uso = {u25:.1f}% (Dem. {d25:.2f}×)",
             ),
             TourStop(
                 title="Amortiguación y descarga en PTAR Punta Canoa",
@@ -420,8 +426,8 @@ def build_tour_stops(
                 nodes=n_ptar,
                 pipes=set(p_ptar),
                 desc=(
-                    'Los colectores troncales de 20" (P29 y P30) reciben la onda laminada aguas arriba '
-                    "y estabilizan la entrega al Nodo sumidero 31."
+                    'Los colectores troncales de 20" (P29 y P30) reciben el flujo regulado aguas arriba '
+                    "y estabilizan la entrega al Nodo sumidero 31 dentro de F_max."
                 ),
                 metrics=f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Rebose: {flood4:.0f} m³  ·  Err = {err4:.1e} m³",
             ),

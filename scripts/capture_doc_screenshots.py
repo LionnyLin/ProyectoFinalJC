@@ -220,6 +220,12 @@ def capture_all_screenshots() -> Dict[str, str]:
     app._set_map_mode("overload_minutes")
     app.right_tabs.setCurrentIndex(1)
     shots["02_5_persistencia_sobrecarga"] = _grab_widget(app.right_panel, "02_5_persistencia_sobrecarga.png")
+
+    # 02_6. Flujo Máximo (Ford-Fulkerson) y Estimaciones por % de F_max
+    app.right_tabs.setCurrentIndex(4)
+    app.wait_for_background_tasks(8000)
+    _pump(220)
+    shots["02_6_ford_fulkerson_estimacion"] = _grab_widget(app.right_panel, "02_6_ford_fulkerson_estimacion.png", wait_ms=300)
     app.right_tabs.setCurrentIndex(0)
 
     # 03_1a, b, c. 3 Modos cartográficos en Esc. 5

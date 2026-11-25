@@ -3,9 +3,10 @@
 from dataclasses import dataclass
 import math
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from src.algorithms.analysis import classify_utilization
+from src.algorithms.max_flow import ford_fulkerson_max_flow
 from src.algorithms.traversals import topological_sort
 from src.data_structures import DirectedGraph, HashTable, LinkedList, PriorityQueue
 from src.io.data_loader import DrainageBasin
@@ -41,33 +42,47 @@ class SewerSimulationEngine:
             raise ValueError("El grafo debe ser un DAG para ejecutar la simulación.")
         self.history: LinkedList[TimeStepSnapshot] = LinkedList()
 
-    def _interval_mean_intensity(
+    def _interval_storm_fraction(
         self, config: SimulationConfig, t0_min: float, t1_min: float
     ) -> float:
-        """Calcula la intensidad promedio exacta del bloque uniforme sobre [t0_min, t1_min]."""
+        """Retorna la fracción del intervalo [t0_min, t1_min] en que la lluvia está activa."""
         dt = t1_min - t0_min
         storm_dur = float(config.storm_duration_min)
-        if dt <= 1e-12 or storm_dur <= 0.0 or config.intensity_mm_h <= 0.0:
+        if dt <= 1e-12 or storm_dur <= 0.0:
             return 0.0
         a = max(0.0, t0_min)
         b = min(storm_dur, t1_min)
         if b <= a + 1e-12:
             return 0.0
-        return float(config.intensity_mm_h) * ((b - a) / dt)
+        return (b - a) / dt
+
+    def _interval_mean_intensity(
+        self, config: SimulationConfig, t0_min: float, t1_min: float
+    ) -> float:
+        """Calcula la intensidad promedio exacta del bloque uniforme sobre [t0_min, t1_min]."""
+        if config.intensity_mm_h <= 0.0:
+            return 0.0
+        return float(config.intensity_mm_h) * self._interval_storm_fraction(config, t0_min, t1_min)
 
     def compute_source_inflows_by_source(
-        self, config: SimulationConfig, intensity_mm_h: float
+        self,
+        config: SimulationConfig,
+        intensity_mm_h: float,
+        override_rain_flow_m3s: Optional[float] = None,
     ) -> Tuple[float, Dict[str, float]]:
         """Calcula caudal total y distribución por fuente (por capacidad efectiva o uniforme 1/N)."""
         sources = self.graph.source_ids()
         n_sources = max(1, len(sources))
-        q_rational_raw = (
-            0.00278
-            * self.basin.runoff_coefficient_c
-            * intensity_mm_h
-            * self.basin.area_ha
-        )
-        q_rain_effective = q_rational_raw * config.ingress_factor
+        if override_rain_flow_m3s is not None:
+            q_rain_effective = max(0.0, float(override_rain_flow_m3s))
+        else:
+            q_rational_raw = (
+                0.00278
+                * self.basin.runoff_coefficient_c
+                * intensity_mm_h
+                * self.basin.area_ha
+            )
+            q_rain_effective = q_rational_raw * config.ingress_factor
 
         if config.source_distribution == "equal":
             weights = {sid: 1.0 / n_sources for sid in sources}
@@ -129,15 +144,31 @@ class SewerSimulationEngine:
             pipe_transit_vol.put(pid, 0.0)
 
         event_queue: PriorityQueue[_TransitEvent] = PriorityQueue()
-        source_set = set(self.graph.source_ids())
         sink_set = set(self.graph.sink_ids())
         cap_manhole = max(0.0, float(config.max_manhole_storage_m3))
+        util_cap_pct: Optional[float] = config.max_physical_utilization_pct
+        if util_cap_pct is not None:
+            util_cap_pct = float(util_cap_pct)
+            if not math.isfinite(util_cap_pct) or util_cap_pct < 100.0:
+                raise ValueError(
+                    f"El tope físico de utilización debe ser >= 100% (recibido: {config.max_physical_utilization_pct})."
+                )
 
         interventions: Dict[str, PipeIntervention] = config.interventions or {}
         eff_params = {
             p.pipe_id: resolve_pipe_hydraulics(p, interventions.get(p.pipe_id))
             for p in self.graph.pipes()
         }
+        eff_cap_map = {pid: vals[0] for pid, vals in eff_params.items()}
+        ff_res = ford_fulkerson_max_flow(self.graph, pipe_capacities=eff_cap_map)
+        f_max_m3s = ff_res.max_flow_m3s
+        min_cut_set = set(ff_res.min_cut_pipes)
+        cap_factor = (util_cap_pct / 100.0) if util_cap_pct is not None else None
+        q_adm_max_m3s = (
+            (cap_factor * f_max_m3s)
+            if (config.use_ford_fulkerson_admission and cap_factor is not None)
+            else None
+        )
 
         min_transit_s = min(
             (
@@ -183,6 +214,9 @@ class SewerSimulationEngine:
                 effective_q_max_m3s=eff_params[p.pipe_id][0],
                 effective_velocity_ms=eff_params[p.pipe_id][1],
                 is_closed=eff_params[p.pipe_id][0] <= 1e-12,
+                is_overflow_capped=False,
+                max_flow_share_m3s=ff_res.edge_flows.get(p.pipe_id, 0.0),
+                in_min_cut=(p.pipe_id in min_cut_set),
             )
             for p in self.graph.pipes()
         }
@@ -204,10 +238,19 @@ class SewerSimulationEngine:
                 total_surface_flooding_m3=0.0,
                 pipe_states=init_pipe_states,
                 node_states=init_node_states,
+                admitted_inflow_m3s=0.0,
+                inlet_overflow_m3s=0.0,
+                system_max_flow_m3s=f_max_m3s,
+                system_utilization_pct=0.0,
+                system_demand_ratio_pct=0.0,
+                ptar_fmax_utilization_pct=0.0,
+                system_overflow_capped=False,
             )
         )
 
         cum_inflow_m3 = 0.0
+        cum_admitted_m3 = 0.0
+        cum_inlet_spill_m3 = 0.0
         cum_sink_m3 = 0.0
         peak_util: Dict[str, float] = {p.pipe_id: 0.0 for p in self.graph.pipes()}
         peak_flow: Dict[str, float] = {p.pipe_id: 0.0 for p in self.graph.pipes()}
@@ -216,14 +259,23 @@ class SewerSimulationEngine:
         max_storage: Dict[str, float] = {nid: 0.0 for nid in self.graph.node_ids()}
         overloaded_minutes: Dict[str, float] = {p.pipe_id: 0.0 for p in self.graph.pipes()}
         peak_sink_q = 0.0
+        peak_sys_util = 0.0
+        peak_sys_dem = 0.0
         max_mass_err = 0.0
         ever_critical = set()
         ever_near_capacity = set()
         ever_overloaded = set()
+        ever_overflow_capped = set()
 
         all_node_ids = self.graph.node_ids()
         all_pipe_ids = self.graph.pipe_ids()
         source_ids = self.graph.source_ids()
+        basin_denom = (
+            0.00278
+            * self.basin.runoff_coefficient_c
+            * self.basin.area_ha
+            * max(config.ingress_factor, 1e-12)
+        )
 
         for step, snap_curr_min in enumerate(snap_times_min, start=1):
             snap_prev_min = 0.0 if step == 1 else snap_times_min[step - 2]
@@ -241,6 +293,8 @@ class SewerSimulationEngine:
             snap_node_spill: Dict[str, float] = {nid: 0.0 for nid in all_node_ids}
             snap_pipe_sent: Dict[str, float] = {pid: 0.0 for pid in all_pipe_ids}
             snap_inflow_vol = 0.0
+            snap_admitted_vol = 0.0
+            snap_inlet_spill_vol = 0.0
             snap_sink_vol = 0.0
 
             for sub in range(n_sub):
@@ -249,10 +303,24 @@ class SewerSimulationEngine:
                 t_sub_prev_min = t_sub_prev_s / 60.0
                 t_sub_curr_min = t_sub_curr_s / 60.0
 
-                sub_intensity = self._interval_mean_intensity(
+                storm_frac = self._interval_storm_fraction(
                     config, t_sub_prev_min, t_sub_curr_min
                 )
-                _, sub_q_by_source = self.compute_source_inflows_by_source(config, sub_intensity)
+                if config.target_fmax_pct is not None:
+                    q_rain_override = max(0.0, (float(config.target_fmax_pct) / 100.0) * f_max_m3s) * storm_frac
+                    q_req_total, sub_q_by_source = self.compute_source_inflows_by_source(
+                        config, 0.0, override_rain_flow_m3s=q_rain_override
+                    )
+                else:
+                    sub_intensity = float(config.intensity_mm_h) * storm_frac
+                    q_req_total, sub_q_by_source = self.compute_source_inflows_by_source(
+                        config, sub_intensity
+                    )
+
+                if q_adm_max_m3s is not None and q_req_total > q_adm_max_m3s + 1e-12:
+                    admit_ratio = (q_adm_max_m3s / q_req_total) if q_adm_max_m3s > 0.0 else 0.0
+                else:
+                    admit_ratio = 1.0
 
                 sub_arrivals: Dict[str, float] = {nid: 0.0 for nid in all_node_ids}
 
@@ -267,14 +335,25 @@ class SewerSimulationEngine:
                     new_transit = max(0.0, pipe_transit_vol[ev.pipe_id] - ev.volume_m3)
                     pipe_transit_vol.put(ev.pipe_id, new_transit)
 
-                # 2. Inyectar caudal en nodos fuente
+                # 2. Inyectar caudal admitido (acotado por tope * F_max) y registrar rebose en entrada
                 for sid in source_ids:
                     q_src = sub_q_by_source.get(sid, 0.0)
-                    vol_in = q_src * sub_dt_s
-                    sub_arrivals[sid] += vol_in
-                    snap_node_arrivals[sid] += vol_in
-                    cum_inflow_m3 += vol_in
-                    snap_inflow_vol += vol_in
+                    vol_req = q_src * sub_dt_s
+                    vol_adm = vol_req * admit_ratio
+                    vol_inlet_spill = max(0.0, vol_req - vol_adm)
+
+                    sub_arrivals[sid] += vol_adm
+                    snap_node_arrivals[sid] += vol_adm
+                    cum_inflow_m3 += vol_req
+                    snap_inflow_vol += vol_req
+                    cum_admitted_m3 += vol_adm
+                    snap_admitted_vol += vol_adm
+
+                    if vol_inlet_spill > 0.0:
+                        node_flooded.put(sid, node_flooded[sid] + vol_inlet_spill)
+                        snap_node_spill[sid] += vol_inlet_spill
+                        snap_inlet_spill_vol += vol_inlet_spill
+                        cum_inlet_spill_m3 += vol_inlet_spill
 
                 # 3. Propagar por orden topológico con retardo físico real en tuberías
                 for u in self._topo_order:
@@ -371,10 +450,16 @@ class SewerSimulationEngine:
                         demand_ratio = 0.0
                         excess_q = q_demand
                         is_closed = True
+                        is_pipe_capped = False
                     else:
                         q_demand = max(q_total_demand_step, q_conveyed, q_in_transit)
-                        util_pct = (q_demand / eff_q_max) * 100.0
-                        demand_ratio = util_pct
+                        demand_ratio = (q_demand / eff_q_max) * 100.0
+                        if util_cap_pct is not None and demand_ratio >= util_cap_pct - 1e-9:
+                            util_pct = util_cap_pct
+                            is_pipe_capped = True
+                        else:
+                            util_pct = demand_ratio
+                            is_pipe_capped = False
                         excess_q = max(0.0, q_demand - eff_q_max)
                         is_closed = False
 
@@ -393,8 +478,13 @@ class SewerSimulationEngine:
                         effective_q_max_m3s=eff_q_max,
                         effective_velocity_ms=eff_vel_ms,
                         is_closed=is_closed,
+                        is_overflow_capped=is_pipe_capped,
+                        max_flow_share_m3s=ff_res.edge_flows.get(edge.pipe_id, 0.0),
+                        in_min_cut=(edge.pipe_id in min_cut_set),
                     )
 
+                    if is_pipe_capped:
+                        ever_overflow_capped.add(edge.pipe_id)
                     if util_pct > peak_util[edge.pipe_id]:
                         peak_util[edge.pipe_id] = util_pct
                     if q_conveyed > peak_flow[edge.pipe_id]:
@@ -426,10 +516,48 @@ class SewerSimulationEngine:
             )
             max_mass_err = max(max_mass_err, mass_err)
 
-            snap_intensity = self._interval_mean_intensity(config, snap_prev_min, snap_curr_min)
+            snap_storm_frac = self._interval_storm_fraction(config, snap_prev_min, snap_curr_min)
+            if config.target_fmax_pct is not None and config.intensity_mm_h <= 0.0:
+                q_eq_rain = max(0.0, (float(config.target_fmax_pct) / 100.0) * f_max_m3s)
+                snap_intensity = (
+                    (q_eq_rain / basin_denom) * snap_storm_frac
+                    if basin_denom > 1e-12
+                    else 0.0
+                )
+            else:
+                snap_intensity = self._interval_mean_intensity(config, snap_prev_min, snap_curr_min)
+
             total_src_q = snap_inflow_vol / snap_dt_s
+            admitted_q = snap_admitted_vol / snap_dt_s
+            inlet_spill_q = snap_inlet_spill_vol / snap_dt_s
             sink_q = snap_sink_vol / snap_dt_s
             peak_sink_q = max(peak_sink_q, sink_q)
+
+            if f_max_m3s > 1e-12:
+                sys_dem_pct = (total_src_q / f_max_m3s) * 100.0
+                if util_cap_pct is not None and config.use_ford_fulkerson_admission:
+                    sys_util_pct = min(util_cap_pct, sys_dem_pct)
+                    sys_capped = sys_dem_pct >= util_cap_pct - 1e-9
+                elif util_cap_pct is not None:
+                    sys_util_pct = min(util_cap_pct, sys_dem_pct)
+                    sys_capped = sys_dem_pct >= util_cap_pct - 1e-9
+                else:
+                    sys_util_pct = sys_dem_pct
+                    sys_capped = False
+                ptar_fmax_pct = (sink_q / f_max_m3s) * 100.0
+            else:
+                if total_src_q > 1e-12:
+                    sys_util_pct = util_cap_pct if util_cap_pct is not None else 100.0
+                    sys_dem_pct = sys_util_pct
+                    sys_capped = True
+                else:
+                    sys_util_pct = 0.0
+                    sys_dem_pct = 0.0
+                    sys_capped = False
+                ptar_fmax_pct = 0.0
+
+            peak_sys_util = max(peak_sys_util, sys_util_pct)
+            peak_sys_dem = max(peak_sys_dem, sys_dem_pct)
 
             node_states = {
                 nid: NodeStepState(
@@ -461,6 +589,13 @@ class SewerSimulationEngine:
                     critical_pipe_ids=critical_ids,
                     near_capacity_pipe_ids=near_capacity_ids,
                     overloaded_pipe_ids=overloaded_ids,
+                    admitted_inflow_m3s=admitted_q,
+                    inlet_overflow_m3s=inlet_spill_q,
+                    system_max_flow_m3s=f_max_m3s,
+                    system_utilization_pct=sys_util_pct,
+                    system_demand_ratio_pct=sys_dem_pct,
+                    ptar_fmax_utilization_pct=ptar_fmax_pct,
+                    system_overflow_capped=sys_capped,
                 )
             )
 
@@ -490,4 +625,13 @@ class SewerSimulationEngine:
             peak_pipe_demand_flow=peak_demand_flow,
             total_surface_flooding_m3=last_snap.total_surface_flooding_m3,
             max_node_flooding_m3=max_flood_by_node,
+            system_max_flow_m3s=f_max_m3s,
+            max_flow_result=ff_res,
+            min_cut_pipes=list(ff_res.min_cut_pipes),
+            utilization_cap_pct=util_cap_pct,
+            peak_system_utilization_pct=peak_sys_util,
+            peak_system_demand_ratio_pct=peak_sys_dem,
+            total_admitted_inflow_m3=cum_admitted_m3,
+            total_inlet_overflow_m3=cum_inlet_spill_m3,
+            overflow_capped_pipes=sorted(ever_overflow_capped),
         )

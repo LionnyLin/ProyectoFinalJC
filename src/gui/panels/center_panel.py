@@ -106,6 +106,7 @@ class CenterPanel(QFrame):
         kr_lay.setSpacing(1)
 
         self.kpi_cards: Dict[str, KpiCard] = {
+            "sys_fmax": KpiCard("USO SIS. (F_MAX)", "-", kpi_row),
             "max_util": KpiCard("UTILIZACIÓN MÁX.", "-", kpi_row),
             "critical": KpiCard("CRÍTICAS (>75–100%)", "-", kpi_row),
             "overloaded": KpiCard("SOBRECARGA (>100%)", "-", kpi_row),
@@ -351,6 +352,7 @@ class CenterPanel(QFrame):
             return
         if map_mode == "peak":
             captions = {
+                "sys_fmax": "PICO SIS. (F_MAX)",
                 "max_util": "PICO MÁX. UTIL.",
                 "critical": "CRÍTICAS PICO (>75–100%)",
                 "overloaded": "SOBRECARGA PICO (>100%)",
@@ -358,6 +360,11 @@ class CenterPanel(QFrame):
             }
             for k, txt in captions.items():
                 self.kpi_cards[k].set_caption(txt)
+            sys_tier = classify_utilization(result.peak_system_utilization_pct).tier_index
+            self.kpi_cards["sys_fmax"].set_value(
+                f"{result.peak_system_utilization_pct:.1f}%",
+                theme.TIER_TEXT_ON_LIGHT[sys_tier],
+            )
             max_u = max((peak_all.get(pid, 0.0) for pid in snap.pipe_states), default=0.0)
             tier_idx = classify_utilization(max_u).tier_index
             crit_cnt = sum(
@@ -380,6 +387,7 @@ class CenterPanel(QFrame):
             )
         elif map_mode == "overload_minutes":
             captions = {
+                "sys_fmax": "FLUJO MÁX. (FF)",
                 "max_util": "MÁX. SOBREC. ACUM.",
                 "critical": "TUBERÍAS >0 min >100%",
                 "overloaded": "COLAPSO CRÓNICO (>75%)",
@@ -387,6 +395,9 @@ class CenterPanel(QFrame):
             }
             for k, txt in captions.items():
                 self.kpi_cards[k].set_caption(txt)
+            self.kpi_cards["sys_fmax"].set_value(
+                f"{result.system_max_flow_m3s:.4f} m³/s", theme.ACCENT_TEXT_ON_LIGHT
+            )
             max_ov = max((ov_all.get(pid, 0.0) for pid in snap.pipe_states), default=0.0)
             tier_ov, _, _ = classify_overload_persistence(max_ov, dur_total)
             any_ov_cnt = sum(1 for pid in snap.pipe_states if ov_all.get(pid, 0.0) >= 0.5)
@@ -409,6 +420,7 @@ class CenterPanel(QFrame):
             )
         else:
             captions = {
+                "sys_fmax": "USO SIS. (F_MAX)",
                 "max_util": "UTILIZACIÓN MÁX.",
                 "critical": "CRÍTICAS (>75–100%)",
                 "overloaded": "SOBRECARGA (>100%)",
@@ -416,6 +428,11 @@ class CenterPanel(QFrame):
             }
             for k, txt in captions.items():
                 self.kpi_cards[k].set_caption(txt)
+            sys_tier = classify_utilization(snap.system_utilization_pct).tier_index
+            self.kpi_cards["sys_fmax"].set_value(
+                f"{snap.system_utilization_pct:.1f}%",
+                theme.TIER_TEXT_ON_LIGHT[sys_tier],
+            )
             max_u = max((ps.utilization_pct for ps in snap.pipe_states.values()), default=0.0)
             tier_idx = 0 if max_u <= 25 else (1 if max_u <= 50 else (2 if max_u <= 75 else (3 if max_u <= 100 else 4)))
             self.kpi_cards["max_util"].set_value(
@@ -443,9 +460,12 @@ class CenterPanel(QFrame):
         if result is None or snap is None:
             return
         cfg = result.config
-        scen_es = theme.translate_scenario_name(
-            cfg.scenario_name, compact=bool(self._player_compact)
-        )
+        if cfg.target_fmax_pct is not None:
+            scen_es = f"Sim. {cfg.target_fmax_pct:.0f}% F_max"
+        else:
+            scen_es = theme.translate_scenario_name(
+                cfg.scenario_name, compact=bool(self._player_compact)
+            )
         if map_mode == "peak":
             txt = (
                 f"Pico 0–{dur_total:.0f}m · {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"

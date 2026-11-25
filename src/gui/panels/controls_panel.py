@@ -20,7 +20,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.algorithms import OVERLOAD_PERSISTENCE_LEVELS, classify_overload_persistence, classify_utilization
+from src.algorithms import (
+    OVERLOAD_PERSISTENCE_LEVELS,
+    MaxFlowResult,
+    classify_overload_persistence,
+    classify_utilization,
+)
 from src.simulation import TimeStepSnapshot
 from .. import theme
 from ..widgets import (
@@ -42,6 +47,9 @@ class ControlsPanel(QFrame):
     aboutToOpenSelector = Signal()
     paramsChanged = Signal()
     executeSimulationRequested = Signal()
+    calibrateFmaxRequested = Signal()
+    simulateTargetFmaxRequested = Signal(float)
+    maxFlowHighlightRequested = Signal()
 
     searchRequested = Signal(str)
     traversalRequested = Signal(str)
@@ -164,8 +172,12 @@ class ControlsPanel(QFrame):
         self.spin_duration = _make_spin(0.0, 1440.0, 10.0, 0, 90.0)
         self.spin_storm_dur = _make_spin(0.0, 1440.0, 5.0, 0, 60.0)
         self.spin_dt = _make_spin(0.0, 60.0, 0.5, 1, 1.0)
-        self.spin_ingress_pct = _make_spin(0.0, 100.0, 0.5, 1, 100.0)
+        self.spin_ingress_pct = _make_spin(0.0, 100.0, 0.5, 2, 100.0)
         self.spin_dry_flow = _make_spin(0.0, 10.0, 0.001, 3, 0.0)
+        self.spin_util_cap_pct = _make_spin(100.0, 300.0, 5.0, 0, 120.0)
+        self.spin_util_cap_pct.setToolTip(
+            "Tope físico de uso (% de F_max y Q_max) al cual el sistema rebosa y no admite más agua."
+        )
 
         fields = [
             ("Duración simulación (min)", self.spin_duration),
@@ -173,6 +185,7 @@ class ControlsPanel(QFrame):
             ("Paso temporal Δt (min)", self.spin_dt),
             ("Ingreso pluvial (%)", self.spin_ingress_pct),
             ("Caudal sanitario (m³/s)", self.spin_dry_flow),
+            ("Tope físico uso (%)", self.spin_util_cap_pct),
         ]
         for row_i, (label_txt, sb) in enumerate(fields):
             lbl = QLabel(label_txt, sec_sim)
@@ -195,6 +208,65 @@ class ControlsPanel(QFrame):
         preset_row.addWidget(btn_p1, 1)
         preset_row.addWidget(btn_p2, 1)
         sec_sim.body_layout.addLayout(preset_row)
+
+        self.btn_fmax_preset = StyledButton(
+            "Calibrado F_max (E3 = 100%)",
+            variant="dock_secondary",
+            font_pt=7,
+            pad_x=6,
+            pad_y=3,
+            parent=sec_sim,
+        )
+        self.btn_fmax_preset.setToolTip(
+            "Ajusta el ingreso pluvial para que Lluvia moderada (30 mm/h) iguale el flujo máximo F_max de Ford-Fulkerson."
+        )
+        self.btn_fmax_preset.clicked.connect(self.calibrateFmaxRequested.emit)
+        sec_sim.body_layout.addWidget(self.btn_fmax_preset)
+
+        self.lbl_fmax_badge = QLabel(
+            "Ford-Fulkerson: F_max = - · Tope = 120%", sec_sim
+        )
+        self.lbl_fmax_badge.setWordWrap(True)
+        self.lbl_fmax_badge.setFont(QFont(self._mono_font, 7))
+        self.lbl_fmax_badge.setStyleSheet(
+            f"background-color: {theme.PAPER_SUBTLE}; color: {theme.INK_PRIMARY}; "
+            f"border: 1px solid {theme.PAPER_BORDER}; padding: 3px 5px;"
+        )
+        sec_sim.body_layout.addWidget(self.lbl_fmax_badge)
+
+        fmax_sim_row = QHBoxLayout()
+        fmax_sim_row.setSpacing(4)
+        lbl_tf = QLabel("Simular % F_max", sec_sim)
+        lbl_tf.setFont(QFont(self._ui_font, 8))
+        fmax_sim_row.addWidget(lbl_tf)
+        fmax_sim_row.addStretch(1)
+
+        self.spin_target_fmax_pct = QDoubleSpinBox(sec_sim)
+        self.spin_target_fmax_pct.setLocale(c_loc)
+        self.spin_target_fmax_pct.setRange(0.0, 300.0)
+        self.spin_target_fmax_pct.setSingleStep(5.0)
+        self.spin_target_fmax_pct.setDecimals(0)
+        self.spin_target_fmax_pct.setValue(100.0)
+        self.spin_target_fmax_pct.setMinimumWidth(58)
+        self.spin_target_fmax_pct.setMaximumWidth(68)
+        fmax_sim_row.addWidget(self.spin_target_fmax_pct)
+
+        self.btn_sim_fmax = StyledButton(
+            "Simular %",
+            variant="dock_secondary",
+            font_pt=7,
+            pad_x=6,
+            pad_y=3,
+            parent=sec_sim,
+        )
+        self.btn_sim_fmax.setToolTip(
+            "Simula directamente una demanda equivalente al porcentaje indicado de F_max."
+        )
+        self.btn_sim_fmax.clicked.connect(
+            lambda: self.simulateTargetFmaxRequested.emit(float(self.spin_target_fmax_pct.value()))
+        )
+        fmax_sim_row.addWidget(self.btn_sim_fmax)
+        sec_sim.body_layout.addLayout(fmax_sim_row)
 
         rule_grid = QGridLayout()
         rule_grid.setContentsMargins(0, 2, 0, 2)
@@ -375,6 +447,17 @@ class ControlsPanel(QFrame):
         row_b2.addWidget(btn_dn, 1)
         row_b2.addWidget(btn_up, 1)
         sec_alg.body_layout.addLayout(row_b2)
+
+        self.btn_ford_fulkerson = StyledButton(
+            "Ford-Fulkerson (F_max y Corte Mín.)",
+            variant="dock_secondary",
+            font_pt=8,
+            pad_x=6,
+            pad_y=4,
+            parent=sec_alg,
+        )
+        self.btn_ford_fulkerson.clicked.connect(self.maxFlowHighlightRequested.emit)
+        sec_alg.body_layout.addWidget(self.btn_ford_fulkerson)
         lay.addWidget(sec_alg)
 
         # Lámina 4: Bitácora oscura + tira visual Queue/Stack
@@ -443,6 +526,33 @@ class ControlsPanel(QFrame):
             self.combo_bfs_start.setCurrentText(start_id)
             self.combo_bfs_target.setCurrentText(target_id)
 
+    def read_util_cap_pct(self) -> float:
+        return float(self.spin_util_cap_pct.value())
+
+    def set_util_cap_pct(self, cap_pct: float) -> None:
+        with blocked_signals(self.spin_util_cap_pct):
+            self.spin_util_cap_pct.setValue(float(cap_pct))
+        self._flush_param_change()
+
+    def update_fmax_summary(
+        self, max_flow_res: Optional[MaxFlowResult], cap_pct: Optional[float]
+    ) -> None:
+        if max_flow_res is None:
+            self.lbl_fmax_badge.setText("Ford-Fulkerson: F_max = -")
+            return
+        f_max = max_flow_res.max_flow_m3s
+        cut_txt = ", ".join(max_flow_res.min_cut_pipes[:5]) or "Ninguno"
+        if cap_pct is not None:
+            q_adm = f_max * (cap_pct / 100.0)
+            self.lbl_fmax_badge.setText(
+                f"F_max = {f_max:.4f} m³/s · Tope {cap_pct:.0f}% = {q_adm:.4f} m³/s\n"
+                f"Corte mín.: {cut_txt}"
+            )
+        else:
+            self.lbl_fmax_badge.setText(
+                f"F_max = {f_max:.4f} m³/s · Sin tope\nCorte mín.: {cut_txt}"
+            )
+
     def read_sim_inputs(self) -> Tuple[str, float, float, float, float, float, str, str]:
         split_rule = theme.ES_TO_SPLIT_RULE.get(
             self.combo_split_rule.currentText(), "proportional"
@@ -468,6 +578,7 @@ class ControlsPanel(QFrame):
         peak_all: Dict[str, float],
         ov_all: Dict[str, float],
         dur_total: float,
+        cap_pct: Optional[float] = None,
     ) -> None:
         if snap is None:
             return
@@ -490,7 +601,14 @@ class ControlsPanel(QFrame):
             short_desc = {"Cercana a capacidad máxima": "Cercana a cap. máx."}
             for idx, (rng, _col, desc) in enumerate(theme.COLOR_SCALE_LEGEND):
                 if idx < len(self._legend_text_labels):
-                    self._legend_text_labels[idx].setText(f"{rng} · {short_desc.get(desc, desc)}")
+                    if idx == 4 and cap_pct is not None:
+                        self._legend_text_labels[idx].setText(
+                            f">100–{cap_pct:.0f}% · Rebose (tope)"
+                        )
+                    else:
+                        self._legend_text_labels[idx].setText(
+                            f"{rng} · {short_desc.get(desc, desc)}"
+                        )
             if map_mode == "peak":
                 for pid in snap.pipe_states:
                     counts[classify_utilization(peak_all.get(pid, 0.0)).tier_index] += 1

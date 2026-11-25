@@ -392,11 +392,11 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.app._set_step(0)
         self.app._set_map_mode("overload_minutes")
         _pump(80)
-        expected_p31_ov = self.app.state.result.pipe_overloaded_minutes.get("P31", 0.0)
-        self.assertGreater(expected_p31_ov, 0.0)
+        expected_p25_ov = self.app.state.result.pipe_overloaded_minutes.get("P25", 0.0)
+        self.assertGreater(expected_p25_ov, 0.0)
         self.assertAlmostEqual(
-            self.app.network_canvas._overload_minutes_map.get("P31", 0.0),
-            expected_p31_ov,
+            self.app.network_canvas._overload_minutes_map.get("P25", 0.0),
+            expected_p25_ov,
             places=3,
         )
         self.assertIn("0–90 min", self.app.network_canvas._stamp_lbl.text())
@@ -680,8 +680,10 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertIsNone(self.app.state.previous_result)
         self.assertFalse(self.app.temporal_charts._banner_visible)
 
-        # 4. Escenario 5 (16k%): Perfil longitudinal en modos '% Uso vs Cap.' y 'Caudal m³/s'
+        # 4. Escenario 5 (tope 120% F_max): Perfil longitudinal en ruta crítica (P25) en '% Uso' y 'Caudal m³/s'
         self.app.controls_panel.combo_scenario.setCurrentIndex(4)
+        self.app.network_canvas.select_pipe("P25")
+        self.app._on_pipe_selected("P25")
         _pump(140)
         self.app._set_step(25)
         self.app.temporal_charts.set_subtab("profile")
@@ -780,6 +782,66 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertFalse(self.app.comparison_panel.loading_overlay.isVisible())
         self.assertTrue(self.app.comparison_panel.btn_compare.isEnabled())
         self.assertEqual(self.app.comparison_panel.table.rowCount(), 5)
+
+    def test_ford_fulkerson_tab_configurable_cap_and_fmax_simulation(self) -> None:
+        # 1. Cambiar tope físico a 130% y recalcular escenario actual (E5)
+        self.app.controls_panel.combo_scenario.setCurrentIndex(4)
+        _pump(120)
+        self.assertAlmostEqual(self.app.state.result.system_max_flow_m3s, 0.35914566, places=5)
+        self.assertAlmostEqual(self.app.state.result.utilization_cap_pct, 120.0, places=5)
+
+        self.app.controls_panel.set_util_cap_pct(130.0)
+        _pump(120)
+        self.assertAlmostEqual(self.app.state.result.utilization_cap_pct, 130.0, places=5)
+        self.assertAlmostEqual(self.app.state.result.peak_system_utilization_pct, 130.0, places=5)
+        self.assertIn("sys_fmax", self.app.center_panel.kpi_cards)
+
+        # Restaurar tope 120%
+        self.app.controls_panel.set_util_cap_pct(120.0)
+        _pump(120)
+
+        # 2. Botón Corte Mín. FF resalta aristas del corte mínimo en el canvas
+        self.app.controls_panel.btn_ford_fulkerson.click()
+        _pump(80)
+        self.assertTrue(self.app.network_canvas.highlight_pipe_ids)
+        for pid in ("P3", "P28", "P43", "P53"):
+            self.assertIn(pid, self.app.network_canvas.highlight_pipe_ids)
+
+        # 3. Pestaña Flujo Máx. (índice 4): cálculo asíncrono + tabla + doble clic para simular % F_max
+        self.app.right_tabs.setCurrentIndex(4)
+        deadline = time.monotonic() + 10.0
+        while self.app.is_max_flow_running() and time.monotonic() < deadline:
+            _pump(25)
+        _pump(100)
+        self.assertFalse(self.app.is_max_flow_running())
+        self.assertEqual(self.app.max_flow_panel.table.rowCount(), 9)
+        self.assertIsNotNone(self.app.state.max_flow_result)
+
+        # Activar fila 150% F_max desde el estimador (debe topar uso del sistema en 120%)
+        self.app.controls_panel.spin_target_fmax_pct.setValue(150)
+        self.app.controls_panel.btn_sim_fmax.click()
+        _pump(120)
+        self.assertAlmostEqual(self.app.state.active_target_fmax_pct, 150.0, places=4)
+        self.assertAlmostEqual(self.app.state.result.peak_system_utilization_pct, 120.0, places=4)
+        self.assertIn("Sim. 150% F_max", self.app.center_panel.lbl_clock.text())
+
+        # 4. Preset Calibrado F_max (E3 = 100%)
+        self.app.controls_panel.combo_scenario.setCurrentIndex(2)
+        _pump(100)
+        self.app.controls_panel.btn_fmax_preset.click()
+        _pump(120)
+        self.assertEqual(self.app.controls_panel.combo_scenario.currentIndex(), 2)
+        self.assertIsNone(self.app.state.active_target_fmax_pct)
+        self.assertAlmostEqual(
+            self.app.controls_panel.spin_ingress_pct.value(), 1.48, places=2
+        )
+        self.assertAlmostEqual(
+            self.app.state.result.peak_system_utilization_pct, 100.0, delta=0.5
+        )
+        self.app.pause()
+        self.app.controls_panel.apply_preset(100.0, 0.0)
+        self.app.right_tabs.setCurrentIndex(0)
+        _pump(80)
 
 
 if __name__ == "__main__":

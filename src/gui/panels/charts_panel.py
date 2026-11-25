@@ -434,14 +434,26 @@ class TemporalChartsPanel(QWidget):
             self._impact_banner_wrap.setVisible(True)
             self._banner_visible = True
 
-    def _configure_util_axis(self, ax, max_u_val: float) -> None:
+    def _configure_util_axis(
+        self, ax, max_u_val: float, cap_pct: Optional[float] = None
+    ) -> None:
         ax.axhspan(0.0, 75.0, color="#22c55e", alpha=0.06, zorder=0)
         ax.axhspan(75.0, 100.0, color="#f97316", alpha=0.09, zorder=0)
-        if max_u_val > 100.0:
-            ax.axhspan(100.0, max_u_val * 1.45, color="#dc2626", alpha=0.04, zorder=0)
+        top_ref = max(max_u_val, cap_pct or 100.0)
+        if top_ref > 100.0:
+            ax.axhspan(100.0, top_ref * 1.45, color="#dc2626", alpha=0.04, zorder=0)
 
         ax.axhline(75.0, color="#f97316", linestyle=":", linewidth=1.0, label="Crít. 75%", zorder=2)
         ax.axhline(100.0, color="#dc2626", linestyle="--", linewidth=1.25, label="Cap. 100%", zorder=2)
+        if cap_pct is not None:
+            ax.axhline(
+                cap_pct,
+                color="#7F1D1D",
+                linestyle="-.",
+                linewidth=1.25,
+                label=f"Tope rebose {cap_pct:.0f}%",
+                zorder=2.5,
+            )
 
         if max_u_val > 250.0:
             ax.set_yscale("symlog", linthresh=100.0, linscale=0.85)
@@ -450,7 +462,7 @@ class TemporalChartsPanel(QWidget):
             ax.minorticks_off()
         else:
             ax.set_yscale("linear")
-            ax.set_ylim(0.0, max(115.0, max_u_val * 1.22))
+            ax.set_ylim(0.0, max(115.0, (cap_pct or 100.0) * 1.15, max_u_val * 1.22))
 
         ax.yaxis.set_major_formatter(
             FuncFormatter(lambda v, _: f"{int(round(v)):,}%" if v >= 1 else "0%")
@@ -691,8 +703,11 @@ class TemporalChartsPanel(QWidget):
                 labelcolor=theme.INK_PRIMARY,
             )
         else:
+            admitted = [s.admitted_inflow_m3s for s in result.snapshots]
+            has_admission_cap = any(abs(a - i) > 1e-5 for a, i in zip(admitted, inflows))
+            f_max = float(result.system_max_flow_m3s)
             max_left_q = max(inflows + (flood_rates if has_flood else []) + [0.05])
-            max_ptar_q = max(ptar_out + [0.05])
+            max_ptar_q = max(ptar_out + (admitted if has_admission_cap else []) + [f_max, 0.05])
             use_split_scale = max_left_q > max_ptar_q * 5.0
 
             lines_all = []
@@ -730,8 +745,31 @@ class TemporalChartsPanel(QWidget):
                     spine.set_linewidth(0.85)
                 ax_ptar.spines["right"].set_color("#0F766E")
                 ax_ptar.spines["right"].set_linewidth(1.3)
-                ax_ptar.set_ylabel("PTAR 31 (der., m³/s)", color="#0F766E", fontsize=7.2)
+                ax_ptar.set_ylabel("PTAR 31 / F_max (der., m³/s)", color="#0F766E", fontsize=7.0)
 
+                if has_admission_cap:
+                    lines_all.extend(
+                        ax_ptar.plot(
+                            times,
+                            admitted,
+                            label="Admitido (der. →)",
+                            color="#1D4ED8",
+                            linestyle="-.",
+                            linewidth=1.45,
+                            zorder=3.5,
+                        )
+                    )
+                if f_max > 1e-6:
+                    lines_all.append(
+                        ax_ptar.axhline(
+                            f_max,
+                            color="#6B7280",
+                            linestyle=":",
+                            linewidth=1.1,
+                            label=f"F_max ({f_max:.2f})",
+                            zorder=2.5,
+                        )
+                    )
                 lines_all.extend(
                     ax_ptar.plot(
                         times,
@@ -744,16 +782,16 @@ class TemporalChartsPanel(QWidget):
                 )
                 ax_ptar.fill_between(times, 0.0, ptar_out, color="#0F766E", alpha=0.14, zorder=1)
                 self.ax_flow.set_ylim(0.0, max_left_q * 1.26)
-                ax_ptar.set_ylim(0.0, max_ptar_q * 2.35)
+                ax_ptar.set_ylim(0.0, max_ptar_q * 2.15)
                 self.ax_flow.set_ylabel("Entrada / Rebose (izq.)", color=theme.INK_PRIMARY, fontsize=7.2)
                 self.ax_flow.text(
                     0.02,
                     0.95,
-                    f"Izq ≤ {max_left_q:.1f} m³/s · Der PTAR ≤ {max_ptar_q:.2f} m³/s",
+                    f"Izq ≤ {max_left_q:.1f} m³/s · F_max = {f_max:.2f} · PTAR ≤ {max(ptar_out, default=0.0):.2f}",
                     transform=self.ax_flow.transAxes,
                     ha="left",
                     va="top",
-                    fontsize=6.1,
+                    fontsize=5.9,
                     color="#0F766E",
                     bbox=dict(
                         boxstyle="round,pad=0.18",
@@ -765,6 +803,29 @@ class TemporalChartsPanel(QWidget):
                 )
             else:
                 max_shared = max(max_left_q, max_ptar_q)
+                if has_admission_cap:
+                    lines_all.extend(
+                        self.ax_flow.plot(
+                            times,
+                            admitted,
+                            label="Admitido",
+                            color="#1D4ED8",
+                            linestyle="-.",
+                            linewidth=1.45,
+                            zorder=3.5,
+                        )
+                    )
+                if f_max > 1e-6:
+                    lines_all.append(
+                        self.ax_flow.axhline(
+                            f_max,
+                            color="#6B7280",
+                            linestyle=":",
+                            linewidth=1.1,
+                            label=f"F_max ({f_max:.2f})",
+                            zorder=2.5,
+                        )
+                    )
                 lines_all.extend(
                     self.ax_flow.plot(
                         times,
@@ -785,7 +846,7 @@ class TemporalChartsPanel(QWidget):
                 fontsize=8.5,
                 fontweight="bold",
                 fontfamily=["Inter", "Segoe UI", "DejaVu Sans"],
-                pad=22,
+                pad=22 if len(lines_all) <= 3 else 30,
             )
             self.ax_flow.legend(
                 lines_all,
@@ -888,7 +949,9 @@ class TemporalChartsPanel(QWidget):
                         f"Empate en pico: {' = '.join(tied)} ({_fmt_pct_compact(peaks_seen[0])})"
                     )
 
-        self._configure_util_axis(self.ax_util, max_u_val)
+        self._configure_util_axis(
+            self.ax_util, max_u_val, cap_pct=result.utilization_cap_pct
+        )
 
         if tied_note:
             self.ax_util.text(
@@ -1095,6 +1158,9 @@ class TemporalChartsPanel(QWidget):
             for idx, (pipe, fp, dp, cl, _qd) in enumerate(
                 zip(route, fill_pcts, dem_pcts, closed_flags, q_dems)
             ):
+                ps_cur = snap.pipe_states.get(pipe.pipe_id)
+                raw_dem_pct = ps_cur.demand_ratio_pct if ps_cur is not None else dp
+                is_capped = bool(ps_cur.is_overflow_capped) if ps_cur is not None else False
                 if cl:
                     self.ax_profile.bar(
                         [idx],
@@ -1113,7 +1179,7 @@ class TemporalChartsPanel(QWidget):
                     tag_col = "#374151"
                 elif dp > 100.5:
                     has_overflow = True
-                    ext = min(62.0, 16.0 + 18.0 * math.log10(max(1.0, dp / 100.0)))
+                    ext = min(62.0, 16.0 + 18.0 * math.log10(max(1.0, raw_dem_pct / 100.0)))
                     self.ax_profile.bar(
                         [idx],
                         [ext],
@@ -1127,9 +1193,9 @@ class TemporalChartsPanel(QWidget):
                     )
                     top_b = 100.0 + ext
                     max_vis_y = max(max_vis_y, top_b + 30.0)
-                    mult = dp / 100.0
+                    mult = raw_dem_pct / 100.0
                     mult_s = f"×{mult:.0f}" if mult >= 10.0 else f"×{mult:.1f}"
-                    tag = f"{_fmt_pct_compact(dp)}\n({mult_s})"
+                    tag = f"{_fmt_pct_compact(dp)}\n(Tope {mult_s})" if is_capped else f"{_fmt_pct_compact(dp)}\n({mult_s})"
                     y_pos = top_b + 3.0
                     tag_col = "#991B1B"
                 else:
@@ -1192,9 +1258,14 @@ class TemporalChartsPanel(QWidget):
             top_ylim = max(max_vis_y, 178.0 if has_overflow else 118.0)
             self.ax_profile.set_ylim(0.0, top_ylim)
             if has_overflow:
+                cap_lbl = (
+                    f"{result.utilization_cap_pct:.0f}%\nRebose"
+                    if result.utilization_cap_pct is not None
+                    else "Rebose\n>100%"
+                )
                 self.ax_profile.set_yticks([0, 25, 50, 75, 100, 138])
                 self.ax_profile.set_yticklabels(
-                    ["0%", "25%", "50%", "75%", "100%\nQmax", "Rebose\n>100%"]
+                    ["0%", "25%", "50%", "75%", "100%\nQmax", cap_lbl]
                 )
             else:
                 self.ax_profile.set_yticks([0, 25, 50, 75, 100])

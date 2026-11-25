@@ -455,6 +455,9 @@ class InspectorPanel(QWidget):
                     add_line(f"Marca dataset   : {p.note}")
                 if snap and p.pipe_id in snap.pipe_states:
                     ps = snap.pipe_states[p.pipe_id]
+                    if ps.in_min_cut:
+                        add_line("[CORTE MÍN. FF]  : Tramo crítico de flujo máximo", "alert")
+                    add_line(f"Flujo FF máx.   : {ps.max_flow_share_m3s:.5f} m³/s")
                     add_line("")
                     add_line(f"Estado en t = {snap.time_min:.1f} min", "section")
                     if ps.is_closed:
@@ -463,18 +466,20 @@ class InspectorPanel(QWidget):
                     else:
                         add_line(f"Caudal conducido: {ps.flow_m3s:.5f} m³/s")
                         add_line(
-                            f"Demanda entrante: {ps.demand_flow_m3s:.5f} m³/s ({ps.utilization_pct / 100.0:.2f}× Qmax)"
+                            f"Demanda entrante: {ps.demand_flow_m3s:.5f} m³/s ({ps.demand_ratio_pct / 100.0:.2f}× Qmax)"
                         )
                         add_line(f"Vol. tránsito   : {ps.volume_in_transit_m3:.2f} m³")
+                        cap_tag = " (TOPE REBOSE)" if ps.is_overflow_capped else ""
                         add_line(
-                            f"Utilización     : {ps.utilization_pct:.2f} %",
+                            f"Utilización     : {ps.utilization_pct:.2f} %{cap_tag}",
                             "alert" if ps.utilization_pct > 100.0 else None,
                         )
                         add_line(f"Clasificación   : {ps.category.label}")
                         add_line(f"Exceso no cond. : {ps.excess_flow_m3s:.5f} m³/s")
                 if result:
                     pk_u = result.peak_pipe_utilization.get(p.pipe_id, 0.0)
-                    add_line(f"Pico utilización: {pk_u:.2f} % ({pk_u / 100.0:.2f}× Qmax)")
+                    pk_dem = result.peak_pipe_demand_ratio.get(p.pipe_id, pk_u)
+                    add_line(f"Pico utilización: {pk_u:.2f} % (Dem. {pk_dem / 100.0:.2f}× Qmax)")
                     ov_m = result.pipe_overloaded_minutes.get(p.pipe_id, 0.0)
                     _, _, ov_desc = classify_overload_persistence(ov_m, result.config.duration_min)
                     add_line(
@@ -532,6 +537,22 @@ class InspectorPanel(QWidget):
                     f"Ingreso / Fuent.: {cfg.ingress_factor*100:.1f}% · {src_es} | Q_san={cfg.dry_weather_flow_per_source_m3s:.4f}"
                 )
                 add_line(f"Entrada acum.   : {snap.cumulative_inflow_m3:,.2f} m³")
+                cap_lbl = (
+                    f"{result.utilization_cap_pct:.0f}%"
+                    if result.utilization_cap_pct is not None
+                    else "Sin tope"
+                )
+                add_line(
+                    f"Flujo máx. (FF) : {result.system_max_flow_m3s:.4f} m³/s (Corte: {', '.join(result.min_cut_pipes) or '-'})"
+                )
+                sys_tag = " [TOPE REBOSE]" if snap.system_overflow_capped else ""
+                add_line(
+                    f"Uso sistema (FF): {snap.system_utilization_pct:.1f}% (Dem. {snap.system_demand_ratio_pct:.1f}% · Tope {cap_lbl}){sys_tag}",
+                    "alert" if snap.system_utilization_pct > 100.0 else None,
+                )
+                add_line(
+                    f"Admitido / Reb. : {snap.admitted_inflow_m3s:.4f} / {snap.inlet_overflow_m3s:.4f} m³/s"
+                )
                 add_line(
                     f"Descarga PTAR 31: {snap.cumulative_sink_discharge_m3:,.2f} m³ (pico {result.peak_sink_discharge_m3s:.4f} m³/s)"
                 )

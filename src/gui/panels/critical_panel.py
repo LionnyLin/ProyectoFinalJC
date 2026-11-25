@@ -256,16 +256,23 @@ class CriticalPipesPanel(QWidget):
                     estado_txt = "Cerrada 100%"
                     util_txt = "0.0%"
                 else:
-                    estado_txt = (
-                        short_estado.get(rec.category.label, rec.category.label)
-                        if compact
-                        else wide_estado.get(rec.category.label, rec.category.label)
-                    )
-                    util_txt = (
-                        f"{rec.utilization_pct:.1f}% ({rec.utilization_pct / 100.0:.1f}×)"
-                        if rec.utilization_pct > 100.5
-                        else f"{rec.utilization_pct:.1f}%"
-                    )
+                    is_capped = rec.demand_ratio_pct > rec.utilization_pct + 0.5
+                    if is_capped:
+                        estado_txt = "Rebose (tope)"
+                        util_txt = (
+                            f"{rec.utilization_pct:.1f}% ({rec.demand_ratio_pct / 100.0:.1f}×)"
+                        )
+                    else:
+                        estado_txt = (
+                            short_estado.get(rec.category.label, rec.category.label)
+                            if compact
+                            else wide_estado.get(rec.category.label, rec.category.label)
+                        )
+                        util_txt = (
+                            f"{rec.utilization_pct:.1f}% ({rec.demand_ratio_pct / 100.0:.1f}×)"
+                            if rec.utilization_pct > 100.5
+                            else f"{rec.utilization_pct:.1f}%"
+                        )
                 return (
                     str(rec.rank),
                     rec.pipe_id,

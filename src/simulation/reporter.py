@@ -8,6 +8,7 @@ from typing import List, Optional
 from src.algorithms.analysis import classify_utilization, rank_critical_pipes
 from src.io.data_loader import NetworkDataset
 from .comparison import ScenarioSummary
+from .max_flow_estimator import estimate_fmax_scenarios
 from .models import SimulationResult, resolve_pipe_hydraulics
 
 
@@ -37,6 +38,8 @@ def generate_markdown_report(
             for pid in eff_qmax_map
         },
     )
+    ff_res, est_rows = estimate_fmax_scenarios(dataset, cfg)
+    cap_txt = f"{cfg.max_physical_utilization_pct:.1f}%" if cfg.max_physical_utilization_pct is not None else "Sin tope"
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     abs_src = os.path.abspath(dataset.source_path)
@@ -70,7 +73,9 @@ def generate_markdown_report(
         f"- **Reparto entre fuentes:** {cfg.source_distribution} (por capacidad instalada o uniforme 1/8)",
         f"- **Regla de distribución en bifurcaciones:** {cfg.split_rule}",
         "- **Tiempo de tránsito:** $t_i = L_i / V_i$, con $V_i = Q_{max,i} / A_i$ (Manning) e integración con sub-paso hidráulico continuo ($\\Delta t_{sim} \\le 10\\;s$).",
-        "- **Utilización oficial:** $O_i(t) = (Q_{dem,i}(t) / Q_{max,ef,i}) \\times 100$ sin techo artificial; la conducción física aguas abajo se limita a $Q_{max,ef,i}$.",
+        f"- **Flujo máximo del sistema (Ford-Fulkerson / Edmonds-Karp):** $F_{{max}} = {ff_res.max_flow_m3s:.5f}$ m³/s; corte mínimo: {', '.join(ff_res.min_cut_pipes) or 'Ninguno'} ($\\sum Q_{{max}} = {ff_res.min_cut_capacity_m3s:.5f}$ m³/s).",
+        f"- **Admisión acotada y tope físico por rebose:** Tope configurado = {cap_txt}. El sistema admite hasta $(U_{{tope}}/100)\\cdot F_{{max}}$; al llegar al tope no entra más agua, el porcentaje de uso deja de aumentar y el exceso rebosa en superficie.",
+        "- **Utilización acotada:** $O_i(t) = \\min(U_{tope},\\; (Q_{dem,i}(t) / Q_{max,ef,i}) \\times 100)$ y $U_{sis}(t) = \\min(U_{tope},\\; (Q_{req}(t) / F_{max}) \\times 100)$; la conducción física aguas abajo se limita a $Q_{max,ef,i}$.",
         f"- **Pozos finitos y rebose:** Capacidad máxima de pozo = {cfg.max_manhole_storage_m3:.1f} m³ antes de derivar excedente a rebose superficial en vía con conservación exacta de masa.",
         "- **Nota dataset (P57):** Se conserva `P57 = 12\"` (`0.08743 m³/s`) tal como figura en `DataSetBicentenario.xlsx` (el Anexo 2 gráfico del enunciado rotula `0.19`).",
     ]
@@ -85,11 +90,15 @@ def generate_markdown_report(
     lines.extend([
         "",
         "## 3. Resultados Globales y Conservación de Masa",
-        f"- **Volumen total inyectado:** {current_result.total_inflow_m3:,.3f} m³",
+        f"- **Flujo máximo del sistema (Ford-Fulkerson):** {current_result.system_max_flow_m3s:.5f} m³/s",
+        f"- **Uso máximo del sistema (% de F_max):** {current_result.peak_system_utilization_pct:.2f}% (Demanda racional pico: {current_result.peak_system_demand_ratio_pct:.2f}%)",
+        f"- **Volumen total generado (Método Racional):** {current_result.total_inflow_m3:,.3f} m³",
+        f"- **Volumen admitido en la red (≤ tope · F_max):** {current_result.total_admitted_inflow_m3:,.3f} m³",
+        f"- **Volumen rebosado en entradas por tope:** {current_result.total_inlet_overflow_m3:,.3f} m³",
         f"- **Volumen descargado en PTAR Punta Canoa (Nodo 31):** {current_result.total_sink_discharge_m3:,.3f} m³",
         f"- **Caudal pico en PTAR Punta Canoa:** {current_result.peak_sink_discharge_m3s:.4f} m³/s",
         f"- **Volumen remanente (en pozos + tránsito al cierre):** {current_result.final_residual_m3:,.3f} m³",
-        f"- **Rebose superficial acumulado en vía:** {current_result.total_surface_flooding_m3:,.3f} m³",
+        f"- **Rebose superficial acumulado total en vía:** {current_result.total_surface_flooding_m3:,.3f} m³",
         f"- **Error máximo de balance de masa:** {current_result.max_mass_balance_error_m3:.3e} m³",
         f"- **Tuberías críticas (>75–100 %):** {len(current_result.ever_near_capacity_pipes)} ({', '.join(current_result.ever_near_capacity_pipes) or 'Ninguna'})",
         f"- **Tuberías sobrecargadas (>100 %):** {len(current_result.ever_overloaded_pipes)} ({', '.join(current_result.ever_overloaded_pipes) or 'Ninguna'})",
@@ -107,17 +116,31 @@ def generate_markdown_report(
             f"{rec.demand_ratio_pct / 100.0:.2f}x | {rec.category.label} | {rec.excess_flow_m3s:.5f} |"
         )
 
+    lines.extend([
+        "",
+        "## 5. Estimaciones y Simulaciones Basadas en % de Flujo Máximo (Ford-Fulkerson)",
+        "| % F_max | Q_req (m³/s) | Q_adm (m³/s) | I_eq (mm/h) | Uso Sis. (%) | Máx Tub. (%) | Tub. Crítica | >100% | Pico PTAR (m³/s) | Rebose Total (m³) | Estado |",
+        "|---:|---:|---:|---:|---:|---:|:---:|---:|---:|---:|:---|",
+    ])
+    for r in est_rows:
+        lines.append(
+            f"| {r.target_fmax_pct:.0f}% | {r.requested_flow_m3s:.4f} | {r.admitted_flow_m3s:.4f} | "
+            f"{r.equivalent_intensity_mm_h:.2f} | {r.system_utilization_pct:.1f}% | {r.max_pipe_utilization_pct:.1f}% | "
+            f"{r.most_critical_pipe} | {r.num_overloaded_pipes} | {r.peak_sink_discharge_m3s:.4f} | "
+            f"{r.total_surface_flooding_m3:,.2f} | {r.state_label} |"
+        )
+
     if comparisons:
         lines.extend([
             "",
-            "## 5. Comparación entre Escenarios de Precipitación",
-            "| Escenario | Condición | Intensidad (mm/h) | Util. Máx (%) | Razón Máx | Tubería Crítica | Críticas (>75–100%) | Sobrec. (>100%) | Pico PTAR (m³/s) | Rebose (m³) | Error Masa (m³) |",
-            "|:---:|:---|---:|---:|---:|:---:|---:|---:|---:|---:|---:|",
+            "## 6. Comparación entre Escenarios de Precipitación",
+            "| Escenario | Condición | Intensidad (mm/h) | Uso Sis. (%) | Util. Máx (%) | Razón Máx | Tubería Crítica | Críticas (>75–100%) | Sobrec. (>100%) | Pico PTAR (m³/s) | Rebose (m³) | Error Masa (m³) |",
+            "|:---:|:---|---:|---:|---:|---:|:---:|---:|---:|---:|---:|---:|",
         ])
         for sc in comparisons:
             lines.append(
                 f"| {sc.scenario_id} | {sc.condition} | {sc.intensity_mm_h:.1f} | "
-                f"{sc.max_utilization_pct:.2f}% | {sc.max_demand_ratio_pct / 100.0:.2f}x | {sc.most_critical_pipe} | "
+                f"{sc.peak_system_utilization_pct:.1f}% | {sc.max_utilization_pct:.2f}% | {sc.max_demand_ratio_pct / 100.0:.2f}x | {sc.most_critical_pipe} | "
                 f"{sc.num_near_capacity_pipes} | {sc.num_overloaded_pipes} | "
                 f"{sc.peak_sink_discharge_m3s:.4f} | {sc.total_surface_flooding_m3:,.2f} | {sc.mass_balance_error_m3:.2e} |"
             )

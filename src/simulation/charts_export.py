@@ -8,8 +8,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 
+from src.algorithms.max_flow import MaxFlowResult
 from src.io.data_loader import load_dataset
 from src.simulation.comparison import ScenarioSummary, compare_all_scenarios
+from src.simulation.max_flow_estimator import MaxFlowEstimationRow, estimate_fmax_scenarios
 from src.simulation.models import SimulationConfig, SimulationResult, compute_symlog_ticks
 
 SINGLE_COL_FIGSIZE = (3.5, 2.8)
@@ -129,16 +131,26 @@ def generate_single_column_figures(
             linewidth=widths[idx % len(widths)],
         )
     max_u = max((pk for _, pk in top5), default=100.0)
+    cap_pct = result.utilization_cap_pct
     ax2.axhspan(0.0, 75.0, color="#22c55e", alpha=0.06, zorder=0)
     ax2.axhspan(75.0, 100.0, color="#f97316", alpha=0.09, zorder=0)
-    ax2.axhline(100.0, color="#991b1b", linestyle="--", linewidth=1.2, label="Cap. 100%")
+    ax2.axhline(100.0, color="#991b1b", linestyle="--", linewidth=1.1, label="Cap. 100%")
+    if cap_pct is not None:
+        ax2.axhline(
+            cap_pct,
+            color="#7F1D1D",
+            linestyle="-.",
+            linewidth=1.25,
+            label=f"Tope {cap_pct:.0f}%",
+        )
     if max_u > 250.0:
         ax2.set_yscale("symlog", linthresh=100.0, linscale=0.85)
         ax2.set_ylim(0.0, max_u * 3.0)
         ax2.set_yticks(compute_symlog_ticks(max_u * 1.4))
         ax2.minorticks_off()
     else:
-        ax2.set_ylim(0.0, max(135.0, max_u * 1.38))
+        ax2.set_yscale("linear")
+        ax2.set_ylim(0.0, max(135.0, (cap_pct or 100.0) * 1.25, max_u * 1.38))
     ax2.yaxis.set_major_formatter(
         FuncFormatter(lambda v, _: f"{int(round(v)):,}%" if v >= 1 else "0%")
     )
@@ -215,13 +227,69 @@ def generate_single_column_figures(
     return paths
 
 
+def generate_max_flow_figure(
+    max_flow_res: MaxFlowResult,
+    est_rows: List[MaxFlowEstimationRow],
+    out_dir: str,
+) -> str:
+    """Genera fig4_estimacion_ford_fulkerson.png (3.5 × 2.8 in @ 300 DPI) con la meseta de tope."""
+    _apply_publication_rc()
+    os.makedirs(out_dir, exist_ok=True)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=SINGLE_COL_FIGSIZE,
+        dpi=DPI,
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.05, 0.95]},
+        constrained_layout=True,
+    )
+    xs = [r.target_fmax_pct for r in est_rows]
+    sys_u = [r.system_utilization_pct for r in est_rows]
+    pipe_u = [r.max_pipe_utilization_pct for r in est_rows]
+    floods = [r.total_surface_flooding_m3 for r in est_rows]
+    cap_pct = est_rows[0].result.utilization_cap_pct if est_rows else 120.0
+
+    ax_top.plot(xs, sys_u, marker="o", markersize=3.0, color="#1D4ED8", linewidth=1.7, label="Uso Sis. (% F_max)")
+    ax_top.plot(xs, pipe_u, marker="s", markersize=2.6, linestyle="--", color="#EA580C", linewidth=1.35, label="Máx. Tub. (%)")
+    ax_top.axvline(100.0, color="#6B7280", linestyle=":", linewidth=1.0, label="100% F_max")
+    if cap_pct is not None:
+        ax_top.axhline(cap_pct, color="#991B1B", linestyle="-.", linewidth=1.2, label=f"Tope {cap_pct:.0f}%")
+        if xs and max(xs) >= cap_pct:
+            ax_top.axvspan(cap_pct, max(xs) * 1.03, color="#DC2626", alpha=0.07, zorder=0)
+    top_y = max(sys_u + pipe_u + ([cap_pct] if cap_pct is not None else []) + [115.0])
+    ax_top.set_ylim(0.0, top_y * 1.24)
+    ax_top.set_ylabel("% Uso", fontsize=6.8)
+    ax_top.set_title(
+        f"Ford-Fulkerson (F_max = {max_flow_res.max_flow_m3s:.4f} m³/s)",
+        fontsize=7.6,
+    )
+    ax_top.grid(True)
+    ax_top.legend(loc="lower right", ncol=2, frameon=True, fontsize=5.6)
+
+    ax_bot.plot(xs, floods, marker="o", markersize=2.8, color="#DC2626", linewidth=1.6, label="Rebose (m³)")
+    ax_bot.fill_between(xs, 0.0, floods, color="#DC2626", alpha=0.14)
+    ax_bot.set_ylim(0.0, max(50.0, max(floods, default=10.0) * 1.25))
+    ax_bot.set_xlabel("Demanda de entrada (% de F_max)", fontsize=6.8)
+    ax_bot.set_ylabel("Rebose (m³)", fontsize=6.8)
+    ax_bot.grid(True)
+    ax_bot.legend(loc="upper left", frameon=True, fontsize=5.8)
+
+    out_path = os.path.join(out_dir, "fig4_estimacion_ford_fulkerson.png")
+    fig.savefig(out_path, dpi=DPI)
+    plt.close(fig)
+    return out_path
+
+
 if __name__ == "__main__":
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     ds = load_dataset(os.path.join(base_dir, "data", "DataSetBicentenario.xlsx"))
     base_cfg = SimulationConfig(scenario_id=3, scenario_name="Moderate rain", intensity_mm_h=30.0)
     comps = compare_all_scenarios(ds, base_cfg)
+    ff_res, est_rows = estimate_fmax_scenarios(ds, base_cfg)
     out = os.path.join(base_dir, "docs", "figuras")
     primary = comps[2] if len(comps) > 2 else comps[0]
     generated = generate_single_column_figures(primary.result, comps, out)
+    generated.append(generate_max_flow_figure(ff_res, est_rows, out))
     for g in generated:
         print("Figura 3.5x2.8 in generada:", g)

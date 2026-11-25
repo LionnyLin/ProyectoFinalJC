@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import math
 from typing import Dict, List, Optional, Tuple
 from src.algorithms.analysis import UtilizationCategory
+from src.algorithms.max_flow import MaxFlowResult
 from src.data_structures import PipeEdge
 
 
@@ -76,8 +77,28 @@ class SimulationConfig:
     split_rule: str = "proportional"  # "proportional" (por Qmax) o "equal" (uniforme)
     source_distribution: str = "capacity"  # "capacity" (ponderado por Qmax) o "equal" (1/N)
     max_manhole_storage_m3: float = 4.0  # Capacidad física amortiguadora por pozo antes de rebose
-    max_physical_utilization_pct: Optional[float] = None  # Obsoleto: mantenido solo por compatibilidad
+    max_physical_utilization_pct: Optional[float] = 120.0  # Tope físico de uso por rebose (>=100%, ej. 120%)
+    use_ford_fulkerson_admission: bool = True  # Limita admisión global a (tope/100)*F_max vía Ford-Fulkerson
+    target_fmax_pct: Optional[float] = None  # Si se define, fija la demanda de lluvia como % de F_max
     interventions: Dict[str, PipeIntervention] = field(default_factory=dict)
+
+
+def compute_fmax_calibrated_ingress(
+    f_max_m3s: float,
+    runoff_coefficient_c: float,
+    area_ha: float,
+    reference_intensity_mm_h: float = 30.0,
+) -> float:
+    """Calcula el factor de ingreso pluvial que iguala Q_racional(I_ref) con F_max."""
+    q_raw = (
+        0.00278
+        * float(runoff_coefficient_c)
+        * float(reference_intensity_mm_h)
+        * float(area_ha)
+    )
+    if q_raw <= 1e-12 or f_max_m3s <= 0.0:
+        return 0.001
+    return max(0.001, min(1.0, float(f_max_m3s) / q_raw))
 
 
 @dataclass
@@ -88,14 +109,17 @@ class PipeStepState:
     flow_m3s: float          # Caudal físico conducido aguas abajo (<= Qmax, coherente con node.outflow_m3s)
     conveyed_flow_m3s: float # Caudal físico transportado aguas abajo (<= Qmax)
     volume_in_transit_m3: float
-    utilization_pct: float   # Utilización oficial O_i(t) = (Q_demanda / Qmax_ef) * 100 sin recorte
+    utilization_pct: float   # Utilización física acotada al tope de rebose (<= max_physical_utilization_pct)
     category: UtilizationCategory
     excess_flow_m3s: float   # Déficit/exceso de demanda por encima de Qmax (m³/s)
     demand_flow_m3s: float = 0.0     # Caudal de demanda total intentando ingresar (m³/s)
-    demand_ratio_pct: float = 0.0    # Índice de demanda = (Q_demanda / Qmax_ef) * 100 (%)
+    demand_ratio_pct: float = 0.0    # Índice de demanda = (Q_demanda / Qmax_ef) * 100 (%) sin recorte
     effective_q_max_m3s: Optional[float] = None
     effective_velocity_ms: Optional[float] = None
     is_closed: bool = False
+    is_overflow_capped: bool = False
+    max_flow_share_m3s: float = 0.0
+    in_min_cut: bool = False
 
 
 @dataclass
@@ -130,6 +154,13 @@ class TimeStepSnapshot:
     critical_pipe_ids: List[str] = field(default_factory=list)       # > 75% (cercanas + sobrecargadas)
     near_capacity_pipe_ids: List[str] = field(default_factory=list)  # > 75% y <= 100%
     overloaded_pipe_ids: List[str] = field(default_factory=list)     # > 100%
+    admitted_inflow_m3s: float = 0.0
+    inlet_overflow_m3s: float = 0.0
+    system_max_flow_m3s: float = 0.0
+    system_utilization_pct: float = 0.0
+    system_demand_ratio_pct: float = 0.0
+    ptar_fmax_utilization_pct: float = 0.0
+    system_overflow_capped: bool = False
 
 
 @dataclass
@@ -155,6 +186,15 @@ class SimulationResult:
     peak_pipe_demand_flow: Dict[str, float] = field(default_factory=dict)
     total_surface_flooding_m3: float = 0.0
     max_node_flooding_m3: Dict[str, float] = field(default_factory=dict)
+    system_max_flow_m3s: float = 0.0
+    max_flow_result: Optional[MaxFlowResult] = None
+    min_cut_pipes: List[str] = field(default_factory=list)
+    utilization_cap_pct: Optional[float] = 120.0
+    peak_system_utilization_pct: float = 0.0
+    peak_system_demand_ratio_pct: float = 0.0
+    total_admitted_inflow_m3: float = 0.0
+    total_inlet_overflow_m3: float = 0.0
+    overflow_capped_pipes: List[str] = field(default_factory=list)
 
 
 def compute_symlog_ticks(max_u_val: float) -> List[float]:

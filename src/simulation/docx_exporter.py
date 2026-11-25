@@ -22,8 +22,9 @@ from docx.shared import Inches, Pt, RGBColor
 
 from src.algorithms.analysis import rank_critical_pipes
 from src.io.data_loader import NetworkDataset
-from .charts_export import generate_single_column_figures
+from .charts_export import generate_max_flow_figure, generate_single_column_figures
 from .comparison import ScenarioSummary
+from .max_flow_estimator import estimate_fmax_scenarios
 from .models import SimulationResult, resolve_pipe_hydraulics
 from .omml_equations import M_NS, add_omml_equation
 
@@ -303,25 +304,36 @@ def generate_docx_report(
         )
         _add_bullet(doc, int_desc, "Intervenciones activas: ")
 
-    _add_heading_1(doc, "2. Ecuaciones del Modelo Hidráulico")
+    _add_heading_1(doc, "2. Ecuaciones del Modelo Hidráulico y Ford-Fulkerson")
     _add_body(doc, "Cada expresión se formula de manera independiente en formato OMML nativo a 8.5 pt:")
     add_omml_equation(doc, "rational", "1")
     add_omml_equation(doc, "inflow", "2")
-    add_omml_equation(doc, "velocity", "3")
-    add_omml_equation(doc, "transit", "4")
-    add_omml_equation(doc, "utilization", "5")
-    add_omml_equation(doc, "mass_balance", "6")
+    add_omml_equation(doc, "ford_fulkerson", "3")
+    add_omml_equation(doc, "admitted_flow", "4")
+    add_omml_equation(doc, "system_utilization", "5")
+    add_omml_equation(doc, "velocity", "6")
+    add_omml_equation(doc, "transit", "7")
+    add_omml_equation(doc, "utilization", "8")
+    add_omml_equation(doc, "mass_balance", "9")
+
+    ff_res, est_rows = estimate_fmax_scenarios(dataset, cfg)
+    cap_txt = f"{cfg.max_physical_utilization_pct:.0f}%" if cfg.max_physical_utilization_pct is not None else "Sin tope"
 
     _add_heading_1(doc, "3. Resultados Globales y Conservación de Masa")
     _add_plain_table(
         doc,
         headers=("Indicador del sistema", "Valor obtenido"),
         rows=[
-            ("Volumen total inyectado (m3)", f"{current_result.total_inflow_m3:,.3f}"),
+            ("Flujo máximo F_max (m3/s)", f"{current_result.system_max_flow_m3s:.5f}"),
+            ("Corte mínimo (Ford-Fulkerson)", ", ".join(ff_res.min_cut_pipes) or "Ninguno"),
+            ("Uso pico sistema (% F_max)", f"{current_result.peak_system_utilization_pct:.1f}% (tope {cap_txt})"),
+            ("Volumen generado Racional (m3)", f"{current_result.total_inflow_m3:,.3f}"),
+            ("Volumen admitido en red (m3)", f"{current_result.total_admitted_inflow_m3:,.3f}"),
+            ("Rebose en entradas por tope (m3)", f"{current_result.total_inlet_overflow_m3:,.3f}"),
             ("Volumen descargado PTAR 31 (m3)", f"{current_result.total_sink_discharge_m3:,.3f}"),
             ("Caudal pico en PTAR 31 (m3/s)", f"{current_result.peak_sink_discharge_m3s:.4f}"),
             ("Volumen remanente pozos/tránsito (m3)", f"{current_result.final_residual_m3:,.3f}"),
-            ("Rebose superficial en vía (m3)", f"{current_result.total_surface_flooding_m3:,.3f}"),
+            ("Rebose superficial total en vía (m3)", f"{current_result.total_surface_flooding_m3:,.3f}"),
             ("Error máximo balance de masa (m3)", f"{current_result.max_mass_balance_error_m3:.3e}"),
             ("Tuberías críticas (>75–100 %)", str(len(current_result.ever_near_capacity_pipes))),
             ("Tuberías sobrecargadas (>100 %)", str(len(current_result.ever_overloaded_pipes))),
@@ -330,7 +342,7 @@ def generate_docx_report(
     )
 
     # Figuras 3.5 x 2.8 in
-    _add_heading_1(doc, "4. Evolución Temporal y Comparación Gráfica")
+    _add_heading_1(doc, "4. Evolución Temporal, Saturación y Comparación Gráfica")
     with tempfile.TemporaryDirectory() as tmpdir:
         comp_for_fig = comps or [
             ScenarioSummary(
@@ -350,15 +362,42 @@ def generate_docx_report(
                 max_demand_ratio_pct=max(current_result.peak_pipe_demand_ratio.values(), default=0.0),
                 total_surface_flooding_m3=current_result.total_surface_flooding_m3,
                 num_near_capacity_pipes=len(current_result.ever_near_capacity_pipes),
+                system_max_flow_m3s=current_result.system_max_flow_m3s,
+                peak_system_utilization_pct=current_result.peak_system_utilization_pct,
+                peak_system_demand_ratio_pct=current_result.peak_system_demand_ratio_pct,
+                total_admitted_inflow_m3=current_result.total_admitted_inflow_m3,
+                total_inlet_overflow_m3=current_result.total_inlet_overflow_m3,
             )
         ]
         fig_paths = generate_single_column_figures(current_result, comp_for_fig, tmpdir)
-        _add_single_column_figure(doc, fig_paths[0], "Figura 1. Balance temporal de entrada y descarga en la PTAR Punta Canoa.")
-        _add_single_column_figure(doc, fig_paths[1], "Figura 2. Evolución porcentual de las cinco tuberías más exigidas.")
+        fig4_path = generate_max_flow_figure(ff_res, est_rows, tmpdir)
+        _add_single_column_figure(doc, fig_paths[0], "Figura 1. Balance temporal de entrada, admisión y descarga en PTAR Punta Canoa.")
+        _add_single_column_figure(doc, fig_paths[1], "Figura 2. Evolución porcentual de las cinco tuberías más exigidas con tope físico.")
         if len(comp_for_fig) > 1:
             _add_single_column_figure(doc, fig_paths[2], "Figura 3. Comparación de tuberías críticas y sobrecargadas por escenario.")
+        _add_single_column_figure(doc, fig4_path, "Figura 4. Curva de saturación por % de F_max (Ford-Fulkerson) y meseta de rebose.")
 
-    _add_heading_1(doc, "5. Top 20 Tuberías por Utilización Pico")
+    _add_heading_1(doc, "5. Estimaciones y Simulaciones por % de F_max (Ford-Fulkerson)")
+    _add_plain_table(
+        doc,
+        headers=("% Fmax", "Q req", "Q adm", "Uso Sis.", "Máx Tub.", "Rebose m3", "Estado"),
+        rows=[
+            (
+                f"{r.target_fmax_pct:.0f}%",
+                f"{r.requested_flow_m3s:.4f}",
+                f"{r.admitted_flow_m3s:.4f}",
+                f"{r.system_utilization_pct:.1f}%",
+                f"{r.max_pipe_utilization_pct:.1f}%",
+                f"{r.total_surface_flooding_m3:,.1f}",
+                r.state_label,
+            )
+            for r in est_rows
+        ],
+        col_widths_in=(0.42, 0.44, 0.44, 0.48, 0.48, 0.56, 0.63),
+        font_pt=6.4,
+    )
+
+    _add_heading_1(doc, "6. Top 20 Tuberías por Utilización Pico")
     eff_qmax_map = {
         p.pipe_id: resolve_pipe_hydraulics(p, interventions.get(p.pipe_id))[0]
         for p in dataset.graph.pipes()
@@ -394,23 +433,23 @@ def generate_docx_report(
     )
 
     if comps:
-        _add_heading_1(doc, "6. Comparación Multiescenario")
+        _add_heading_1(doc, "7. Comparación Multiescenario")
         _add_plain_table(
             doc,
-            headers=("Esc.", "mm/h", "Fís%", "Dem.", "Crít.", ">100", "Rebose m3"),
+            headers=("Esc.", "mm/h", "Sis%", "Tub%", "Crít.", ">100", "Rebose m3"),
             rows=[
                 (
                     f"E{s.scenario_id}",
                     f"{s.intensity_mm_h:.0f}",
+                    f"{s.peak_system_utilization_pct:.1f}%",
                     f"{s.max_utilization_pct:.1f}%",
-                    f"{s.max_demand_ratio_pct/100:.2f}x",
                     s.most_critical_pipe,
                     s.num_overloaded_pipes,
                     f"{s.total_surface_flooding_m3:,.1f}",
                 )
                 for s in comps
             ],
-            col_widths_in=(0.32, 0.40, 0.48, 0.44, 0.42, 0.40, 0.94),
+            col_widths_in=(0.32, 0.38, 0.44, 0.44, 0.40, 0.38, 1.04),
             font_pt=6.8,
         )
 
@@ -507,10 +546,10 @@ def generate_technical_document_docx(
     _add_body(
         doc,
         "El sistema se organiza en paquetes desacoplados: src/data_structures/ (estructuras propias), "
-        "src/io/ (ingesta dual Excel/CSV y exportación), src/algorithms/ (recorridos, trazado y análisis), "
-        "src/simulation/ (motor hidráulico, comparación y exportadores) y src/gui/ (interfaz Tkinter modular: "
-        "app.py, controls_panel.py, inspector_panel.py, comparison_panel.py, guided_tour.py, charts_panel.py, "
-        "network_canvas.py, widgets.py, theme.py e icons.py).",
+        "src/io/ (ingesta dual Excel/CSV y exportación), src/algorithms/ (recorridos BFS/DFS, flujo máximo Ford-Fulkerson, trazado y análisis), "
+        "src/simulation/ (motor hidráulico, estimador por % de F_max, comparación y exportadores) y src/gui/ (interfaz PySide6 modular: "
+        "state.py, theme.py, icons.py, widgets.py, workers.py, canvas/ y panels/: top_bar, controls_panel, center_panel, "
+        "inspector_panel, critical_panel, charts_panel, comparison_panel, max_flow_panel y tour_overlay).",
     )
     _add_plain_table(
         doc,
@@ -594,6 +633,16 @@ def generate_technical_document_docx(
         "02_5_persistencia_sobrecarga.png",
         "Figura 7. Pestaña Críticas mostrando tramos ordenados y minutos acumulados en sobrecarga (Escenario 5).",
     )
+    _add_bullet(
+        doc,
+        "ford_fulkerson_max_flow() (Edmonds-Karp con Queue, HashTable, LinkedList y Stack) calcula el flujo máximo del sistema (F_max = 0.35915 m³/s) y su corte mínimo (P28, P3, P43, P53) para acotar la admisión al tope físico (120 %).",
+        "Flujo Máximo Ford-Fulkerson y estimaciones por % de F_max: ",
+    )
+    _add_screenshot_if_exists(
+        doc,
+        "02_6_ford_fulkerson_estimacion.png",
+        "Figura 7b. Pestaña Flujo Máx. (FF) con corte mínimo, tabla de estimaciones y curva de saturación con meseta en 120 %.",
+    )
 
     _add_heading_1(doc, "4. Modelo Matemático y Motor Hidráulico Avanzado")
     _add_body(
@@ -604,31 +653,40 @@ def generate_technical_document_docx(
     add_omml_equation(doc, "rational", "1")
     _add_body(
         doc,
-        "El caudal efectivo incorporado por las fuentes aplica por defecto el 100 % del Método Racional "
-        "(f_ing = 1.0 y Q_san = 0.0 m³/s, con opción de calibración en interfaz):",
+        "El caudal efectivo generado por las fuentes aplica por defecto el 100 % del Método Racional "
+        "(f_ing = 1.0 y Q_san = 0.0 m³/s, con presets de calibración a F_max y sensibilidad en interfaz):",
     )
     add_omml_equation(doc, "inflow", "2")
     _add_body(
         doc,
-        "Las capacidades máximas suministradas provienen de la ecuación de Manning a tubo lleno, "
-        "a partir de la cual se calculan la velocidad de referencia y el tiempo de tránsito continuo por tubería:",
+        "Sobre la red de capacidades de Manning, el algoritmo de Ford-Fulkerson determina el flujo máximo "
+        "del sistema F_max = 0.35915 m³/s (corte mínimo: P28, P3, P43, P53), acotando el caudal admitido y el "
+        "porcentaje de uso del sistema hasta el tope físico U_tope (120 % configurable) antes de rebosar:",
     )
-    add_omml_equation(doc, "manning", "3")
-    add_omml_equation(doc, "velocity", "4")
-    add_omml_equation(doc, "transit", "5")
+    add_omml_equation(doc, "ford_fulkerson", "3")
+    add_omml_equation(doc, "admitted_flow", "4")
+    add_omml_equation(doc, "system_utilization", "5")
+    _add_body(
+        doc,
+        "Las capacidades máximas suministradas provienen de Manning a tubo lleno, a partir de las cuales "
+        "se calculan la velocidad de referencia y el tiempo de tránsito continuo por tubería:",
+    )
+    add_omml_equation(doc, "manning", "6")
+    add_omml_equation(doc, "velocity", "7")
+    add_omml_equation(doc, "transit", "8")
     _add_body(
         doc,
         "Con integración en sub-pasos continuos (<= 10 s) y cola de prioridad de eventos (_TransitEvent), "
-        "se evalúa el porcentaje oficial de utilización sin techo artificial:",
+        "se evalúa el porcentaje de utilización recalculado y acotado al tope físico de rebose:",
     )
-    add_omml_equation(doc, "utilization", "6")
+    add_omml_equation(doc, "utilization", "9")
     _add_body(
         doc,
-        "Cuando el caudal demandado excede Q_max,i (>100 %), la conducción física aguas abajo se limita a "
-        "la capacidad nominal y el volumen excedente llena el pozo hasta su capacidad útil (4.0 m³), derivando "
-        "el excedente a rebose superficial en vía con conservación exacta de masa (P57 = 12\" según DataSetBicentenario.xlsx):",
+        "Cuando la demanda supera el tope físico (120 % por defecto), no ingresa más agua al sistema, el "
+        "porcentaje de uso se estabiliza en el tope y el volumen excedente pasa a rebose superficial en vía "
+        "con conservación exacta de masa (P57 = 12\" según DataSetBicentenario.xlsx):",
     )
-    add_omml_equation(doc, "mass_balance", "7")
+    add_omml_equation(doc, "mass_balance", "10")
 
     _add_bullet(
         doc,
@@ -748,22 +806,23 @@ def generate_technical_document_docx(
         "Figura 21. Interfaz adaptada en modo compacto (900x700) con exclusividad de paneles laterales.",
     )
 
-    _add_heading_1(doc, "6. Resultados y Comparación Multiescenario")
+    _add_heading_1(doc, "6. Resultados, Estimaciones F_max y Comparación Multiescenario")
     _add_body(
         doc,
-        "La simulación ejecutada durante 90 min (lluvia uniforme de 60 min, paso de reporte de 1 min, f_ing = 100 %, "
-        "reparto por capacidad instalada en fuentes y Q_san = 0.0 m³/s) evidencia la transición progresiva de los cinco estados de color:",
+        "La simulación ejecutada durante 90 min (lluvia uniforme de 60 min, paso de 1 min, f_ing = 100 %, "
+        "admisión acotada por Ford-Fulkerson F_max = 0.35915 m³/s con tope físico = 120 %, reparto por capacidad "
+        "y Q_san = 0.0 m³/s) evidencia la estabilización al 120 % por rebose en E2–E5:",
     )
     _add_plain_table(
         doc,
-        headers=("Esc.", "Condición", "mm/h", "Fís%", "Dem.", "Crít.", ">100", "PTAR"),
+        headers=("Esc.", "Condición", "mm/h", "Sis%", "Tub%", "Crít.", ">100", "PTAR"),
         rows=[
             (
                 f"E{s.scenario_id}",
                 s.condition,
                 f"{s.intensity_mm_h:.0f}",
+                f"{s.peak_system_utilization_pct:.1f}",
                 f"{s.max_utilization_pct:.1f}",
-                f"{s.max_demand_ratio_pct/100:.2f}x",
                 s.most_critical_pipe,
                 s.num_overloaded_pipes,
                 f"{s.peak_sink_discharge_m3s:.3f}",
@@ -774,13 +833,40 @@ def generate_technical_document_docx(
         font_pt=6.6,
     )
 
+    ff_res_tech, est_rows_tech = estimate_fmax_scenarios(dataset, base_res.config)
+    _add_body(
+        doc,
+        "Adicionalmente, la estimación parametrizada respecto a F_max muestra el tránsito desde carga parcial "
+        "hasta la meseta plana del 120 % donde deja de ingresar agua y todo incremento rebosa en superficie:",
+    )
+    _add_plain_table(
+        doc,
+        headers=("% Fmax", "Q req", "Q adm", "Sis%", "Tub%", "Rebose m3", "Estado"),
+        rows=[
+            (
+                f"{r.target_fmax_pct:.0f}%",
+                f"{r.requested_flow_m3s:.4f}",
+                f"{r.admitted_flow_m3s:.4f}",
+                f"{r.system_utilization_pct:.1f}%",
+                f"{r.max_pipe_utilization_pct:.1f}%",
+                f"{r.total_surface_flooding_m3:,.1f}",
+                r.state_label,
+            )
+            for r in est_rows_tech
+        ],
+        col_widths_in=(0.42, 0.44, 0.44, 0.42, 0.42, 0.56, 0.72),
+        font_pt=6.4,
+    )
+
     fig_dir = os.path.join(os.path.dirname(os.path.abspath(out_path)), "figuras")
     fig_paths = generate_single_column_figures(base_res, comparisons, fig_dir)
-    _add_single_column_figure(doc, fig_paths[0], "Figura 22. Hidrograma de entrada total y descarga en PTAR 31 (Escenario 3).")
-    _add_single_column_figure(doc, fig_paths[1], "Figura 23. Utilización temporal de las cinco tuberías más exigidas (Escenario 3).")
+    fig4_tech = generate_max_flow_figure(ff_res_tech, est_rows_tech, fig_dir)
+    _add_single_column_figure(doc, fig_paths[0], "Figura 22. Hidrograma de entrada, admisión acotada y descarga en PTAR 31 (Escenario 3).")
+    _add_single_column_figure(doc, fig_paths[1], "Figura 23. Utilización temporal de las cinco tuberías más exigidas con tope físico (Escenario 3).")
     _add_single_column_figure(doc, fig_paths[2], "Figura 24. Comparativo de tuberías críticas y sobrecargadas entre los 5 escenarios.")
+    _add_single_column_figure(doc, fig4_tech, "Figura 25. Curva de estimación por % de F_max (Ford-Fulkerson) y meseta al tope 120 %.")
 
-    _add_heading_1(doc, "7. Datos, Reportes CLI y Validación (43 Pruebas)")
+    _add_heading_1(doc, "7. Datos, Reportes CLI y Validación (47 Pruebas)")
     _add_bullet(
         doc,
         "Carga validada desde Excel (.xlsx) y carpetas CSV con exportación completa mediante export_to_csv_dir().",
@@ -803,17 +889,18 @@ def generate_technical_document_docx(
     )
     _add_bullet(
         doc,
-        "Batería automatizada de 43 pruebas unitarias en tests/ cubriendo estructuras de datos, cargador, algoritmos, motor hidráulico (invariancia Δt, masa ~10^-10 m³), DOCX y GUI.",
-        "Suite de 43 pruebas unitarias: ",
+        "Batería automatizada de 47 pruebas unitarias en tests/ cubriendo estructuras de datos, cargador, algoritmos (BFS/DFS/Ford-Fulkerson), motor hidráulico (invariancia Δt, tope 120% por rebose, masa ~10^-10 m³), DOCX y GUI.",
+        "Suite de 47 pruebas unitarias: ",
     )
     _add_screenshot_if_exists(
         doc,
         "04_3_tests_41.png",
-        "Figura 27. Ejecución completa de la suite de 43 pruebas unitarias con unittest (OK).",
+        "Figura 28. Ejecución completa de la suite de 47 pruebas unitarias con unittest (OK).",
     )
 
     _add_heading_1(doc, "8. Conclusiones, Limitaciones y Bibliografía")
-    _add_bullet(doc, "Las tuberías iniciales de 8 pulgadas (P31, P39, P43, P4, P5) y los tramos convergentes (P25, P3) concentran las primeras sobrecargas desde 30 mm/h.")
+    _add_bullet(doc, "El algoritmo Ford-Fulkerson fija el flujo máximo en F_max = 0.35915 m³/s (corte mínimo: P28, P3, P43, P53); al superar el tope de rebose (120 %), no entra más agua y el % de uso deja de crecer.")
+    _add_bullet(doc, "Los tramos convergentes P25, P3 y P23 concentran el tope de sobrecarga (120 %) bajo admisión acotada y reparto por capacidad.")
     _add_bullet(doc, "La arquitectura propia sin librerías externas de grafos permite auditar cada operación y ejecutar 90 pasos con sub-pasos continuos en menos de 90 ms.")
     _add_bullet(doc, "Limitación: el modelo no resuelve ecuaciones hidrodinámicas de Saint-Venant ni lámina libre; representa una abstracción volumétrica académica.")
     _add_bullet(doc, "Universidad Tecnológica de Bolívar. Guía del Proyecto Final: Simulación y visualización del flujo en la red de alcantarillado de Ciudad Bicentenario. 2026.", "Ref. 1: ")
