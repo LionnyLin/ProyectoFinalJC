@@ -15,8 +15,7 @@ Aplicación de escritorio en Python para la representación, simulación tempora
 ## Requisitos
 
 - Python 3.11+
-- `openpyxl`, `matplotlib`, `python-docx`, `lxml`, `Pillow` (instalables con `pip install -r requirements.txt`)
-- `tkinter` (incluido en Python estándar para Windows; en Ubuntu/Debian Linux instalar con `sudo apt install python3-tk`)
+- `PySide6`, `openpyxl`, `matplotlib`, `python-docx`, `lxml`, `Pillow` (instalables con `pip install -r requirements.txt`)
 
 *(Nota: la exportación a Word `.docx` con ecuaciones OMML nativas funciona 100 % en Python puro sin requerir Pandoc instalado en el equipo de sustentación).*
 
@@ -70,7 +69,7 @@ python scripts/capture_doc_screenshots.py
 - `src/algorithms/`: BFS, DFS, consultas y análisis de criticidad.
 - `src/io/`: Cargadores y validadores Excel/CSV.
 - `src/simulation/`: Motor de simulación, comparación, figuras `3.5 × 2.8 in` y exportador Word `.docx` (OMML `8.5 pt`) sin Pandoc.
-- `src/gui/`: Interfaz gráfica adaptable Tkinter + Matplotlib en español con sistema visual **Lámina Cartográfica de Archivo Hidráulico** (Grafito `#4A4A4A`, Plata `#CBCBCB`, Marfil `#FFFFE3` y Azul Pizarra `#6D8196`).
+- `src/gui/`: Interfaz gráfica modular en **PySide6 + Matplotlib** en 4 capas (Estado `state.py`, Diseño `theme.py`/`icons.py`/`widgets.py`, Subsistema Cartográfico `canvas/`, Paneles `panels/` y Orquestador `app.py`) con sistema visual **Lámina Cartográfica de Archivo Hidráulico** (Grafito `#4A4A4A`, Plata `#CBCBCB`, Marfil `#FFFFE3` y Azul Pizarra `#6D8196`).
 - `docs/`: Documento técnico en Word (`DOCUMENTO_TECNICO.docx`), Markdown y reportes de escenarios.
 - `scripts/`: Generador reproducible de capturas de pantalla para la documentación.
 - `assets/`: Fuentes tipográficas (`Inter`) utilizadas por la interfaz.

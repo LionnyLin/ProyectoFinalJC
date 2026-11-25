@@ -1,12 +1,18 @@
-"""Paneles de gráficas Matplotlib estilizados, legibles y adaptables a cualquier tamaño."""
+"""Paneles de gráficas Matplotlib sobre FigureCanvasQTAgg (PySide6)."""
 
 import math
+import os
 import time
-import tkinter as tk
 import warnings
 from typing import Dict, List, Optional, Tuple
 
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+os.environ.setdefault("QT_API", "pyside6")
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget
+
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
@@ -15,7 +21,8 @@ from matplotlib.ticker import FuncFormatter
 from src.data_structures import PipeEdge
 from src.simulation.comparison import ScenarioSummary
 from src.simulation.models import PipeIntervention, SimulationResult, compute_symlog_ticks
-from . import theme
+from .. import theme
+from ..widgets import LoadingOverlay, SegmentedControl, make_separator
 
 
 def _apply_axis_style(ax) -> None:
@@ -27,15 +34,12 @@ def _apply_axis_style(ax) -> None:
     ax.grid(True, linestyle="--", alpha=0.70, color=theme.PAPER_BORDER)
 
 
-def _safe_tight_layout(fig: Figure, widget: Optional[tk.Misc] = None) -> None:
-    """Aplica tight_layout de forma segura adaptándose al tamaño real del panel sin recortes."""
-    if widget is not None:
-        try:
-            w, h = widget.winfo_width(), widget.winfo_height()
-            if (w > 1 and w < 180) or (h > 1 and h < 180):
-                return
-        except tk.TclError:
-            return
+def _safe_tight_layout(fig: Figure, canvas: FigureCanvasQTAgg) -> None:
+    """Aplica tight_layout adaptándose al tamaño real del lienzo Qt sin recortes."""
+    w = canvas.width()
+    h = canvas.height()
+    if (w > 1 and w < 180) or (h > 1 and h < 180):
+        return
     w_px = fig.get_figwidth() * fig.dpi
     h_px = fig.get_figheight() * fig.dpi
     if w_px < 180 or h_px < 180:
@@ -44,57 +48,31 @@ def _safe_tight_layout(fig: Figure, widget: Optional[tk.Misc] = None) -> None:
         warnings.simplefilter("always", UserWarning)
         try:
             fig.tight_layout(pad=0.85, h_pad=1.05, w_pad=0.65)
-            has_warn = any("Tight layout not applied" in str(w.message) for w in caught)
+            has_warn = any("Tight layout not applied" in str(w_item.message) for w_item in caught)
         except Exception:
             has_warn = True
     if has_warn:
         try:
-            fig.subplots_adjust(left=0.16, right=0.96, top=0.91, bottom=0.14, hspace=0.46, wspace=0.28)
+            fig.subplots_adjust(
+                left=0.16, right=0.96, top=0.91, bottom=0.14, hspace=0.46, wspace=0.28
+            )
         except Exception:
             pass
 
 
-def _lock_tkagg_dpi(canvas: FigureCanvasTkAgg, container: tk.Misc) -> None:
-    """Fija el DPI lógico del lienzo embebido evitando que <Map> en HiDPI agrande el bitmap 1.5x."""
-    try:
-        container.pack_propagate(False)
-    except tk.TclError:
-        pass
-    try:
-        tkw = canvas.get_tk_widget()
-        tkw.unbind("<Map>")
-        canvas._set_device_pixel_ratio = lambda _ratio: False  # type: ignore[attr-defined]
-    except Exception:
-        pass
-
-
-def _sync_figure_to_widget(canvas: FigureCanvasTkAgg, fig: Figure) -> Tuple[int, int]:
-    """Sincroniza pulgadas de la figura y PhotoImage exactamente al tamaño actual del widget."""
-    try:
-        tkw = canvas.get_tk_widget()
-        w = int(tkw.winfo_width())
-        h = int(tkw.winfo_height())
-    except tk.TclError:
-        return (0, 0)
+def _sync_figure_size(canvas: FigureCanvasQTAgg, fig: Figure) -> None:
+    w = canvas.width()
+    h = canvas.height()
     if w < 180 or h < 180:
-        return (0, 0)
+        return
+    dpr = float(canvas.devicePixelRatioF()) if hasattr(canvas, "devicePixelRatioF") else 1.0
     dpival = float(fig.dpi)
     if dpival > 0.0:
+        target_w = (w * dpr) / dpival
+        target_h = (h * dpr) / dpival
         cur_w, cur_h = fig.get_size_inches()
-        target_w = w / dpival
-        target_h = h / dpival
-        if abs(cur_w - target_w) > 0.01 or abs(cur_h - target_h) > 0.01:
+        if abs(cur_w - target_w) > 0.02 or abs(cur_h - target_h) > 0.02:
             fig.set_size_inches(target_w, target_h, forward=False)
-    try:
-        photo = getattr(canvas, "_tkphoto", None)
-        if photo is not None and (photo.width() != w or photo.height() != h):
-            photo.configure(width=w, height=h)
-        img_id = getattr(canvas, "_tkcanvas_image_region", None)
-        if img_id is not None:
-            tkw.coords(img_id, w // 2, h // 2)
-    except Exception:
-        pass
-    return (w, h)
 
 
 def _fmt_pct_compact(val: float) -> str:
@@ -123,9 +101,9 @@ def _format_intervention_summary(
         pid, inv = next(iter(interventions.items()))
         parts = []
         if inv.diameter_in_override is not None:
-            parts.append(f"Ø {inv.diameter_in_override:.0f}\"")
+            parts.append(f'Ø {inv.diameter_in_override:.0f}"')
         elif pid in diameter_overrides:
-            parts.append(f"Ø {diameter_overrides[pid]:.0f}\"")
+            parts.append(f'Ø {diameter_overrides[pid]:.0f}"')
         if inv.obstruction_pct > 1e-6:
             parts.append(f"Obstr. {inv.obstruction_pct:.0f}%")
         detail = " · ".join(parts) if parts else "Modificada"
@@ -135,210 +113,172 @@ def _format_intervention_summary(
     return f"{len(interventions)} intervenciones activas: {pids}{extra}"
 
 
-class TemporalChartsPanel(tk.Frame):
+class TemporalChartsPanel(QWidget):
     """Gráfica temporal (hidrograma Antes vs. Después + % uso) y perfil longitudinal."""
 
     def __init__(
         self,
-        master: tk.Misc,
         dpi: int = 96,
         ui_font: str = "Segoe UI",
         mono_font: str = "Consolas",
+        parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(master, bg=theme.PAPER_BG)
+        super().__init__(parent)
         self._dpi = max(72, int(dpi))
         self._ui_font = ui_font
         self._mono_font = mono_font
         self._subtab: str = "hydro"
-        self._profile_mode: str = "pct"  # 'pct' (% Uso vs Cap. 100%) | 'flow' (Caudal m³/s)
-
-        # Barra compacta de subpestañas
-        subbar = tk.Frame(self, bg=theme.DOCK_BG)
-        subbar.pack(side=tk.TOP, fill=tk.X)
-        tk.Frame(self, bg=theme.DOCK_BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
-
-        self._btn_hydro = tk.Button(
-            subbar,
-            text="Hidrograma y %",
-            command=lambda: self.set_subtab("hydro"),
-            bg=theme.ACCENT_PRIMARY,
-            fg=theme.ACCENT_INK,
-            activebackground=theme.ACCENT_HOVER,
-            activeforeground=theme.ACCENT_INK,
-            relief="flat",
-            bd=0,
-            padx=10,
-            pady=4,
-            font=(self._ui_font, 8, "bold"),
-            cursor="hand2",
-            highlightthickness=1,
-            highlightbackground=theme.DOCK_BORDER,
-        )
-        self._btn_hydro.pack(side=tk.LEFT, padx=(6, 3), pady=4)
-
-        self._btn_profile = tk.Button(
-            subbar,
-            text="Perfil (Uso vs Cap.)",
-            command=lambda: self.set_subtab("profile"),
-            bg=theme.PAPER_SUBTLE,
-            fg=theme.INK_PRIMARY,
-            activebackground=theme.PAPER_HOVER,
-            activeforeground=theme.INK_PRIMARY,
-            relief="flat",
-            bd=0,
-            padx=10,
-            pady=4,
-            font=(self._ui_font, 8, "normal"),
-            cursor="hand2",
-            highlightthickness=1,
-            highlightbackground=theme.DOCK_BORDER,
-        )
-        self._btn_profile.pack(side=tk.LEFT, padx=(3, 6), pady=4)
-
-        self._container = tk.Frame(self, bg=theme.PAPER_BG)
-        self._container.pack(fill=tk.BOTH, expand=True)
-
-        # Banner de impacto Antes vs. Después (visible solo con intervención activa)
-        self._impact_banner = tk.Frame(
-            self._container,
-            bg="#EEF2F6",
-            highlightthickness=1,
-            highlightbackground="#94A3B8",
-        )
-        tk.Frame(self._impact_banner, bg="#1D4ED8", width=4).pack(side=tk.LEFT, fill=tk.Y)
-        banner_body = tk.Frame(self._impact_banner, bg="#EEF2F6")
-        banner_body.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=4)
-        self._lbl_impact_title = tk.Label(
-            banner_body,
-            text="",
-            bg="#EEF2F6",
-            fg="#1E3A8A",
-            font=(self._ui_font, 8, "bold"),
-            anchor="w",
-            justify=tk.LEFT,
-        )
-        self._lbl_impact_title.pack(fill=tk.X)
-        self._lbl_impact_metrics = tk.Label(
-            banner_body,
-            text="",
-            bg="#EEF2F6",
-            fg=theme.INK_PRIMARY,
-            font=(self._mono_font, 7),
-            anchor="w",
-            justify=tk.LEFT,
-            wraplength=310,
-        )
-        self._lbl_impact_metrics.pack(fill=tk.X)
-        self._impact_banner.bind(
-            "<Configure>",
-            lambda e: self._lbl_impact_metrics.configure(wraplength=max(200, e.width - 20)),
-        )
+        self._profile_mode: str = "pct"
         self._banner_visible: bool = False
+        self._prof_note_visible: bool = False
+
+        self.setObjectName("ChartsHost")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        # Barra superior de subpestañas
+        subbar = QFrame(self)
+        subbar.setObjectName("DockSubBar")
+        sb_lay = QHBoxLayout(subbar)
+        sb_lay.setContentsMargins(6, 4, 6, 4)
+        self._seg_subtabs = SegmentedControl(
+            [("hydro", "Hidrograma y %"), ("profile", "Perfil (Uso vs Cap.)")],
+            initial_key="hydro",
+            inactive_variant="light_secondary",
+            font_pt=8,
+            pad_x=10,
+            pad_y=4,
+            spacing=6,
+            framed=False,
+            parent=subbar,
+        )
+        self._seg_subtabs.selectionChanged.connect(self.set_subtab)
+        sb_lay.addWidget(self._seg_subtabs)
+        sb_lay.addStretch(1)
+        lay.addWidget(subbar)
+        lay.addWidget(make_separator("h", theme.DOCK_BORDER, 1, self))
+
+        # Banner de impacto Antes vs. Después
+        self._impact_banner = QFrame(self)
+        self._impact_banner.setObjectName("ImpactBanner")
+        ib_lay = QHBoxLayout(self._impact_banner)
+        ib_lay.setContentsMargins(0, 0, 6, 0)
+        ib_lay.setSpacing(6)
+        stripe = QFrame(self._impact_banner)
+        stripe.setObjectName("ImpactStripe")
+        stripe.setFixedWidth(4)
+        ib_lay.addWidget(stripe)
+
+        ib_body = QVBoxLayout()
+        ib_body.setContentsMargins(0, 4, 0, 4)
+        ib_body.setSpacing(1)
+        self._lbl_impact_title = QLabel("", self._impact_banner)
+        self._lbl_impact_title.setFont(QFont(ui_font, 8, QFont.Weight.Bold))
+        self._lbl_impact_title.setStyleSheet("color: #1E3A8A; background: transparent;")
+        self._lbl_impact_metrics = QLabel("", self._impact_banner)
+        self._lbl_impact_metrics.setWordWrap(True)
+        self._lbl_impact_metrics.setFont(QFont(mono_font, 7))
+        self._lbl_impact_metrics.setStyleSheet(f"color: {theme.INK_PRIMARY}; background: transparent;")
+        ib_body.addWidget(self._lbl_impact_title)
+        ib_body.addWidget(self._lbl_impact_metrics)
+        ib_lay.addLayout(ib_body, 1)
+
+        banner_wrap = QWidget(self)
+        bw_lay = QVBoxLayout(banner_wrap)
+        bw_lay.setContentsMargins(4, 4, 4, 0)
+        bw_lay.addWidget(self._impact_banner)
+        self._impact_banner_wrap = banner_wrap
+        self._impact_banner_wrap.setVisible(False)
+        lay.addWidget(self._impact_banner_wrap)
+
+        # Stack de subvistas
+        self._stack = QStackedWidget(self)
 
         # Subvista 1: Hidrograma + Utilización temporal
-        self._hydro_frame = tk.Frame(self._container, bg=theme.PAPER_BG)
+        self._hydro_frame = QWidget(self._stack)
+        hydro_lay = QVBoxLayout(self._hydro_frame)
+        hydro_lay.setContentsMargins(0, 0, 0, 0)
         self.figure = Figure(figsize=(4.0, 5.2), dpi=self._dpi, facecolor=theme.PAPER_BG)
         self.ax_flow = self.figure.add_subplot(211)
         self.ax_util = self.figure.add_subplot(212)
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.canvas.setMinimumSize(220, 220)
+        hydro_lay.addWidget(self.canvas)
+        self._stack.addWidget(self._hydro_frame)
 
-        self.canvas = FigureCanvasTkAgg(self.figure, master=self._hydro_frame)
-        self.canvas.get_tk_widget().configure(width=320, height=340)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        _lock_tkagg_dpi(self.canvas, self._hydro_frame)
-        self._hydro_frame.pack(fill=tk.BOTH, expand=True)
+        # Subvista 2: Perfil longitudinal
+        self._profile_frame = QWidget(self._stack)
+        prof_lay = QVBoxLayout(self._profile_frame)
+        prof_lay.setContentsMargins(0, 0, 0, 0)
+        prof_lay.setSpacing(0)
 
-        # Subvista 2: Perfil longitudinal con conmutador (% Uso vs Cap. | Caudal m³/s)
-        self._profile_frame = tk.Frame(self._container, bg=theme.PAPER_BG)
-        prof_bar = tk.Frame(self._profile_frame, bg=theme.PAPER_SUBTLE)
-        prof_bar.pack(side=tk.TOP, fill=tk.X)
-        tk.Frame(self._profile_frame, bg=theme.PAPER_BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
+        prof_bar = QFrame(self._profile_frame)
+        prof_bar.setObjectName("SubBar")
+        pb_lay = QHBoxLayout(prof_bar)
+        pb_lay.setContentsMargins(6, 3, 6, 3)
+        pb_lay.setSpacing(4)
 
-        tk.Label(
-            prof_bar,
-            text="Vista:",
-            bg=theme.PAPER_SUBTLE,
-            fg=theme.INK_MUTED,
-            font=(self._ui_font, 7, "bold"),
-        ).pack(side=tk.LEFT, padx=(6, 4), pady=3)
+        lbl_vista = QLabel("Vista:", prof_bar)
+        lbl_vista.setFont(QFont(ui_font, 7, QFont.Weight.Bold))
+        lbl_vista.setStyleSheet(f"color: {theme.INK_MUTED}; background: transparent;")
+        pb_lay.addWidget(lbl_vista)
 
-        self._btn_prof_pct = tk.Button(
-            prof_bar,
-            text="% Uso vs Cap. (100%)",
-            command=lambda: self.set_profile_mode("pct"),
-            bg=theme.ACCENT_PRIMARY,
-            fg=theme.ACCENT_INK,
-            activebackground=theme.ACCENT_HOVER,
-            activeforeground=theme.ACCENT_INK,
-            relief="flat",
-            bd=0,
-            padx=7,
-            pady=2,
-            font=(self._ui_font, 7, "bold"),
-            cursor="hand2",
-            highlightthickness=1,
-            highlightbackground=theme.DOCK_BORDER,
+        self._seg_profile_mode = SegmentedControl(
+            [("pct", "% Uso vs Cap. (100%)"), ("flow", "Caudal (m³/s)")],
+            initial_key="pct",
+            inactive_variant="light_secondary",
+            font_pt=7,
+            pad_x=7,
+            pad_y=2,
+            spacing=4,
+            framed=False,
+            parent=prof_bar,
         )
-        self._btn_prof_pct.pack(side=tk.LEFT, padx=2, pady=3)
+        self._seg_profile_mode.selectionChanged.connect(self.set_profile_mode)
+        pb_lay.addWidget(self._seg_profile_mode)
+        pb_lay.addStretch(1)
+        prof_lay.addWidget(prof_bar)
+        prof_lay.addWidget(make_separator("h", theme.PAPER_BORDER, 1, self._profile_frame))
 
-        self._btn_prof_flow = tk.Button(
-            prof_bar,
-            text="Caudal (m³/s)",
-            command=lambda: self.set_profile_mode("flow"),
-            bg=theme.PAPER_BG,
-            fg=theme.INK_PRIMARY,
-            activebackground=theme.PAPER_HOVER,
-            activeforeground=theme.INK_PRIMARY,
-            relief="flat",
-            bd=0,
-            padx=7,
-            pady=2,
-            font=(self._ui_font, 7, "normal"),
-            cursor="hand2",
-            highlightthickness=1,
-            highlightbackground=theme.DOCK_BORDER,
+        self._lbl_prof_note = QLabel("", self._profile_frame)
+        self._lbl_prof_note.setWordWrap(True)
+        self._lbl_prof_note.setFont(QFont(ui_font, 7))
+        self._lbl_prof_note.setStyleSheet(
+            "background-color: #FEF2F2; color: #7F1D1D; "
+            "border: 1px solid #FCA5A5; padding: 3px 6px; margin: 4px 4px 0 4px;"
         )
-        self._btn_prof_flow.pack(side=tk.LEFT, padx=2, pady=3)
-
-        prof_canvas_wrap = tk.Frame(self._profile_frame, bg=theme.PAPER_BG)
-        prof_canvas_wrap.pack(fill=tk.BOTH, expand=True)
-        self._prof_canvas_wrap = prof_canvas_wrap
-
-        self._lbl_prof_note = tk.Label(
-            self._profile_frame,
-            text="",
-            bg="#FEF2F2",
-            fg="#7F1D1D",
-            font=(self._ui_font, 7),
-            anchor="w",
-            justify=tk.LEFT,
-            wraplength=310,
-            padx=6,
-            pady=3,
-            highlightthickness=1,
-            highlightbackground="#FCA5A5",
-        )
-        self._prof_note_visible: bool = False
-        self._profile_frame.bind(
-            "<Configure>",
-            lambda e: self._lbl_prof_note.configure(wraplength=max(200, e.width - 18)),
-        )
+        self._lbl_prof_note.setVisible(False)
+        prof_lay.addWidget(self._lbl_prof_note)
 
         self.profile_figure = Figure(figsize=(4.0, 5.2), dpi=self._dpi, facecolor=theme.PAPER_BG)
         self.ax_profile = self.profile_figure.add_subplot(111)
+        self.profile_canvas = FigureCanvasQTAgg(self.profile_figure)
+        self.profile_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.profile_canvas.setMinimumSize(220, 220)
+        prof_lay.addWidget(self.profile_canvas, 1)
+        self._stack.addWidget(self._profile_frame)
 
-        self.profile_canvas = FigureCanvasTkAgg(self.profile_figure, master=prof_canvas_wrap)
-        self.profile_canvas.get_tk_widget().configure(width=320, height=340)
-        self.profile_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        _lock_tkagg_dpi(self.profile_canvas, prof_canvas_wrap)
+        lay.addWidget(self._stack, 1)
+        self.loading_overlay = LoadingOverlay(self._stack, ui_font=ui_font)
 
         self._cached_key: Optional[tuple] = None
+        self._last_hydro_size: Tuple[int, int] = (0, 0)
+        self._last_profile_size: Tuple[int, int] = (0, 0)
+        self._has_drawn_hydro: bool = False
+        self._has_drawn_profile: bool = False
         self._ax_flow_ptar = None
         self._cursor_flow: Optional[Line2D] = None
         self._cursor_util: Optional[Line2D] = None
         self._blit_bg = None
-        self._resize_after: Optional[str] = None
         self._last_draw_ts: float = 0.0
         self.canvas.mpl_connect("draw_event", self._on_mpl_draw)
+
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(120)
+        self._resize_timer.timeout.connect(self._refit_layout)
 
         self._last_result: Optional[SimulationResult] = None
         self._last_prev_result: Optional[SimulationResult] = None
@@ -352,23 +292,23 @@ class TemporalChartsPanel(tk.Frame):
         _apply_axis_style(self.ax_flow)
         _apply_axis_style(self.ax_util)
         _apply_axis_style(self.ax_profile)
-        self.bind("<Configure>", self._on_resize)
-        self.bind("<Destroy>", self._on_destroy)
 
-    def _on_destroy(self, event: tk.Event) -> None:
-        if event.widget is self and self._resize_after is not None:
-            try:
-                self.after_cancel(self._resize_after)
-            except tk.TclError:
-                pass
-            self._resize_after = None
+    def set_loading(self, active: bool, message: str = "Generando gráficas...") -> None:
+        self.loading_overlay.set_active(active, message)
 
-    def _on_resize(self, event: tk.Event) -> None:
-        if event.width < 160 or event.height < 160:
-            return
-        if self._resize_after is not None:
-            self.after_cancel(self._resize_after)
-        self._resize_after = self.after(120, self._refit_layout)
+    def stop_timers(self) -> None:
+        self.loading_overlay.stop()
+        if self._resize_timer.isActive():
+            self._resize_timer.stop()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.width() >= 160 and self.height() >= 160:
+            self._resize_timer.start()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._refit_layout)
 
     def _on_mpl_draw(self, _event) -> None:
         try:
@@ -381,35 +321,33 @@ class TemporalChartsPanel(tk.Frame):
             self._blit_bg = None
 
     def _refit_layout(self) -> None:
-        self._resize_after = None
         self._blit_bg = None
         if self._subtab == "profile":
-            _sync_figure_to_widget(self.profile_canvas, self.profile_figure)
-            _safe_tight_layout(self.profile_figure, self.profile_canvas.get_tk_widget())
+            cw, ch = self.profile_canvas.width(), self.profile_canvas.height()
+            lw, lh = self._last_profile_size
+            if self._has_drawn_profile and abs(cw - lw) <= 8 and abs(ch - lh) <= 8:
+                return
+            self._last_profile_size = (cw, ch)
+            self._has_drawn_profile = True
+            _sync_figure_size(self.profile_canvas, self.profile_figure)
+            _safe_tight_layout(self.profile_figure, self.profile_canvas)
             self.profile_canvas.draw_idle()
         else:
-            _sync_figure_to_widget(self.canvas, self.figure)
-            _safe_tight_layout(self.figure, self.canvas.get_tk_widget())
+            cw, ch = self.canvas.width(), self.canvas.height()
+            lw, lh = self._last_hydro_size
+            if self._has_drawn_hydro and abs(cw - lw) <= 8 and abs(ch - lh) <= 8:
+                return
+            self._last_hydro_size = (cw, ch)
+            self._has_drawn_hydro = True
+            _sync_figure_size(self.canvas, self.figure)
+            _safe_tight_layout(self.figure, self.canvas)
             self.canvas.draw_idle()
 
     def set_profile_mode(self, mode: str) -> None:
         if mode not in ("pct", "flow") or mode == self._profile_mode:
             return
         self._profile_mode = mode
-        if mode == "pct":
-            self._btn_prof_pct.configure(
-                bg=theme.ACCENT_PRIMARY, fg=theme.ACCENT_INK, font=(self._ui_font, 7, "bold")
-            )
-            self._btn_prof_flow.configure(
-                bg=theme.PAPER_BG, fg=theme.INK_PRIMARY, font=(self._ui_font, 7, "normal")
-            )
-        else:
-            self._btn_prof_flow.configure(
-                bg=theme.ACCENT_PRIMARY, fg=theme.ACCENT_INK, font=(self._ui_font, 7, "bold")
-            )
-            self._btn_prof_pct.configure(
-                bg=theme.PAPER_BG, fg=theme.INK_PRIMARY, font=(self._ui_font, 7, "normal")
-            )
+        self._seg_profile_mode.set_current(mode)
         if self._subtab == "profile":
             self._redraw_profile()
 
@@ -417,35 +355,14 @@ class TemporalChartsPanel(tk.Frame):
         if tab_id not in ("hydro", "profile"):
             return
         self._subtab = tab_id
-        self._hydro_frame.pack_forget()
-        self._profile_frame.pack_forget()
+        self._seg_subtabs.set_current(tab_id)
         if tab_id == "profile":
-            self._profile_frame.pack(fill=tk.BOTH, expand=True)
-            self._btn_profile.configure(
-                bg=theme.ACCENT_PRIMARY,
-                fg=theme.ACCENT_INK,
-                font=(self._ui_font, 8, "bold"),
-            )
-            self._btn_hydro.configure(
-                bg=theme.PAPER_SUBTLE,
-                fg=theme.INK_PRIMARY,
-                font=(self._ui_font, 8, "normal"),
-            )
+            self._stack.setCurrentWidget(self._profile_frame)
             self._redraw_profile()
         else:
-            self._hydro_frame.pack(fill=tk.BOTH, expand=True)
-            self._btn_hydro.configure(
-                bg=theme.ACCENT_PRIMARY,
-                fg=theme.ACCENT_INK,
-                font=(self._ui_font, 8, "bold"),
-            )
-            self._btn_profile.configure(
-                bg=theme.PAPER_SUBTLE,
-                fg=theme.INK_PRIMARY,
-                font=(self._ui_font, 8, "normal"),
-            )
-            _sync_figure_to_widget(self.canvas, self.figure)
-            _safe_tight_layout(self.figure, self.canvas.get_tk_widget())
+            self._stack.setCurrentWidget(self._hydro_frame)
+            _sync_figure_size(self.canvas, self.figure)
+            _safe_tight_layout(self.figure, self.canvas)
             self.canvas.draw_idle()
 
     def _resolve_focus_pipes(
@@ -489,9 +406,8 @@ class TemporalChartsPanel(tk.Frame):
     ) -> None:
         if not has_prev or result is None or previous_result is None:
             if self._banner_visible:
-                self._impact_banner.pack_forget()
+                self._impact_banner_wrap.setVisible(False)
                 self._banner_visible = False
-                self.update_idletasks()
             return
 
         title_txt = _format_intervention_summary(interventions, diameter_overrides)
@@ -511,14 +427,12 @@ class TemporalChartsPanel(tk.Frame):
         else:
             parts.append(f"Rebose: {result.total_surface_flooding_m3:,.0f} m³")
 
-        self._lbl_impact_title.configure(text=title_txt)
-        self._lbl_impact_metrics.configure(text=" · ".join(parts))
+        self._lbl_impact_title.setText(title_txt)
+        self._lbl_impact_metrics.setText(" · ".join(parts))
 
         if not self._banner_visible:
-            active_frame = self._profile_frame if self._subtab == "profile" else self._hydro_frame
-            self._impact_banner.pack(side=tk.TOP, fill=tk.X, before=active_frame, padx=4, pady=(4, 0))
+            self._impact_banner_wrap.setVisible(True)
             self._banner_visible = True
-            self.update_idletasks()
 
     def _configure_util_axis(self, ax, max_u_val: float) -> None:
         ax.axhspan(0.0, 75.0, color="#22c55e", alpha=0.06, zorder=0)
@@ -596,9 +510,12 @@ class TemporalChartsPanel(tk.Frame):
 
         prev_id = id(previous_result) if has_prev else 0
         int_sig = tuple(sorted(self._last_interventions.keys()))
-        cache_key = (id(result), prev_id, focus_pid if has_prev else selected_pipe_id, int_sig) if result is not None else None
+        cache_key = (
+            (id(result), prev_id, focus_pid if has_prev else selected_pipe_id, int_sig)
+            if result is not None
+            else None
+        )
         if cache_key is not None and cache_key == self._cached_key:
-            # Actualización rápida en reproducción: blitting sobre el fondo cacheado
             if current_time_min is not None:
                 if self._cursor_flow is not None:
                     self._cursor_flow.set_xdata([current_time_min, current_time_min])
@@ -639,8 +556,8 @@ class TemporalChartsPanel(tk.Frame):
 
         if result is None or not result.snapshots:
             self.ax_flow.set_title("Sin simulación ejecutada", color=theme.INK_PRIMARY, fontsize=8.5)
-            _sync_figure_to_widget(self.canvas, self.figure)
-            _safe_tight_layout(self.figure, self.canvas.get_tk_widget())
+            _sync_figure_size(self.canvas, self.figure)
+            _safe_tight_layout(self.figure, self.canvas)
             self.canvas.draw_idle()
             return
 
@@ -660,7 +577,6 @@ class TemporalChartsPanel(tk.Frame):
         t_cur = current_time_min if current_time_min is not None else times[0]
 
         if has_prev and previous_result is not None:
-            # Vista comparativa Antes (Original) vs. Después (Actual) de alto contraste
             prev_times = [s.time_min for s in previous_result.snapshots]
             prev_ptar = [s.total_sink_discharge_m3s for s in previous_result.snapshots]
             max_ptar_q = max(ptar_out + prev_ptar + [0.05])
@@ -827,7 +743,6 @@ class TemporalChartsPanel(tk.Frame):
                     )
                 )
                 ax_ptar.fill_between(times, 0.0, ptar_out, color="#0F766E", alpha=0.14, zorder=1)
-                # Limitar altura visual de PTAR a <=44% para que nunca cruce por encima de Entrada
                 self.ax_flow.set_ylim(0.0, max_left_q * 1.26)
                 ax_ptar.set_ylim(0.0, max_ptar_q * 2.35)
                 self.ax_flow.set_ylabel("Entrada / Rebose (izq.)", color=theme.INK_PRIMARY, fontsize=7.2)
@@ -840,7 +755,12 @@ class TemporalChartsPanel(tk.Frame):
                     va="top",
                     fontsize=6.1,
                     color="#0F766E",
-                    bbox=dict(boxstyle="round,pad=0.18", facecolor=theme.PAPER_BG, edgecolor=theme.PAPER_BORDER, alpha=0.92),
+                    bbox=dict(
+                        boxstyle="round,pad=0.18",
+                        facecolor=theme.PAPER_BG,
+                        edgecolor=theme.PAPER_BORDER,
+                        alpha=0.92,
+                    ),
                     zorder=6,
                 )
             else:
@@ -958,9 +878,15 @@ class TemporalChartsPanel(tk.Frame):
                     zorder=4 - idx * 0.2,
                 )
             if len(peaks_seen) >= 2 and max(peaks_seen) > 5.0:
-                tied = [pid for pid, pk in zip(target_pids, peaks_seen) if abs(pk - peaks_seen[0]) <= 1.0]
+                tied = [
+                    pid
+                    for pid, pk in zip(target_pids, peaks_seen)
+                    if abs(pk - peaks_seen[0]) <= 1.0
+                ]
                 if len(tied) >= 2:
-                    tied_note = f"Empate en pico: {' = '.join(tied)} ({_fmt_pct_compact(peaks_seen[0])})"
+                    tied_note = (
+                        f"Empate en pico: {' = '.join(tied)} ({_fmt_pct_compact(peaks_seen[0])})"
+                    )
 
         self._configure_util_axis(self.ax_util, max_u_val)
 
@@ -974,7 +900,12 @@ class TemporalChartsPanel(tk.Frame):
                 va="top",
                 fontsize=6.1,
                 color=theme.INK_PRIMARY,
-                bbox=dict(boxstyle="round,pad=0.18", facecolor=theme.PAPER_BG, edgecolor=theme.PAPER_BORDER, alpha=0.92),
+                bbox=dict(
+                    boxstyle="round,pad=0.18",
+                    facecolor=theme.PAPER_BG,
+                    edgecolor=theme.PAPER_BORDER,
+                    alpha=0.92,
+                ),
                 zorder=6,
             )
 
@@ -1019,12 +950,14 @@ class TemporalChartsPanel(tk.Frame):
         )
 
         self._last_draw_ts = now
-        _sync_figure_to_widget(self.canvas, self.figure)
-        _safe_tight_layout(self.figure, self.canvas.get_tk_widget())
+        self._last_hydro_size = (self.canvas.width(), self.canvas.height())
+        self._has_drawn_hydro = True
+        _sync_figure_size(self.canvas, self.figure)
+        _safe_tight_layout(self.figure, self.canvas)
         self.canvas.draw_idle()
 
+    @staticmethod
     def _compute_bottleneck_note(
-        self,
         route: List[PipeEdge],
         fill_pcts: List[float],
         dem_pcts: List[float],
@@ -1049,12 +982,12 @@ class TemporalChartsPanel(tk.Frame):
         bn_diam = diams[choked_idx]
         dn_names = ", ".join(p.pipe_id for p, _ in downstream_low[:3])
         return (
-            f"Cuello de botella en {bn_pipe.pipe_id} ({bn_diam:.0f}\"): rebosa exceso; "
+            f'Cuello de botella en {bn_pipe.pipe_id} ({bn_diam:.0f}"): rebosa exceso; '
             f"{dn_names} reciben caudal estrangulado."
         )
 
     def _redraw_profile(self) -> None:
-        _sync_figure_to_widget(self.profile_canvas, self.profile_figure)
+        _sync_figure_size(self.profile_canvas, self.profile_figure)
         self.ax_profile.clear()
         _apply_axis_style(self.ax_profile)
 
@@ -1073,7 +1006,7 @@ class TemporalChartsPanel(tk.Frame):
                 fontsize=8.0,
                 transform=self.ax_profile.transAxes,
             )
-            _safe_tight_layout(self.profile_figure, self.profile_canvas.get_tk_widget())
+            _safe_tight_layout(self.profile_figure, self.profile_canvas)
             self.profile_canvas.draw_idle()
             return
 
@@ -1081,9 +1014,7 @@ class TemporalChartsPanel(tk.Frame):
         snap = result.snapshots[step_idx]
         prev_res = self._last_prev_result
         has_prev = (
-            prev_res is not None
-            and prev_res is not result
-            and bool(prev_res.snapshots)
+            prev_res is not None and prev_res is not result and bool(prev_res.snapshots)
         )
         prev_snap = (
             prev_res.snapshots[min(step_idx, len(prev_res.snapshots) - 1)]
@@ -1112,10 +1043,16 @@ class TemporalChartsPanel(tk.Frame):
             q_live = ps.flow_m3s if ps is not None else 0.0
             q_dem = ps.demand_flow_m3s if ps is not None else q_live
             is_closed = bool(ps.is_closed) if ps is not None else (eff_qmax <= 1e-12)
-            fill_pct = (q_live / eff_qmax * 100.0) if (not is_closed and eff_qmax > 1e-12) else 0.0
+            fill_pct = (
+                (q_live / eff_qmax * 100.0) if (not is_closed and eff_qmax > 1e-12) else 0.0
+            )
             dem_pct = ps.utilization_pct if ps is not None else fill_pct
             col = (
-                (theme.INK_MUTED if is_closed else ("#991b1b" if ps.category.is_overloaded else ps.category.color_hex))
+                (
+                    theme.INK_MUTED
+                    if is_closed
+                    else ("#991b1b" if ps.category.is_overloaded else ps.category.color_hex)
+                )
                 if ps is not None
                 else theme.ACCENT_PRIMARY
             )
@@ -1130,7 +1067,9 @@ class TemporalChartsPanel(tk.Frame):
             closed_flags.append(is_closed)
             mod_tag = "*" if pipe.pipe_id in self._last_interventions else ""
             if len(route) <= 6:
-                x_labels.append(f"{pipe.pipe_id}{mod_tag}\n{pipe.from_node}→{pipe.to_node} ({diam:.0f}\")")
+                x_labels.append(
+                    f'{pipe.pipe_id}{mod_tag}\n{pipe.from_node}→{pipe.to_node} ({diam:.0f}")'
+                )
             else:
                 x_labels.append(f"{pipe.pipe_id}{mod_tag}")
 
@@ -1138,12 +1077,24 @@ class TemporalChartsPanel(tk.Frame):
         tag_fs = 6.0 if len(route) >= 9 else (6.5 if len(route) >= 7 else 7.1)
 
         if self._profile_mode == "pct":
-            phys_bars = [0.0 if cl else min(100.0, fp) for fp, cl in zip(fill_pcts, closed_flags)]
-            self.ax_profile.bar(xs, phys_bars, width=0.60, color=bar_colors, edgecolor=theme.INK_PRIMARY, linewidth=0.8, zorder=3)
+            phys_bars = [
+                0.0 if cl else min(100.0, fp) for fp, cl in zip(fill_pcts, closed_flags)
+            ]
+            self.ax_profile.bar(
+                xs,
+                phys_bars,
+                width=0.60,
+                color=bar_colors,
+                edgecolor=theme.INK_PRIMARY,
+                linewidth=0.8,
+                zorder=3,
+            )
 
             has_overflow = False
             max_vis_y = 115.0
-            for idx, (pipe, fp, dp, cl, qd) in enumerate(zip(route, fill_pcts, dem_pcts, closed_flags, q_dems)):
+            for idx, (pipe, fp, dp, cl, _qd) in enumerate(
+                zip(route, fill_pcts, dem_pcts, closed_flags, q_dems)
+            ):
                 if cl:
                     self.ax_profile.bar(
                         [idx],
@@ -1184,7 +1135,11 @@ class TemporalChartsPanel(tk.Frame):
                 else:
                     tag = f"{fp:.0f}%"
                     y_pos = phys_bars[idx] + 3.0
-                    tag_col = theme.ACCENT_TEXT_ON_LIGHT if pipe.pipe_id == self._last_pipe_id else theme.INK_PRIMARY
+                    tag_col = (
+                        theme.ACCENT_TEXT_ON_LIGHT
+                        if pipe.pipe_id == self._last_pipe_id
+                        else theme.INK_PRIMARY
+                    )
 
                 if pipe.pipe_id in self._last_interventions:
                     tag = f"MOD\n{tag}"
@@ -1196,7 +1151,13 @@ class TemporalChartsPanel(tk.Frame):
                     ha="center",
                     va="bottom",
                     fontsize=tag_fs,
-                    fontweight="bold" if (dp > 100.5 or pipe.pipe_id == self._last_pipe_id or pipe.pipe_id in self._last_interventions) else "normal",
+                    fontweight="bold"
+                    if (
+                        dp > 100.5
+                        or pipe.pipe_id == self._last_pipe_id
+                        or pipe.pipe_id in self._last_interventions
+                    )
+                    else "normal",
                     color=tag_col,
                     zorder=6,
                 )
@@ -1207,7 +1168,9 @@ class TemporalChartsPanel(tk.Frame):
                     pps = prev_snap.pipe_states.get(pipe.pipe_id)
                     pu = pps.utilization_pct if pps is not None else 0.0
                     if pu > 100.5:
-                        prev_ys.append(100.0 + min(62.0, 16.0 + 18.0 * math.log10(max(1.0, pu / 100.0))))
+                        prev_ys.append(
+                            100.0 + min(62.0, 16.0 + 18.0 * math.log10(max(1.0, pu / 100.0)))
+                        )
                     else:
                         prev_ys.append(pu)
                 self.ax_profile.scatter(
@@ -1230,23 +1193,43 @@ class TemporalChartsPanel(tk.Frame):
             self.ax_profile.set_ylim(0.0, top_ylim)
             if has_overflow:
                 self.ax_profile.set_yticks([0, 25, 50, 75, 100, 138])
-                self.ax_profile.set_yticklabels(["0%", "25%", "50%", "75%", "100%\nQmax", "Rebose\n>100%"])
+                self.ax_profile.set_yticklabels(
+                    ["0%", "25%", "50%", "75%", "100%\nQmax", "Rebose\n>100%"]
+                )
             else:
                 self.ax_profile.set_yticks([0, 25, 50, 75, 100])
                 self.ax_profile.set_yticklabels(["0%", "25%", "50%", "75%", "100%\nQmax"])
             self.ax_profile.set_ylabel("% Uso vs. Qmax", color=theme.INK_PRIMARY, fontsize=7.5)
 
             legend_handles = [
-                Patch(facecolor=theme.ACCENT_PRIMARY, edgecolor=theme.INK_PRIMARY, label="Llenado (≤100%)"),
+                Patch(
+                    facecolor=theme.ACCENT_PRIMARY,
+                    edgecolor=theme.INK_PRIMARY,
+                    label="Llenado (≤100%)",
+                ),
                 Line2D([0], [0], color="#DC2626", linestyle="--", linewidth=1.4, label="Cap. 100%"),
             ]
             if has_overflow:
                 legend_handles.append(
-                    Patch(facecolor="#FEE2E2", edgecolor="#991B1B", hatch="///", label="Exceso/Rebose")
+                    Patch(
+                        facecolor="#FEE2E2",
+                        edgecolor="#991B1B",
+                        hatch="///",
+                        label="Exceso/Rebose",
+                    )
                 )
             if prev_snap is not None:
                 legend_handles.append(
-                    Line2D([0], [0], color="#1D4ED8", marker="_", linestyle="None", markersize=9, markeredgewidth=2.0, label="Antes")
+                    Line2D(
+                        [0],
+                        [0],
+                        color="#1D4ED8",
+                        marker="_",
+                        linestyle="None",
+                        markersize=9,
+                        markeredgewidth=2.0,
+                        label="Antes",
+                    )
                 )
         else:
             self.ax_profile.bar(xs, q_lives, width=0.62, color=bar_colors, zorder=3)
@@ -1261,24 +1244,33 @@ class TemporalChartsPanel(tk.Frame):
             )
             if prev_snap is not None:
                 prev_qs = [
-                    prev_snap.pipe_states[p.pipe_id].flow_m3s if p.pipe_id in prev_snap.pipe_states else 0.0
+                    prev_snap.pipe_states[p.pipe_id].flow_m3s
+                    if p.pipe_id in prev_snap.pipe_states
+                    else 0.0
                     for p in route
                 ]
                 self.ax_profile.scatter(
-                    xs, prev_qs, marker="_", s=160, linewidths=2.0, color="#1D4ED8", zorder=5, label="Antes"
+                    xs,
+                    prev_qs,
+                    marker="_",
+                    s=160,
+                    linewidths=2.0,
+                    color="#1D4ED8",
+                    zorder=5,
+                    label="Antes",
                 )
             top_y = max(q_lives + q_maxs + [0.05])
             self.ax_profile.set_ylim(0.0, top_y * 1.40)
-            for idx, (pipe, q_live, q_dem, q_mx, diam, fp, dp) in enumerate(
+            for idx, (pipe, q_live, _q_dem, q_mx, diam, fp, dp) in enumerate(
                 zip(route, q_lives, q_dems, q_maxs, diams, fill_pcts, dem_pcts)
             ):
                 y_pos = max(q_live, q_mx) + top_y * 0.025
                 if q_mx <= 1e-9:
                     tag = "CERRADA"
                 elif dp > 100.5:
-                    tag = f"{diam:.0f}\"\n×{dp / 100.0:.1f}"
+                    tag = f'{diam:.0f}"\n×{dp / 100.0:.1f}'
                 else:
-                    tag = f"{diam:.0f}\"\n{fp:.0f}%"
+                    tag = f'{diam:.0f}"\n{fp:.0f}%'
                 is_sel = pipe.pipe_id == self._last_pipe_id
                 self.ax_profile.text(
                     idx,
@@ -1292,28 +1284,40 @@ class TemporalChartsPanel(tk.Frame):
                 )
             self.ax_profile.set_ylabel("Caudal (m³/s)", color=theme.INK_PRIMARY, fontsize=7.6)
             legend_handles = [
-                Patch(facecolor="none", edgecolor=theme.INK_PRIMARY, linewidth=1.6, label="Cap. Qmax"),
-                Patch(facecolor=theme.ACCENT_PRIMARY, edgecolor="none", label="Caudal Q(t)"),
+                Patch(
+                    facecolor="none",
+                    edgecolor=theme.INK_PRIMARY,
+                    linewidth=1.6,
+                    label="Cap. Qmax",
+                ),
+                Patch(
+                    facecolor=theme.ACCENT_PRIMARY,
+                    edgecolor="none",
+                    label="Caudal Q(t)",
+                ),
             ]
             if prev_snap is not None:
                 legend_handles.append(
-                    Line2D([0], [0], color="#1D4ED8", marker="_", linestyle="None", markersize=9, markeredgewidth=2.0, label="Antes")
+                    Line2D(
+                        [0],
+                        [0],
+                        color="#1D4ED8",
+                        marker="_",
+                        linestyle="None",
+                        markersize=9,
+                        markeredgewidth=2.0,
+                        label="Antes",
+                    )
                 )
 
         if bn_note:
-            self._lbl_prof_note.configure(text=bn_note)
+            self._lbl_prof_note.setText(bn_note)
             if not self._prof_note_visible:
-                self._lbl_prof_note.pack(
-                    side=tk.TOP, fill=tk.X, before=self._prof_canvas_wrap, padx=4, pady=(4, 0)
-                )
+                self._lbl_prof_note.setVisible(True)
                 self._prof_note_visible = True
-                self.update_idletasks()
-                _sync_figure_to_widget(self.profile_canvas, self.profile_figure)
         elif self._prof_note_visible:
-            self._lbl_prof_note.pack_forget()
+            self._lbl_prof_note.setVisible(False)
             self._prof_note_visible = False
-            self.update_idletasks()
-            _sync_figure_to_widget(self.profile_canvas, self.profile_figure)
 
         self.ax_profile.set_xticks(xs)
         self.ax_profile.set_xticklabels(
@@ -1347,142 +1351,126 @@ class TemporalChartsPanel(tk.Frame):
             handlelength=1.2,
             labelcolor=theme.INK_PRIMARY,
         )
-        _safe_tight_layout(self.profile_figure, self.profile_canvas.get_tk_widget())
+        self._last_profile_size = (self.profile_canvas.width(), self.profile_canvas.height())
+        self._has_drawn_profile = True
+        _safe_tight_layout(self.profile_figure, self.profile_canvas)
         self.profile_canvas.draw_idle()
 
 
-class ComparisonChartsPanel(tk.Frame):
+class ComparisonChartsPanel(QWidget):
     """Gráfica comparativa de los escenarios con etiquetas de valor y selector Rebose / PTAR."""
 
-    def __init__(self, master: tk.Misc, dpi: int = 96) -> None:
-        super().__init__(master, bg=theme.PAPER_BG)
+    def __init__(
+        self,
+        dpi: int = 96,
+        ui_font: str = "Segoe UI",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
         self._dpi = max(72, int(dpi))
-        self._metric_mode: str = "flood"  # 'flood' (Rebose m³) | 'ptar' (Descarga PTAR 31)
-        self.figure = Figure(figsize=(4.0, 4.4), dpi=self._dpi, facecolor=theme.PAPER_BG)
-        self._layout_mode: str = "stacked"  # 'stacked' (2x1) o 'side' (1x2)
+        self._metric_mode: str = "flood"
+        self._layout_mode: str = "stacked"
+        self._last_drawn_mode: str = ""
+        self._last_drawn_size: Tuple[int, int] = (0, 0)
         self._last_summaries: List[ScenarioSummary] = []
-        self._resize_after: Optional[str] = None
 
-        # Barra de conmutación de métrica secundaria
-        mbar = tk.Frame(self, bg=theme.PAPER_SUBTLE)
-        mbar.pack(side=tk.TOP, fill=tk.X)
-        tk.Frame(self, bg=theme.PAPER_BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
+        self.setObjectName("ChartsHost")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        tk.Label(
-            mbar,
-            text="Serie 2:",
-            bg=theme.PAPER_SUBTLE,
-            fg=theme.INK_MUTED,
-            font=("Segoe UI", 7, "bold"),
-        ).pack(side=tk.LEFT, padx=(6, 4), pady=3)
+        mbar = QFrame(self)
+        mbar.setObjectName("SubBar")
+        mb_lay = QHBoxLayout(mbar)
+        mb_lay.setContentsMargins(6, 3, 6, 3)
+        mb_lay.setSpacing(4)
 
-        self._btn_metric_flood = tk.Button(
-            mbar,
-            text="Rebose (m³)",
-            command=lambda: self.set_metric_mode("flood"),
-            bg=theme.ACCENT_PRIMARY,
-            fg=theme.ACCENT_INK,
-            activebackground=theme.ACCENT_HOVER,
-            activeforeground=theme.ACCENT_INK,
-            relief="flat",
-            bd=0,
-            padx=7,
-            pady=2,
-            font=("Segoe UI", 7, "bold"),
-            cursor="hand2",
-            highlightthickness=1,
-            highlightbackground=theme.DOCK_BORDER,
+        lbl = QLabel("Serie 2:", mbar)
+        lbl.setFont(QFont(ui_font, 7, QFont.Weight.Bold))
+        lbl.setStyleSheet(f"color: {theme.INK_MUTED}; background: transparent;")
+        mb_lay.addWidget(lbl)
+
+        self._seg_metric = SegmentedControl(
+            [("flood", "Rebose (m³)"), ("ptar", "PTAR 31 (m³/s)")],
+            initial_key="flood",
+            inactive_variant="light_secondary",
+            font_pt=7,
+            pad_x=7,
+            pad_y=2,
+            spacing=4,
+            framed=False,
+            parent=mbar,
         )
-        self._btn_metric_flood.pack(side=tk.LEFT, padx=2, pady=3)
+        self._seg_metric.selectionChanged.connect(self.set_metric_mode)
+        mb_lay.addWidget(self._seg_metric)
+        mb_lay.addStretch(1)
+        lay.addWidget(mbar)
+        lay.addWidget(make_separator("h", theme.PAPER_BORDER, 1, self))
 
-        self._btn_metric_ptar = tk.Button(
-            mbar,
-            text="PTAR 31 (m³/s)",
-            command=lambda: self.set_metric_mode("ptar"),
-            bg=theme.PAPER_BG,
-            fg=theme.INK_PRIMARY,
-            activebackground=theme.PAPER_HOVER,
-            activeforeground=theme.INK_PRIMARY,
-            relief="flat",
-            bd=0,
-            padx=7,
-            pady=2,
-            font=("Segoe UI", 7, "normal"),
-            cursor="hand2",
-            highlightthickness=1,
-            highlightbackground=theme.DOCK_BORDER,
-        )
-        self._btn_metric_ptar.pack(side=tk.LEFT, padx=2, pady=3)
-
-        canvas_wrap = tk.Frame(self, bg=theme.PAPER_BG)
-        canvas_wrap.pack(fill=tk.BOTH, expand=True)
-        self._canvas_wrap = canvas_wrap
-
+        self.figure = Figure(figsize=(4.0, 4.4), dpi=self._dpi, facecolor=theme.PAPER_BG)
         self.ax_bar = self.figure.add_subplot(211)
         self.ax_ptar = self.figure.add_subplot(212)
 
-        self.canvas = FigureCanvasTkAgg(self.figure, master=canvas_wrap)
-        self.canvas.get_tk_widget().configure(width=320, height=300)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        _lock_tkagg_dpi(self.canvas, canvas_wrap)
-        self.bind("<Configure>", self._on_resize)
-        self.bind("<Destroy>", self._on_destroy)
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.canvas.setMinimumSize(220, 200)
+        lay.addWidget(self.canvas, 1)
+
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(100)
+        self._resize_timer.timeout.connect(self._reflow)
+
         self._draw_empty()
+
+    def stop_timers(self) -> None:
+        if self._resize_timer.isActive():
+            self._resize_timer.stop()
 
     def set_metric_mode(self, mode: str) -> None:
         if mode not in ("flood", "ptar") or mode == self._metric_mode:
             return
         self._metric_mode = mode
-        if mode == "flood":
-            self._btn_metric_flood.configure(
-                bg=theme.ACCENT_PRIMARY, fg=theme.ACCENT_INK, font=("Segoe UI", 7, "bold")
-            )
-            self._btn_metric_ptar.configure(
-                bg=theme.PAPER_BG, fg=theme.INK_PRIMARY, font=("Segoe UI", 7, "normal")
-            )
-        else:
-            self._btn_metric_ptar.configure(
-                bg=theme.ACCENT_PRIMARY, fg=theme.ACCENT_INK, font=("Segoe UI", 7, "bold")
-            )
-            self._btn_metric_flood.configure(
-                bg=theme.PAPER_BG, fg=theme.INK_PRIMARY, font=("Segoe UI", 7, "normal")
-            )
+        self._seg_metric.set_current(mode)
         if self._last_summaries:
             self.update_comparison(self._last_summaries)
 
-    def _on_destroy(self, event: tk.Event) -> None:
-        if event.widget is self and self._resize_after is not None:
-            try:
-                self.after_cancel(self._resize_after)
-            except tk.TclError:
-                pass
-            self._resize_after = None
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.width() >= 180 and self.height() >= 180:
+            self._resize_timer.start()
 
-    def _on_resize(self, event: tk.Event) -> None:
-        if event.width < 180 or event.height < 180:
-            return
-        if self._resize_after is not None:
-            self.after_cancel(self._resize_after)
-        self._resize_after = self.after(100, self._reflow)
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._reflow)
 
-    def _reflow(self, width: Optional[int] = None, height: Optional[int] = None) -> None:
-        self._resize_after = None
-        w = width if width is not None else max(1, self.winfo_width())
-        h = height if height is not None else max(1, self.winfo_height())
+    def _reflow(self) -> None:
+        w = max(1, self.width())
+        h = max(1, self.height())
         if w < 180 or h < 180:
             return
-        _sync_figure_to_widget(self.canvas, self.figure)
+        cw = self.canvas.width()
+        ch = self.canvas.height()
+        lw, lh = self._last_drawn_size
+        size_changed = abs(cw - lw) > 8 or abs(ch - lh) > 8
         new_mode = "side" if (w >= 560 and h < 480) else "stacked"
-        if new_mode != self._layout_mode or self._last_summaries:
-            self._layout_mode = new_mode
-            if self._last_summaries:
-                self.update_comparison(self._last_summaries)
+        if self._last_summaries:
+            if new_mode == self._last_drawn_mode and not size_changed:
                 return
-        _safe_tight_layout(self.figure, self.canvas.get_tk_widget())
+            self._layout_mode = new_mode
+            self.update_comparison(self._last_summaries)
+            return
+        if not size_changed and self._last_drawn_mode == new_mode:
+            return
+        self._layout_mode = new_mode
+        self._last_drawn_mode = new_mode
+        self._last_drawn_size = (cw, ch)
+        _sync_figure_size(self.canvas, self.figure)
+        _safe_tight_layout(self.figure, self.canvas)
         self.canvas.draw_idle()
 
     def _draw_empty(self) -> None:
-        _sync_figure_to_widget(self.canvas, self.figure)
+        _sync_figure_size(self.canvas, self.figure)
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         ax.set_facecolor(theme.PAPER_ALT_ROW)
@@ -1500,7 +1488,9 @@ class ComparisonChartsPanel(tk.Frame):
             fontsize=8.5,
             transform=ax.transAxes,
         )
-        _safe_tight_layout(self.figure, self.canvas.get_tk_widget())
+        self._last_drawn_mode = self._layout_mode
+        self._last_drawn_size = (self.canvas.width(), self.canvas.height())
+        _safe_tight_layout(self.figure, self.canvas)
         self.canvas.draw_idle()
 
     def update_comparison(self, summaries: List[ScenarioSummary]) -> None:
@@ -1509,10 +1499,7 @@ class ComparisonChartsPanel(tk.Frame):
             self._draw_empty()
             return
 
-        _, h_px = _sync_figure_to_widget(self.canvas, self.figure)
-        if h_px <= 0:
-            h_px = max(360, int(round(self.figure.get_figheight() * self.figure.dpi)))
-
+        _sync_figure_size(self.canvas, self.figure)
         self.figure.clear()
         if self._layout_mode == "side":
             self.ax_bar = self.figure.add_subplot(121)
@@ -1647,7 +1634,12 @@ class ComparisonChartsPanel(tk.Frame):
                     va="bottom",
                     fontsize=5.9,
                     color=theme.INK_PRIMARY,
-                    bbox=dict(boxstyle="round,pad=0.16", facecolor=theme.PAPER_BG, edgecolor=theme.PAPER_BORDER, alpha=0.90),
+                    bbox=dict(
+                        boxstyle="round,pad=0.16",
+                        facecolor=theme.PAPER_BG,
+                        edgecolor=theme.PAPER_BORDER,
+                        alpha=0.90,
+                    ),
                 )
             self.ax_ptar.set_title(
                 "Descarga PTAR 31 (m³/s)",
@@ -1673,5 +1665,7 @@ class ComparisonChartsPanel(tk.Frame):
             labelcolor=theme.INK_PRIMARY,
         )
 
-        _safe_tight_layout(self.figure, self.canvas.get_tk_widget())
+        self._last_drawn_mode = self._layout_mode
+        self._last_drawn_size = (self.canvas.width(), self.canvas.height())
+        _safe_tight_layout(self.figure, self.canvas)
         self.canvas.draw_idle()

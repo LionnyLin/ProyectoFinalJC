@@ -74,14 +74,9 @@ def main() -> int:
             return 1
         return 0
 
-    from src.gui.theme import enable_dpi_awareness
+    from src.gui import launch_gui
 
-    enable_dpi_awareness()
-    from src.gui import BicentenarioSewerApp
-
-    app = BicentenarioSewerApp(initial_data_path=args.data)
-    app.mainloop()
-    return 0
+    return launch_gui(initial_data_path=args.data)
 
 
 if __name__ == "__main__":

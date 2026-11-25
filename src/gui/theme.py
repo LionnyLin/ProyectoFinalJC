@@ -1,10 +1,11 @@
 """Sistema de diseño visual — Lámina Cartográfica de Archivo Hidráulico (#4A4A4A, #CBCBCB, #FFFFE3, #6D8196)."""
 
-import ctypes
 import os
-import tkinter as tk
-from tkinter import font as tkfont
 from typing import Dict, Tuple
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFontDatabase
+from PySide6.QtWidgets import QApplication, QWidget
 
 # Paleta principal solicitada
 PALETTE_GRAPHITE = "#4A4A4A"
@@ -160,110 +161,601 @@ TEXT_PRIMARY = INK_PRIMARY
 TEXT_SECONDARY = INK_SECONDARY
 TEXT_MUTED = INK_MUTED
 
-_FONTS_REGISTERED = False
+_MPL_FONTS_REGISTERED = False
+_QT_FONTS_REGISTERED = False
 _DPI_AWARENESS_SET = False
 
 
 def enable_dpi_awareness() -> None:
-    """Activa DPI awareness nativo en Windows antes de crear Tk para evitar escalado borroso."""
+    """Configura la política HiDPI de Qt antes de instanciar QApplication."""
     global _DPI_AWARENESS_SET
-    if _DPI_AWARENESS_SET or os.name != "nt":
+    if _DPI_AWARENESS_SET:
         return
     _DPI_AWARENESS_SET = True
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+    if QApplication.instance() is None:
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
 
 
-def resolve_dpi_scale(root: tk.Misc) -> float:
-    """Retorna el factor de escala DPI respecto a 96 DPI base (mínimo 1.0)."""
-    try:
-        dpi = float(root.winfo_fpixels("1i"))
-        if dpi > 0.0:
-            return max(1.0, min(3.0, dpi / 96.0))
-    except Exception:
-        pass
-    return 1.0
-
-
-def _register_local_inter_fonts() -> bool:
-    """Registra archivos de fuentes en assets/fonts/ para títulos en Windows y Matplotlib."""
-    global _FONTS_REGISTERED
+def register_local_inter_fonts() -> bool:
+    """Registra las fuentes en `assets/fonts/` para Qt y Matplotlib."""
+    global _MPL_FONTS_REGISTERED, _QT_FONTS_REGISTERED
     fonts_dir = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "assets", "fonts")
     )
-    if _FONTS_REGISTERED:
-        return os.path.isdir(fonts_dir)
-    _FONTS_REGISTERED = True
-
     if not os.path.isdir(fonts_dir):
         return False
 
-    FR_PRIVATE = 0x10
-    try:
-        from matplotlib import font_manager
-    except Exception:
-        font_manager = None
-
     registered = False
-    for fname in os.listdir(fonts_dir):
-        if fname.lower().endswith((".ttf", ".otf")):
-            fpath = os.path.join(fonts_dir, fname)
-            if os.name == "nt":
+    if not _MPL_FONTS_REGISTERED:
+        _MPL_FONTS_REGISTERED = True
+        try:
+            from matplotlib import font_manager
+        except Exception:
+            font_manager = None
+        if font_manager is not None:
+            for fname in os.listdir(fonts_dir):
+                if fname.lower().endswith((".ttf", ".otf")):
+                    try:
+                        font_manager.fontManager.addfont(os.path.join(fonts_dir, fname))
+                        registered = True
+                    except Exception:
+                        pass
+
+    if not _QT_FONTS_REGISTERED and QApplication.instance() is not None:
+        _QT_FONTS_REGISTERED = True
+        for fname in os.listdir(fonts_dir):
+            if fname.lower().endswith((".ttf", ".otf")):
                 try:
-                    ctypes.windll.gdi32.AddFontResourceExW(fpath, FR_PRIVATE, 0)
-                    registered = True
+                    fid = QFontDatabase.addApplicationFont(os.path.join(fonts_dir, fname))
+                    if fid != -1:
+                        registered = True
                 except Exception:
                     pass
-            if font_manager is not None:
-                try:
-                    font_manager.fontManager.addfont(fpath)
-                    registered = True
-                except Exception:
-                    pass
+
     return registered
 
 
-def resolve_display_font(root: tk.Misc) -> str:
-    """Resuelve la fuente para títulos principales (`Inter` 500/SemiBold si está disponible)."""
-    _register_local_inter_fonts()
-    available = {f.lower(): f for f in tkfont.families(root)}
-    for candidate in ("inter medium", "inter semibold", "inter", "segoe ui variable display", "segoe ui"):
-        if candidate in available:
-            return available[candidate]
-    return "Segoe UI"
-
-
-def resolve_fonts(root: tk.Misc) -> Tuple[str, str, bool]:
-    """Resuelve familia sans estándar de UI (`Segoe UI`) y familia monoespaciada.
-
-    Retorna `(ui_font_family, mono_font_family, inter_available)`.
-    """
-    _register_local_inter_fonts()
-    available = {f.lower(): f for f in tkfont.families(root)}
+def resolve_fonts() -> Tuple[str, str, str, bool]:
+    """Resuelve familias tipográficas `(ui_font, mono_font, display_font, inter_available)`."""
+    register_local_inter_fonts()
+    families = QFontDatabase.families()
+    available = {f.lower(): f for f in families}
     inter_available = any("inter" in k for k in available)
 
-    ui_family = "Segoe UI"
-    for candidate in ("segoe ui variable text", "segoe ui", "arial"):
+    ui_family = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
+    for candidate in (
+        "segoe ui variable text",
+        "segoe ui",
+        "inter",
+        "arial",
+        "noto sans",
+        "dejavu sans",
+    ):
         if candidate in available:
             ui_family = available[candidate]
             break
 
-    mono_family = "Consolas"
+    display_family = ui_family
+    for candidate in (
+        "inter medium",
+        "inter semibold",
+        "inter",
+        "segoe ui variable display",
+        "segoe ui",
+    ):
+        if candidate in available:
+            display_family = available[candidate]
+            break
+
+    mono_family = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont).family()
     for candidate in (
         "jetbrainsmono nerd font",
         "jetbrains mono",
         "cascadia mono",
         "firacode nerd font",
         "consolas",
+        "dejavu sans mono",
+        "liberation mono",
         "courier new",
     ):
         if candidate in available:
             mono_family = available[candidate]
             break
 
-    return ui_family, mono_family, inter_available
+    return ui_family, mono_family, display_family, inter_available
+
+
+def apply_variant(widget: QWidget, variant: str) -> None:
+    """Actualiza la propiedad dinámica `variant` y refresca el QSS del widget."""
+    widget.setProperty("variant", variant)
+    style = widget.style()
+    if style is not None:
+        style.unpolish(widget)
+        style.polish(widget)
+    widget.update()
+
+
+def build_stylesheet(ui_font: str, mono_font: str, display_font: str) -> str:
+    """Construye la hoja de estilo QSS global manteniendo la paleta oficial exacta."""
+    return f"""
+QWidget {{
+    font-family: "{ui_font}";
+    color: {INK_PRIMARY};
+}}
+QMainWindow, QWidget#MainCentral {{
+    background-color: {DOCK_BORDER};
+}}
+QFrame#TopBar {{
+    background-color: {SHELL_BG};
+    border: none;
+}}
+QFrame#TopBar QLabel {{
+    background-color: transparent;
+    color: {SHELL_TEXT};
+}}
+QLabel#AppTitle {{
+    font-family: "{display_font}";
+    font-size: 11pt;
+    font-weight: bold;
+    color: {SHELL_TEXT};
+}}
+QLabel#AppSubtitle {{
+    font-size: 8pt;
+    color: {SHELL_TEXT_MUTED};
+}}
+QFrame#TopBarAccent {{
+    background-color: {ACCENT_PRIMARY};
+    border: none;
+}}
+QFrame#StatusBarFrame {{
+    background-color: {SHELL_BG};
+    border: none;
+}}
+QFrame#StatusBarAccent {{
+    background-color: {ACCENT_PRIMARY};
+    border: none;
+}}
+QLabel#StatusLabel {{
+    background-color: transparent;
+    color: {SHELL_TEXT};
+    font-size: 8pt;
+}}
+QLabel#ShortcutsHintLabel {{
+    background-color: transparent;
+    color: {SHELL_TEXT_MUTED};
+    font-size: 8pt;
+}}
+
+QSplitter#MainSplitter::handle {{
+    background-color: {DOCK_BORDER};
+}}
+QFrame#LeftPanel, QFrame#CenterPanel, QFrame#RightPanel, QWidget#LeftScrollContent, QWidget#LeftScrollPage {{
+    background-color: {DOCK_BG};
+}}
+QFrame#DockSubBar, QFrame#InspectorActionsDock, QWidget#KpiRow {{
+    background-color: {DOCK_BG};
+}}
+QWidget#ChartsHost, QWidget#CompTableWrap, QWidget#TourBody {{
+    background-color: {PAPER_BG};
+}}
+QScrollArea#LeftScrollArea {{
+    background-color: {DOCK_BG};
+    border: none;
+}}
+QFrame#DockDivider {{
+    background-color: {DOCK_BORDER};
+    border: none;
+}}
+QFrame#PaperDivider {{
+    background-color: {PAPER_BORDER};
+    border: none;
+}}
+
+QFrame#SectionCard {{
+    background-color: {PAPER_BG};
+    border: 1px solid {DOCK_BORDER};
+}}
+QFrame#SectionHeader[dark="true"] {{
+    background-color: {SHELL_BG};
+}}
+QFrame#SectionHeader[dark="false"] {{
+    background-color: {ACCENT_PRIMARY};
+}}
+QLabel#SectionHeaderLabel {{
+    background-color: transparent;
+    color: {SHELL_TEXT};
+    font-family: "{display_font}";
+    font-size: 9pt;
+    font-weight: bold;
+}}
+QFrame#SectionRule[dark="true"] {{
+    background-color: {ACCENT_PRIMARY};
+}}
+QFrame#SectionRule[dark="false"] {{
+    background-color: {DOCK_BORDER};
+}}
+QWidget#SectionBody {{
+    background-color: {PAPER_BG};
+}}
+
+QFrame#RightSheetFrame {{
+    background-color: {PAPER_BG};
+    border: 1px solid {DOCK_BORDER};
+}}
+QTabWidget#RightTabs::pane {{
+    background-color: {PAPER_BG};
+    border: none;
+    border-top: 1px solid {DOCK_BORDER};
+}}
+QTabWidget#RightTabs > QTabBar {{
+    background-color: {DOCK_BG};
+}}
+QTabWidget#RightTabs > QTabBar::tab {{
+    background-color: {PAPER_SUBTLE};
+    color: {INK_PRIMARY};
+    border: 1px solid {DOCK_BORDER};
+    border-bottom: none;
+    padding: 6px 10px;
+    margin-top: 5px;
+    margin-right: 2px;
+    font-weight: bold;
+    font-size: 9pt;
+}}
+QTabWidget#RightTabs > QTabBar::tab:hover:!selected {{
+    background-color: {PAPER_HOVER};
+}}
+QTabWidget#RightTabs > QTabBar::tab:selected {{
+    background-color: {ACCENT_PRIMARY};
+    color: {ACCENT_INK};
+}}
+QTabWidget#RightTabs[compactTabs="true"] > QTabBar::tab {{
+    padding: 5px 6px;
+    font-size: 8pt;
+    font-weight: normal;
+}}
+
+QFrame#TelemetryHeader {{
+    background-color: {DOCK_BG};
+    border: 1px solid {DOCK_BORDER};
+}}
+QWidget#TelemetryTopRow {{
+    background-color: {PAPER_BG};
+}}
+QFrame#ClockPill {{
+    background-color: {SHELL_BG};
+    border: none;
+}}
+QLabel#ClockLabel {{
+    background-color: transparent;
+    color: {SHELL_TEXT};
+    font-family: "{mono_font}";
+    font-size: 9pt;
+    font-weight: bold;
+}}
+QFrame#KpiCard {{
+    background-color: {PAPER_BG};
+}}
+QFrame#KpiTopRule {{
+    background-color: {ACCENT_PRIMARY};
+}}
+QLabel#KpiCaption {{
+    background-color: transparent;
+    color: {INK_MUTED};
+    font-size: 7pt;
+    font-weight: bold;
+}}
+QLabel#KpiValue {{
+    background-color: transparent;
+    color: {INK_PRIMARY};
+    font-family: "{mono_font}";
+    font-size: 10pt;
+    font-weight: bold;
+}}
+
+QFrame#MapModeBar {{
+    background-color: {DOCK_BG};
+    border: 1px solid {DOCK_BORDER};
+    border-bottom: none;
+}}
+QLabel#MapModeCaption {{
+    background-color: transparent;
+    color: {INK_PRIMARY};
+    font-size: 8pt;
+    font-weight: bold;
+}}
+QFrame#SegmentedFrame {{
+    background-color: {DOCK_BORDER};
+    border: 1px solid {DOCK_BORDER};
+}}
+QFrame#PlayerBar {{
+    background-color: {PAPER_BG};
+    border: 1px solid {DOCK_BORDER};
+}}
+QLabel#MassAuditLabel {{
+    background-color: {ACCENT_SOFT};
+    color: {STATUS_OK_LIGHT};
+    border: 1px solid {DOCK_BORDER};
+    font-family: "{mono_font}";
+    font-size: 8pt;
+    font-weight: bold;
+    padding: 2px 8px;
+}}
+
+QPushButton[variant="primary"] {{
+    background-color: {ACCENT_PRIMARY};
+    color: {ACCENT_INK};
+    border: 1px solid {INK_PRIMARY};
+    font-weight: bold;
+    padding: 4px 10px;
+}}
+QPushButton[variant="primary"]:hover {{
+    background-color: {ACCENT_HOVER};
+}}
+QPushButton[variant="primary"]:disabled {{
+    background-color: {DOCK_BG};
+    color: {INK_MUTED};
+    border: 1px solid {DOCK_DIVIDER};
+}}
+QPushButton[variant="dark_primary"] {{
+    background-color: {ACCENT_ON_DARK};
+    color: {ACCENT_ON_DARK_INK};
+    border: 1px solid {ACCENT_ON_DARK};
+    font-weight: bold;
+    padding: 4px 10px;
+}}
+QPushButton[variant="dark_primary"]:hover {{
+    background-color: {ACCENT_ON_DARK_HOVER};
+}}
+QPushButton[variant="dark_secondary"] {{
+    background-color: {SHELL_ELEVATED};
+    color: {SHELL_TEXT};
+    border: 1px solid {SHELL_BORDER};
+    padding: 4px 9px;
+}}
+QPushButton[variant="dark_secondary"]:hover {{
+    background-color: {SHELL_HOVER};
+}}
+QPushButton[variant="dark_tour"] {{
+    background-color: {SHELL_SURFACE};
+    color: {PALETTE_IVORY};
+    border: 1px solid {PALETTE_IVORY};
+    font-weight: bold;
+    padding: 4px 10px;
+}}
+QPushButton[variant="dark_tour"]:hover {{
+    background-color: {SHELL_ELEVATED};
+    border: 1px solid {ACCENT_ON_DARK_HOVER};
+}}
+QPushButton[variant="dark_ghost"] {{
+    background-color: {SHELL_BG};
+    color: {SHELL_TEXT_SECONDARY};
+    border: 1px solid {SHELL_BORDER};
+    padding: 4px 9px;
+}}
+QPushButton[variant="dark_ghost"]:hover {{
+    background-color: {SHELL_ELEVATED};
+}}
+QPushButton[variant="dock_secondary"] {{
+    background-color: {DOCK_BG};
+    color: {INK_PRIMARY};
+    border: 1px solid {DOCK_BORDER};
+    padding: 4px 8px;
+}}
+QPushButton[variant="dock_secondary"]:hover {{
+    background-color: {DOCK_HOVER};
+}}
+QPushButton[variant="dock_secondary"]:disabled {{
+    background-color: {DOCK_BG};
+    color: {INK_MUTED};
+    border: 1px solid {DOCK_DIVIDER};
+}}
+QPushButton[variant="light_secondary"] {{
+    background-color: {PAPER_SUBTLE};
+    color: {INK_PRIMARY};
+    border: 1px solid {DOCK_BORDER};
+    padding: 4px 8px;
+}}
+QPushButton[variant="light_secondary"]:hover {{
+    background-color: {PAPER_HOVER};
+}}
+QPushButton[variant="light_secondary"]:disabled {{
+    background-color: {PAPER_SUBTLE};
+    color: {INK_MUTED};
+    border: 1px solid {PAPER_BORDER};
+}}
+
+QPushButton[compactPad="true"] {{
+    padding: 2px 6px;
+}}
+
+QToolButton#FileMenuButton {{
+    background-color: {SHELL_ELEVATED};
+    color: {SHELL_TEXT};
+    border: 1px solid {ACCENT_PRIMARY};
+    padding: 4px 10px;
+    font-size: 8pt;
+    font-weight: bold;
+}}
+QToolButton#FileMenuButton:hover {{
+    background-color: {SHELL_HOVER};
+}}
+QToolButton#FileMenuButton::menu-indicator {{
+    image: none;
+    width: 0px;
+}}
+QMenu {{
+    background-color: {SHELL_BG};
+    color: {SHELL_TEXT};
+    border: 1px solid {ACCENT_PRIMARY};
+    padding: 3px;
+}}
+QMenu::item {{
+    padding: 5px 14px;
+    color: {SHELL_TEXT};
+}}
+QMenu::item:selected {{
+    background-color: {ACCENT_PRIMARY};
+    color: {ACCENT_INK};
+}}
+QMenu::separator {{
+    height: 1px;
+    background: {SHELL_BORDER};
+    margin: 3px 6px;
+}}
+
+QComboBox, QDoubleSpinBox, QLineEdit {{
+    background-color: {PAPER_BG};
+    color: {INK_PRIMARY};
+    border: 1px solid {DOCK_BORDER};
+    padding: 3px 6px;
+    selection-background-color: {ACCENT_PRIMARY};
+    selection-color: {ACCENT_INK};
+}}
+QComboBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
+    border: 1px solid {ACCENT_PRIMARY};
+}}
+QDoubleSpinBox {{
+    font-family: "{mono_font}";
+    font-size: 9pt;
+}}
+QComboBox QAbstractItemView {{
+    background-color: {PAPER_BG};
+    color: {INK_PRIMARY};
+    border: 1px solid {DOCK_BORDER};
+    selection-background-color: {ACCENT_PRIMARY};
+    selection-color: {ACCENT_INK};
+    outline: 0;
+}}
+
+QCheckBox, QRadioButton {{
+    background-color: transparent;
+    color: {INK_PRIMARY};
+    spacing: 5px;
+    font-size: 8pt;
+}}
+
+QSlider::groove:horizontal {{
+    background-color: {DOCK_BG};
+    height: 8px;
+    border: 1px solid {PAPER_BORDER};
+}}
+QSlider::handle:horizontal {{
+    background-color: {ACCENT_PRIMARY};
+    border: 1px solid {INK_PRIMARY};
+    width: 16px;
+    margin: -4px 0px;
+}}
+QSlider::handle:horizontal:hover {{
+    background-color: {ACCENT_HOVER};
+}}
+
+QTableWidget {{
+    background-color: {PAPER_BG};
+    alternate-background-color: {PAPER_ALT_ROW};
+    color: {INK_PRIMARY};
+    gridline-color: {PAPER_BORDER};
+    border: none;
+    font-family: "{mono_font}";
+    font-size: 8pt;
+    selection-background-color: {ACCENT_SOFT};
+    selection-color: {INK_PRIMARY};
+}}
+QTableWidget::item:selected {{
+    background-color: {ACCENT_SOFT};
+    color: {INK_PRIMARY};
+}}
+QHeaderView::section {{
+    background-color: {SHELL_BG};
+    color: {SHELL_TEXT};
+    border: none;
+    border-right: 1px solid {ACCENT_PRIMARY};
+    padding: 4px 5px;
+    font-family: "{ui_font}";
+    font-size: 8pt;
+    font-weight: bold;
+}}
+
+QPlainTextEdit#TraversalLog {{
+    background-color: {SHELL_BG};
+    color: {SHELL_TEXT};
+    border: 1px solid {ACCENT_PRIMARY};
+    font-family: "{mono_font}";
+    font-size: 8pt;
+    padding: 5px;
+}}
+QTextEdit#InspectorText {{
+    background-color: {PAPER_BG};
+    color: {INK_PRIMARY};
+    border: none;
+    font-family: "{mono_font}";
+    font-size: 9pt;
+    padding: 8px;
+}}
+
+QFrame#SubBar, QFrame#FilterBar, QFrame#CompTopBar, QFrame#InspectorActions, QFrame#InspectorSubCard {{
+    background-color: {PAPER_SUBTLE};
+}}
+QFrame#TourCard {{
+    background-color: {PAPER_BG};
+    border: 1px solid {DOCK_BORDER};
+}}
+QFrame#TourHeader {{
+    background-color: {ACCENT_PRIMARY};
+}}
+QFrame#TourFooter {{
+    background-color: {PAPER_SUBTLE};
+}}
+QFrame#ImpactBanner {{
+    background-color: #EEF2F6;
+    border: 1px solid #94A3B8;
+}}
+QFrame#ImpactStripe {{
+    background-color: #1D4ED8;
+}}
+
+QScrollBar:vertical {{
+    background: {PAPER_SUBTLE};
+    width: 11px;
+    margin: 0px;
+    border-left: 1px solid {PAPER_BORDER};
+}}
+QScrollBar::handle:vertical {{
+    background: {DOCK_BG};
+    min-height: 24px;
+    border: 1px solid {DOCK_BORDER};
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {ACCENT_PRIMARY};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+QScrollBar:horizontal {{
+    background: {PAPER_SUBTLE};
+    height: 11px;
+    margin: 0px;
+    border-top: 1px solid {PAPER_BORDER};
+}}
+QScrollBar::handle:horizontal {{
+    background: {DOCK_BG};
+    min-width: 24px;
+    border: 1px solid {DOCK_BORDER};
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {ACCENT_PRIMARY};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
+
+QMessageBox {{
+    background-color: {PAPER_BG};
+    color: {INK_PRIMARY};
+}}
+QMessageBox QLabel {{
+    background-color: transparent;
+    color: {INK_PRIMARY};
+}}
+"""

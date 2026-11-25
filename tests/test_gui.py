@@ -1,158 +1,197 @@
-"""Pruebas unitarias de comportamiento y adaptabilidad de la interfaz gráfica."""
+"""Pruebas unitarias de comportamiento, paleta y adaptabilidad de la interfaz PySide6."""
 
+import os
 import time
-import tkinter as tk
 import unittest
 
-from src.gui import BicentenarioSewerApp
-from src.gui import theme
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtGui import QFont, QFontMetricsF
+from PySide6.QtWidgets import QApplication
+
+from src.gui import BicentenarioSewerApp, ensure_qapplication, theme
+from src.gui.canvas import NetworkCanvas
+from src.gui.panels import build_tour_stops
 
 
-def _pump(app: tk.Tk, ms: int = 120) -> None:
+def _pump(ms: int = 120) -> None:
+    qapp = QApplication.instance()
+    if qapp is None:
+        return
     end = time.time() + ms / 1000.0
     while time.time() < end:
-        app.update_idletasks()
-        app.update()
+        qapp.processEvents()
         time.sleep(0.015)
 
 
+def _wait_tasks(app: BicentenarioSewerApp, timeout_ms: int = 8000) -> None:
+    ok = app.wait_for_background_tasks(timeout_ms)
+    if not ok:
+        raise AssertionError("Tiempo agotado esperando tareas en segundo plano")
+    _pump(80)
+
+
 class TestGuiResponsiveAndBehavior(unittest.TestCase):
-    """Verifica el comportamiento funcional y la adaptación a distintos tamaños de ventana."""
+    """Verifica comportamiento funcional, paleta, composición modular y responsividad."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ensure_qapplication()
 
     def setUp(self) -> None:
         self.app = BicentenarioSewerApp()
-        _pump(self.app, 180)
+        self.app.show()
+        _pump(180)
 
     def tearDown(self) -> None:
-        try:
-            self.app._on_close()
-        except tk.TclError:
-            pass
+        self.app.wait_for_background_tasks(3000)
+        self.app.close()
+        _pump(40)
+        self.app.deleteLater()
+        _pump(20)
 
     def test_responsive_breakpoints_and_panel_exclusivity_in_compact(self) -> None:
         # Ventana amplia
-        self.app.geometry("1400x860+20+20")
-        _pump(self.app, 180)
-        self.assertEqual(self.app._layout_tier, "wide")
-        self.assertEqual(self.app._topbar_mode, "wide")
-        self.assertTrue(self.app._show_left)
-        self.assertTrue(self.app._show_right)
+        self.app.resize(1400, 860)
+        _pump(180)
+        self.assertEqual(self.app.state.layout_tier, "wide")
+        self.assertEqual(self.app.state.topbar_mode, "wide")
+        self.assertTrue(self.app.state.show_left)
+        self.assertTrue(self.app.state.show_right)
+        self.assertTrue(self.app.controls_panel.isVisible())
+        self.assertTrue(self.app.right_panel.isVisible())
 
         # Ventana mediana
-        self.app.geometry("1080x680+20+20")
-        _pump(self.app, 180)
-        self.assertEqual(self.app._layout_tier, "medium")
-        self.assertEqual(self.app._topbar_mode, "medium")
+        self.app.resize(1080, 680)
+        _pump(180)
+        self.assertEqual(self.app.state.layout_tier, "medium")
+        self.assertEqual(self.app.state.topbar_mode, "medium")
 
-        # Ventana compacta: alternancia exclusiva entre Parámetros y Análisis
-        self.app.geometry("840x580+20+20")
-        _pump(self.app, 180)
-        self.assertEqual(self.app._layout_tier, "compact")
-        self.assertEqual(self.app._topbar_mode, "compact")
-        self.assertFalse(self.app._show_left and self.app._show_right)
+        # Ventana compacta: alternancia exclusiva entre Controles y Análisis
+        self.app.resize(840, 580)
+        _pump(180)
+        self.assertEqual(self.app.state.layout_tier, "compact")
+        self.assertEqual(self.app.state.topbar_mode, "compact")
+        self.assertFalse(self.app.state.show_left and self.app.state.show_right)
 
         self.app.toggle_right_panel()
-        _pump(self.app, 140)
-        self.assertTrue(self.app._show_right)
-        self.assertFalse(self.app._show_left)
+        _pump(140)
+        self.assertTrue(self.app.state.show_right)
+        self.assertFalse(self.app.state.show_left)
 
         self.app.toggle_left_panel()
-        _pump(self.app, 140)
-        self.assertTrue(self.app._show_left)
-        self.assertFalse(self.app._show_right)
+        _pump(140)
+        self.assertTrue(self.app.state.show_left)
+        self.assertFalse(self.app.state.show_right)
 
     def test_traversals_upstream_downstream_and_search(self) -> None:
-        self.app.var_bfs_start.set("6")
-        self.app.var_bfs_target.set("31")
+        self.app.controls_panel.combo_bfs_start.setCurrentText("6")
+        self.app.controls_panel.combo_bfs_target.setCurrentText("31")
         self.app._run_traversal("BFS")
         self.assertTrue(len(self.app.network_canvas.highlight_pipe_ids) > 0)
         self.assertIn("31", self.app.network_canvas.highlight_node_ids)
 
-        self.app.var_bfs_start.set("31")
+        self.app.controls_panel.combo_bfs_start.setCurrentText("31")
         self.app._run_trace("up")
         self.assertEqual(len(self.app.network_canvas.highlight_node_ids), 46)
 
-        self.app.var_search.set("P31")
-        self.app._action_search()
-        self.assertEqual(self.app._selected_pipe_id, "P31")
+        self.app.controls_panel.entry_search.setText("P31")
+        self.app._action_search("P31")
+        self.assertEqual(self.app.state.selected_pipe_id, "P31")
 
     def test_playback_step_and_critical_selection_persistence(self) -> None:
-        self.app.notebook.select(1)
+        self.app.right_tabs.setCurrentIndex(1)
         self.app._on_pipe_selected("P31")
         self.app.network_canvas.select_pipe("P31")
         self.app._player_step(1)
-        _pump(self.app, 80)
-        self.assertEqual(self.app.tree_critical.selection(), ("P31",))
+        _pump(80)
+        self.assertEqual(self.app.critical_panel.selected_pipe_id(), "P31")
 
         self.app.toggle_play_pause()
-        self.assertTrue(self.app.is_playing)
-        _pump(self.app, 120)
+        self.assertTrue(self.app.state.is_playing)
+        _pump(120)
         self.app.toggle_play_pause()
-        self.assertFalse(self.app.is_playing)
+        self.assertFalse(self.app.state.is_playing)
 
     def test_auto_comparison_on_tab_switch(self) -> None:
-        self.assertEqual(len(self.app.comparisons), 0)
-        self.app.notebook.select(3)
-        _pump(self.app, 200)
-        self.assertEqual(len(self.app.comparisons), 5)
-        self.assertEqual(len(self.app.tree_comp.get_children()), 5)
+        self.assertEqual(len(self.app.state.comparisons), 0)
+        self.app.right_tabs.setCurrentIndex(3)
+        _wait_tasks(self.app)
+        self.assertEqual(len(self.app.state.comparisons), 5)
+        self.assertEqual(self.app.comparison_panel.table.rowCount(), 5)
 
     def test_palette_tokens_and_spanish_presentation(self) -> None:
         self.assertEqual(theme.SHELL_BG.upper(), "#4A4A4A")
         self.assertEqual(theme.DOCK_BG.upper(), "#CBCBCB")
         self.assertEqual(theme.CANVAS_BG.upper(), "#FFFFE3")
         self.assertEqual(theme.ACCENT_PRIMARY.upper(), "#6D8196")
-        self.assertEqual(self.app.topbar.cget("bg").upper(), "#4A4A4A")
-        self.assertEqual(self.app.left_panel.cget("bg").upper(), "#CBCBCB")
-        self.assertEqual(self.app.network_canvas.cget("bg").upper(), "#FFFFE3")
+
+        # Verifica colores realmente renderizados en la GUI Qt
+        top_img = self.app.top_bar.grab().toImage()
+        self.assertEqual(top_img.pixelColor(4, 4).name().upper(), "#4A4A4A")
+
+        left_img = self.app.controls_panel.grab().toImage()
+        self.assertEqual(left_img.pixelColor(2, 2).name().upper(), "#CBCBCB")
+
+        canvas_img = self.app.network_canvas.grab().toImage()
+        self.assertEqual(canvas_img.pixelColor(4, 4).name().upper(), "#FFFFE3")
 
         # Escenarios y selectores en español sin alterar valores internos del motor
-        self.assertIn("Lluvia moderada", self.app.var_scenario.get())
-        self.app.var_split_rule_es.set("Equitativa")
-        self.app.var_source_dist_es.set("Uniforme (1/8)")
+        self.assertIn("Lluvia moderada", self.app.controls_panel.combo_scenario.currentText())
+        self.app.controls_panel.combo_split_rule.setCurrentText("Equitativa")
+        self.app.controls_panel.combo_source_dist.setCurrentText("Uniforme (1/8)")
         cfg = self.app._build_sim_config()
         self.assertEqual(cfg.split_rule, "equal")
         self.assertEqual(cfg.source_distribution, "equal")
-        self.app.var_source_dist_es.set("Por capacidad")
+        self.app.controls_panel.combo_source_dist.setCurrentText("Por capacidad")
 
     def test_cartographic_surgery_basin_focus_and_traversal_anim(self) -> None:
         # 0. La simulación inicia siempre en el minuto 0
-        self.assertEqual(self.app.current_step, 0)
-        self.assertAlmostEqual(self.app.result.snapshots[self.app.current_step].time_min, 0.0)
+        self.assertEqual(self.app.state.current_step, 0)
+        self.assertAlmostEqual(
+            self.app.state.result.snapshots[self.app.state.current_step].time_min, 0.0
+        )
 
         # 1. Al seleccionar tubería muestra diámetro actual y conserva el menú durante reproducción
         self.app.network_canvas.select_pipe("P31")
         self.app._on_pipe_selected("P31")
-        self.assertIn('8"', self.app.lbl_diam_current.cget("text"))
-        self.app.var_diam_override.set('16"')
-        self.app._action_apply_intervention()
-        _pump(self.app, 80)
-        self.assertIn('16"', self.app.lbl_diam_current.cget("text"))
-        self.assertTrue(bool(self.app.pipe_intervention_card.winfo_ismapped()))
+        self.assertIn('8"', self.app.inspector_panel.lbl_diam_current.text())
+        self.app.inspector_panel.set_diameter_override_text('16"')
+        self.app._action_apply_intervention(
+            float(self.app.inspector_panel.scale_obstruction.value()),
+            self.app.inspector_panel.combo_diam_override.currentText(),
+        )
+        _pump(80)
+        self.assertIn('16"', self.app.inspector_panel.lbl_diam_current.text())
+        self.assertTrue(self.app.inspector_panel.pipe_intervention_card.isVisible())
 
         self.app.toggle_play_pause()
-        _pump(self.app, 260)
-        self.assertTrue(bool(self.app.pipe_intervention_card.winfo_ismapped()))
-        self.assertEqual(self.app._selected_pipe_id, "P31")
+        _pump(260)
+        self.assertTrue(self.app.inspector_panel.pipe_intervention_card.isVisible())
+        self.assertEqual(self.app.state.selected_pipe_id, "P31")
         self.app.toggle_play_pause()
 
         # 2. Cirugía cartográfica: obstrucción 100% en P3 (C -> 31) y perfil longitudinal
         self.app.network_canvas.select_pipe("P3")
         self.app._on_pipe_selected("P3")
-        self.app.var_obstruction_pct.set(100.0)
-        self.app._action_apply_intervention()
-        _pump(self.app, 100)
-        self.assertIn("C", self.app._isolated_nodes)
-        self.assertIsNotNone(self.app._previous_result)
+        self.app.inspector_panel.set_obstruction_pct(100.0)
+        self.app._action_apply_intervention(
+            100.0,
+            self.app.inspector_panel.combo_diam_override.currentText(),
+        )
+        _pump(100)
+        self.assertIn("C", self.app.state.isolated_nodes)
+        self.assertIsNotNone(self.app.state.previous_result)
 
         self.app.temporal_charts.set_subtab("profile")
-        _pump(self.app, 80)
+        _pump(80)
         self.assertEqual(self.app.temporal_charts._subtab, "profile")
         self.app.temporal_charts.set_subtab("hydro")
 
         self.app._action_restore_all_interventions()
-        self.assertEqual(len(self.app._isolated_nodes), 0)
-        self.assertEqual(self.app.current_step, 0)
+        self.assertEqual(len(self.app.state.isolated_nodes), 0)
+        self.assertEqual(self.app.state.current_step, 0)
 
         self.app.network_canvas.select_pipe("P31")
         self.app._on_pipe_selected("P31")
@@ -163,274 +202,291 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertFalse(self.app.network_canvas._basin_active)
 
         self.app._set_step(45)
-        self.app.var_bfs_start.set("10")
-        self.app.var_bfs_target.set("31")
-        self.app._last_traversal_alg = "BFS"
+        self.app.controls_panel.combo_bfs_start.setCurrentText("10")
+        self.app.controls_panel.combo_bfs_target.setCurrentText("31")
+        self.app.state.last_traversal_alg = "BFS"
         self.app._action_toggle_traversal_anim()
-        _pump(self.app, 120)
-        # El frame final de ruta debe conservar el color hidráulico de la tubería
-        final_fr = self.app._anim_frames[-1]
+        _pump(120)
+        final_fr = self.app.state.anim_frames[-1]
         self.app.network_canvas.set_traversal_frame(final_fr)
-        _pump(self.app, 40)
+        _pump(40)
+        pipes_by_id = {pv.pipe_id: pv for pv in self.app.network_canvas.current_scene.pipes}
         for pid in ("P35", "P51"):
-            line_id = self.app.network_canvas._pipe_draw_refs[pid][0]
-            self.assertNotEqual(
-                self.app.network_canvas.itemcget(line_id, "fill"),
-                theme.ACCENT_PRIMARY,
-            )
+            self.assertNotEqual(pipes_by_id[pid].color.upper(), theme.ACCENT_PRIMARY.upper())
         self.app._stop_traversal_anim(clear_canvas=True)
-        self.app._last_traversal_alg = "DFS"
+        self.app.state.last_traversal_alg = "DFS"
         self.app._action_toggle_traversal_anim()
-        _pump(self.app, 120)
+        _pump(120)
         self.app._stop_traversal_anim(clear_canvas=True)
 
     def test_scenario_switch_while_paused_and_chart_dpi_fit(self) -> None:
-        # Avanzar a t > 0 y mantener pausado
         self.app._set_step(25)
-        self.assertFalse(self.app.is_playing)
-        self.assertEqual(self.app.result.config.scenario_id, 3)
+        self.assertFalse(self.app.state.is_playing)
+        self.assertEqual(self.app.state.result.config.scenario_id, 3)
 
         # Cambiar de escenario en el selector estando pausado -> actualiza enseguida desde t=0
-        vals = list(self.app.combo_scenario["values"])
-        self.app.var_scenario.set(vals[4])
-        self.app.combo_scenario.event_generate("<<ComboboxSelected>>")
-        _pump(self.app, 120)
-        self.assertEqual(self.app.result.config.scenario_id, 5)
-        self.assertEqual(self.app.current_step, 0)
-        self.assertAlmostEqual(self.app.result.snapshots[0].time_min, 0.0)
+        self.app.controls_panel.combo_scenario.setCurrentIndex(4)
+        _pump(120)
+        self.assertEqual(self.app.state.result.config.scenario_id, 5)
+        self.assertEqual(self.app.state.current_step, 0)
+        self.assertAlmostEqual(self.app.state.result.snapshots[0].time_min, 0.0)
 
-        # Verificar encaje exacto 1:1 de PhotoImage vs widget sin salto DPI 1.5x al mapear pestañas
-        self.app.notebook.select(3)
-        _pump(self.app, 220)
-        comp_w = self.app.comparison_charts.canvas.get_tk_widget()
-        comp_photo = self.app.comparison_charts.canvas._tkphoto
-        self.assertEqual(int(round(self.app.comparison_charts.figure.dpi)), self.app._mpl_dpi)
-        self.assertEqual(comp_photo.width(), comp_w.winfo_width())
-        self.assertEqual(comp_photo.height(), comp_w.winfo_height())
+        # Verificar ajuste exacto de figuras Matplotlib al contenedor Qt sin saltos DPI
+        self.app.right_tabs.setCurrentIndex(3)
+        _wait_tasks(self.app)
+        comp_c = self.app.comparison_charts.canvas
+        comp_fig = self.app.comparison_charts.figure
+        self.assertGreaterEqual(comp_c.width(), 180)
+        self.assertAlmostEqual(
+            comp_fig.get_figwidth() * comp_fig.dpi,
+            comp_c.width() * comp_c.devicePixelRatioF(),
+            delta=4.0,
+        )
+        self.assertAlmostEqual(
+            comp_fig.get_figheight() * comp_fig.dpi,
+            comp_c.height() * comp_c.devicePixelRatioF(),
+            delta=4.0,
+        )
 
-        self.app.notebook.select(2)
-        _pump(self.app, 220)
-        tmp_w = self.app.temporal_charts.canvas.get_tk_widget()
-        tmp_photo = self.app.temporal_charts.canvas._tkphoto
-        self.assertEqual(int(round(self.app.temporal_charts.figure.dpi)), self.app._mpl_dpi)
-        self.assertEqual(tmp_photo.width(), tmp_w.winfo_width())
-        self.assertEqual(tmp_photo.height(), tmp_w.winfo_height())
+        self.app.right_tabs.setCurrentIndex(2)
+        _wait_tasks(self.app)
+        tmp_c = self.app.temporal_charts.canvas
+        tmp_fig = self.app.temporal_charts.figure
+        self.assertGreaterEqual(tmp_c.width(), 180)
+        self.assertAlmostEqual(
+            tmp_fig.get_figwidth() * tmp_fig.dpi,
+            tmp_c.width() * tmp_c.devicePixelRatioF(),
+            delta=4.0,
+        )
+        self.assertAlmostEqual(
+            tmp_fig.get_figheight() * tmp_fig.dpi,
+            tmp_c.height() * tmp_c.devicePixelRatioF(),
+            delta=4.0,
+        )
 
     def test_guided_tour_source_attribution_and_stress_map_mode(self) -> None:
         # 1. Guía de sustentación: botón visible, 4 hallazgos + enfoque + cierre
-        self.assertTrue(bool(self.app.btn_guided_tour.winfo_ismapped()))
+        self.assertTrue(self.app.top_bar.btn_guided_tour.isVisible())
         self.app.toggle_guided_tour()
-        _pump(self.app, 280)
-        self.assertTrue(self.app._tour_active)
-        self.assertTrue(bool(self.app._tour_card.winfo_ismapped()))
-        self.assertAlmostEqual(self.app.result.snapshots[self.app.current_step].time_min, 5.0)
+        _pump(280)
+        self.assertTrue(self.app.state.tour_active)
+        self.assertTrue(self.app.center_panel.tour_card.isVisible())
+        self.assertAlmostEqual(
+            self.app.state.result.snapshots[self.app.state.current_step].time_min, 5.0
+        )
 
         for target_min in (25.0, 40.0, 65.0):
-            self.app._go_tour_stop(self.app._tour_step + 1)
-            _pump(self.app, 260)
+            self.app._go_tour_stop(self.app.state.tour_step + 1)
+            _pump(260)
             self.assertAlmostEqual(
-                self.app.result.snapshots[self.app.current_step].time_min, target_min
+                self.app.state.result.snapshots[self.app.state.current_step].time_min, target_min
             )
 
         self.app._close_guided_tour()
-        _pump(self.app, 240)
-        self.assertFalse(self.app._tour_active)
-        self.assertFalse(bool(self.app._tour_card.winfo_ismapped()))
+        _pump(240)
+        self.assertFalse(self.app.state.tour_active)
+        self.assertFalse(self.app.center_panel.tour_card.isVisible())
 
         # 2. Trazabilidad por fuente aportante en el inspector
-        self.app.notebook.select(0)
+        self.app.right_tabs.setCurrentIndex(0)
         self.app.network_canvas.select_pipe("P31")
         self.app._on_pipe_selected("P31")
-        _pump(self.app, 80)
-        self.assertTrue(bool(self.app.source_attribution_card.winfo_ismapped()))
-        self.assertIn("F17: 100.0%", self.app.lbl_source_breakdown.cget("text"))
+        _pump(80)
+        self.assertTrue(self.app.inspector_panel.source_attribution_card.isVisible())
+        self.assertIn("F17: 100.0%", self.app.inspector_panel.lbl_source_breakdown.text())
 
         self.app.network_canvas.select_pipe("P25")
         self.app._on_pipe_selected("P25")
-        _pump(self.app, 80)
-        self.assertGreater(len(self.app._current_source_shares), 1)
+        _pump(80)
+        self.assertGreater(len(self.app.inspector_panel.current_source_shares()), 1)
 
         # 3. Modo Mapa de Estrés Acumulado (Instantáneo | Pico Máximo | Minutos en Sobrecarga)
         self.app._set_map_mode("peak")
-        _pump(self.app, 80)
+        _pump(80)
         self.assertEqual(self.app.network_canvas._map_mode, "peak")
 
         self.app._set_map_mode("overload_minutes")
-        _pump(self.app, 80)
+        _pump(80)
         self.assertEqual(self.app.network_canvas._map_mode, "overload_minutes")
-        self.assertIn("sobrecarga", self.app._legend_header_label.cget("text").lower())
+        self.assertIn("sobrecarga", self.app.controls_panel.sec_legend.title().lower())
 
         self.app._set_map_mode("instant")
-        _pump(self.app, 60)
+        _pump(60)
 
     def test_left_panel_scroll_clamping_no_blank_gap(self) -> None:
-        # 1. En ventana alta (contenido cabe completo), intentar rodar no crea espacio gris superior
-        self.app.geometry("1400x1400+10+10")
-        _pump(self.app, 180)
-        self.assertLessEqual(
-            self.app.left_frame.winfo_reqheight(),
-            self.app.left_canvas.winfo_height(),
-        )
-        self.app._scroll_left_canvas(-10)
-        self.app.left_canvas.yview_scroll(-5, "units")
-        _pump(self.app, 80)
-        self.assertAlmostEqual(self.app.left_canvas.canvasy(0), 0.0, places=2)
-        self.assertEqual(
-            self.app._rail_sim_container.winfo_rooty() - self.app.left_canvas.winfo_rooty(),
-            0,
-        )
+        sb = self.app.controls_panel.scroll_area.verticalScrollBar()
 
-        # 2. En ventana baja (contenido requiere scroll), sí permite bajar y al agrandar vuelve a 0
-        self.app.geometry("1200x560+10+10")
-        _pump(self.app, 180)
-        if self.app.left_frame.winfo_reqheight() > self.app.left_canvas.winfo_height():
-            self.app._scroll_left_canvas(4)
-            _pump(self.app, 80)
-            self.assertGreater(self.app.left_canvas.yview()[0], 0.0)
-            self.app.geometry("1400x1400+10+10")
-            _pump(self.app, 180)
-            self.assertAlmostEqual(self.app.left_canvas.canvasy(0), 0.0, places=2)
-            self.assertEqual(self.app.left_canvas.yview(), (0.0, 1.0))
+        # 1. Ventana alta: el scroll permanece en 0 y no crea espacio en blanco superior
+        self.app.resize(1400, 1400)
+        _pump(180)
+        self.assertEqual(sb.value(), 0)
+        self.assertEqual(self.app.controls_panel.stack.pos().y(), 0)
+        sb.setValue(-10)
+        _pump(60)
+        self.assertEqual(sb.value(), 0)
 
-        # 3. Cambiar entre pestañas del panel izquierdo conserva yview en 0
-        self.app._switch_rail_tab("trav")
-        _pump(self.app, 80)
-        self.assertAlmostEqual(self.app.left_canvas.canvasy(0), 0.0, places=2)
-        self.app._switch_rail_tab("sim")
-        _pump(self.app, 80)
-        self.assertAlmostEqual(self.app.left_canvas.canvasy(0), 0.0, places=2)
+        # 2. Ventana baja: permite bajar y al agrandar regresa a 0
+        self.app.resize(1200, 560)
+        _pump(180)
+        if sb.maximum() > 0:
+            sb.setValue(40)
+            _pump(60)
+            self.assertGreater(sb.value(), 0)
+            self.app.resize(1400, 1400)
+            _pump(180)
+            self.assertEqual(sb.value(), 0)
+
+        # 3. Cambiar entre pestañas del panel izquierdo conserva scroll en 0
+        self.app.controls_panel.switch_rail_tab("trav")
+        _pump(80)
+        self.assertEqual(sb.value(), 0)
+        self.app.controls_panel.switch_rail_tab("sim")
+        _pump(80)
+        self.assertEqual(sb.value(), 0)
 
     def test_guided_tour_per_scenario_and_autoplay_on_execute(self) -> None:
-        # 1. Cada escenario tiene su propio recorrido guiado e indica claramente la escena
-        vals = list(self.app.combo_scenario["values"])
-        self.assertEqual(len(vals), 5)
+        combo = self.app.controls_panel.combo_scenario
+        self.assertEqual(combo.count(), 5)
 
         self.app.toggle_guided_tour()
-        _pump(self.app, 180)
-        self.assertTrue(self.app._tour_active)
+        _pump(180)
+        self.assertTrue(self.app.state.tour_active)
 
         seen_titles = set()
-        for idx, scen_lbl in enumerate(vals, start=1):
-            self.app.var_scenario.set(scen_lbl)
-            self.app.combo_scenario.event_generate("<<ComboboxSelected>>")
-            _pump(self.app, 180)
+        for idx in range(1, 6):
+            combo.setCurrentIndex(idx - 1)
+            _pump(180)
 
-            self.assertIn(f"Esc. {idx}", self.app.btn_guided_tour.cget("text"))
-            self.assertIn(f"ESC. {idx}", self.app._lbl_tour_hdr.cget("text"))
-            self.assertIn(f"Escenario {idx}:", self.app._lbl_tour_scenario.cget("text"))
-            stops = self.app._build_tour_stops()
+            self.assertIn(f"Esc. {idx}", self.app.top_bar.btn_guided_tour.text())
+            self.assertIn(f"ESC. {idx}", self.app.center_panel.tour_card.lbl_hdr.text())
+            self.assertIn(
+                f"Escenario {idx}:", self.app.center_panel.tour_card.lbl_scenario.text()
+            )
+            stops = build_tour_stops(
+                self.app.state.dataset, self.app.state.result, self.app._selected_scenario_obj()
+            )
             self.assertEqual(len(stops), 4)
-            seen_titles.add(str(stops[1]["title"]))
+            seen_titles.add(stops[1].title)
 
-        # Los 5 escenarios producen hallazgos diferenciados
         self.assertEqual(len(seen_titles), 5)
 
-        # 2. Al presionar "Ejecutar simulación", cierra la guía y reproduce automáticamente
-        self.app.var_speed.set("10x")
-        self.app.btn_run_sim.invoke()
-        _pump(self.app, 180)
-        self.assertFalse(self.app._tour_active)
-        self.assertTrue(self.app.is_playing)
-        self.assertGreater(self.app.current_step, 0)
-        self.app._player_pause()
+        # Al presionar "Ejecutar simulación", cierra la guía y reproduce automáticamente
+        self.app.center_panel.combo_speed.setCurrentText("10x")
+        self.app.controls_panel.btn_run_sim.click()
+        _pump(180)
+        self.assertFalse(self.app.state.tour_active)
+        self.assertTrue(self.app.state.is_playing)
+        self.assertGreater(self.app.state.current_step, 0)
+        self.app.pause()
 
-        # 3. Validación robusta ante entradas vacías o fuera de rango en parámetros
-        self.app.var_duration.set(0.0)
+        # Validación robusta ante entradas fuera de rango
+        self.app.controls_panel.spin_duration.setValue(0.0)
         with self.assertRaises(ValueError):
             self.app._build_sim_config()
-        # _run_param_rerun no debe lanzar excepción si el campo está temporalmente inválido
-        self.app._run_param_rerun()
-        self.app.var_duration.set(90.0)
+        self.app._on_params_changed()
+        self.app.controls_panel.spin_duration.setValue(90.0)
+        _pump(160)
 
     def test_stress_map_modes_frozen_global_and_pause_on_select(self) -> None:
-        # 1. Incluso regresando a t = 0 min, Minutos en Sobrecarga muestra totales globales 0–90 min
+        # 1. Minutos en Sobrecarga muestra totales globales 0–90 min incluso en t = 0
         self.app._set_step(0)
         self.app._set_map_mode("overload_minutes")
-        _pump(self.app, 80)
-        expected_p31_ov = self.app.result.pipe_overloaded_minutes.get("P31", 0.0)
+        _pump(80)
+        expected_p31_ov = self.app.state.result.pipe_overloaded_minutes.get("P31", 0.0)
         self.assertGreater(expected_p31_ov, 0.0)
         self.assertAlmostEqual(
             self.app.network_canvas._overload_minutes_map.get("P31", 0.0),
             expected_p31_ov,
             places=3,
         )
-        self.assertIn("0–90 min", self.app.network_canvas._stamp_lbl.cget("text"))
-        self.assertIn("0–90 min", self.app._legend_header_label.cget("text"))
-        self.assertIn("0–90", self.app.lbl_clock.cget("text"))
-        self.assertEqual(self.app.current_step, 0)
+        self.assertIn("0–90 min", self.app.network_canvas._stamp_lbl.text())
+        self.assertIn("0–90 min", self.app.controls_panel.sec_legend.title())
+        self.assertIn("0–90", self.app.center_panel.lbl_clock.text())
+        self.assertEqual(self.app.state.current_step, 0)
 
         # 2. En Pico Máximo desde t = 0 muestra el pico global completo y KPI coherente
         self.app._set_map_mode("peak")
-        _pump(self.app, 80)
-        expected_p30_peak = self.app.result.peak_pipe_utilization.get("P30", 0.0)
-        expected_max_peak = max(self.app.result.peak_pipe_utilization.values(), default=0.0)
+        _pump(80)
+        expected_p30_peak = self.app.state.result.peak_pipe_utilization.get("P30", 0.0)
+        expected_max_peak = max(
+            self.app.state.result.peak_pipe_utilization.values(), default=0.0
+        )
         self.assertAlmostEqual(
             self.app.network_canvas._peak_util_map.get("P30", 0.0),
             expected_p30_peak,
             places=2,
         )
-        self.assertIn("0–90 min", self.app.network_canvas._stamp_lbl.cget("text"))
-        self.assertIn("0–90 min", self.app._legend_header_label.cget("text"))
-        self.assertEqual(self.app._kpi_cards["max_util"].cget("text"), f"{expected_max_peak:.1f}%")
+        self.assertIn("0–90 min", self.app.network_canvas._stamp_lbl.text())
+        self.assertIn("0–90 min", self.app.controls_panel.sec_legend.title())
+        self.assertEqual(
+            self.app.center_panel.kpi_cards["max_util"].value_text(),
+            f"{expected_max_peak:.1f}%",
+        )
 
-        # 3. Al reproducir y pulsar Pico Máximo o Minutos en Sobrecarga, pausa automáticamente
-        #    y conserva current_step para al regresar a Instantáneo
-        self.app.var_speed.set("10x")
-        self.app.btn_run_sim.invoke()
-        _pump(self.app, 180)
-        self.assertEqual(self.app._map_mode, "instant")
-        self.assertTrue(self.app.is_playing)
+        # 3. Al reproducir y pulsar Pico Máximo, pausa y conserva current_step al volver
+        self.app.center_panel.combo_speed.setCurrentText("10x")
+        self.app.controls_panel.btn_run_sim.click()
+        _pump(180)
+        self.assertEqual(self.app.state.map_mode, "instant")
+        self.assertTrue(self.app.state.is_playing)
         self.app._set_map_mode("peak")
-        _pump(self.app, 80)
-        self.assertFalse(self.app.is_playing)
-        saved_step = self.app.current_step
+        _pump(80)
+        self.assertFalse(self.app.state.is_playing)
+        saved_step = self.app.state.current_step
         self.assertGreater(saved_step, 0)
         self.assertAlmostEqual(
             self.app.network_canvas._peak_util_map.get("P30", 0.0),
             expected_p30_peak,
             places=2,
         )
-        # Regresar a Instantáneo O(t) restaura el instante guardado en el slider
         self.app._set_map_mode("instant")
-        _pump(self.app, 60)
-        self.assertEqual(self.app.current_step, saved_step)
+        _pump(60)
+        self.assertEqual(self.app.state.current_step, saved_step)
         self.assertAlmostEqual(
             self.app.network_canvas.snapshot.time_min,
-            self.app.result.snapshots[saved_step].time_min,
+            self.app.state.result.snapshots[saved_step].time_min,
             places=3,
         )
 
         # 4. Avanzar paso (+1) o Reproducir desde Minutos en Sobrecarga regresa a Instantáneo
         self.app._set_map_mode("overload_minutes")
-        _pump(self.app, 60)
+        _pump(60)
         self.app._player_step(1)
-        _pump(self.app, 60)
-        self.assertEqual(self.app._map_mode, "instant")
-        self.assertEqual(self.app.current_step, min(len(self.app.result.snapshots) - 1, saved_step + 1))
+        _pump(60)
+        self.assertEqual(self.app.state.map_mode, "instant")
+        self.assertEqual(
+            self.app.state.current_step,
+            min(len(self.app.state.result.snapshots) - 1, saved_step + 1),
+        )
 
         self.app._set_map_mode("overload_minutes")
-        _pump(self.app, 60)
+        _pump(60)
         self.app.toggle_play_pause()
-        _pump(self.app, 120)
-        self.assertEqual(self.app._map_mode, "instant")
-        self.assertTrue(self.app.is_playing)
-        self.app._player_pause()
+        _pump(120)
+        self.assertEqual(self.app.state.map_mode, "instant")
+        self.assertTrue(self.app.state.is_playing)
+        self.app.pause()
 
-        # En t=40 un redraw completo conserva la etiqueta de P25 y _hide_tooltip limpia _last_hover_key
+        # En t=40 redraw conserva la etiqueta de P25 y _hide_tooltip limpia _last_hover_key
         self.app._set_step(40)
         self.app.network_canvas.redraw()
-        self.assertIn("P25", self.app.network_canvas._pipe_label_refs)
+        pipe_label_ids = {
+            b.entity_id
+            for b in self.app.network_canvas.current_scene.badges
+            if b.kind == "pipe_label"
+        }
+        self.assertIn("P25", pipe_label_ids)
         self.app.network_canvas._last_hover_key = "node:31"
         self.app.network_canvas._hide_tooltip()
         self.assertIsNone(self.app.network_canvas._last_hover_key)
 
-        # Iniciar BFS con Guía de Sustentación activa cierra la guía automáticamente para mostrar la ruta
+        # Iniciar BFS con Guía activa cierra la guía automáticamente para mostrar la ruta
         self.app.toggle_guided_tour()
-        self.assertTrue(self.app._tour_active)
-        self.app.var_bfs_start.set("6")
-        self.app.var_bfs_target.set("31")
+        self.assertTrue(self.app.state.tour_active)
+        self.app.controls_panel.combo_bfs_start.setCurrentText("6")
+        self.app.controls_panel.combo_bfs_target.setCurrentText("31")
         self.app._run_traversal("BFS")
-        self.assertFalse(self.app._tour_active)
+        self.assertFalse(self.app.state.tour_active)
         self.assertFalse(self.app.network_canvas._tour_active)
         self.assertIn("31", self.app.network_canvas.highlight_node_ids)
 
@@ -438,225 +494,292 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         # U1: toggle Aguas arriba / Aguas abajo solo en el Inspector (segundo clic limpia)
         self.app.network_canvas.select_node("20")
         self.app._on_node_selected("20")
-        _pump(self.app, 60)
-        self.app.btn_insp_downstream.invoke()
-        _pump(self.app, 60)
-        self.assertEqual(self.app._inspector_trace_state, ("20", "down"))
+        _pump(60)
+        self.app.inspector_panel.btn_insp_downstream.click()
+        _pump(60)
+        self.assertEqual(self.app.state.inspector_trace_state, ("20", "down"))
         self.assertGreater(len(self.app.network_canvas.highlight_pipe_ids), 0)
-        self.app.btn_insp_downstream.invoke()
-        _pump(self.app, 60)
-        self.assertIsNone(self.app._inspector_trace_state)
+        self.app.inspector_panel.btn_insp_downstream.click()
+        _pump(60)
+        self.assertIsNone(self.app.state.inspector_trace_state)
         self.assertEqual(len(self.app.network_canvas.highlight_pipe_ids), 0)
 
         # U3: filtros excluyentes en Tuberías Críticas (>75-100% vs >100% vs <=75%)
         self.app._set_step(30)
-        self.app.notebook.select(1)
-        _pump(self.app, 80)
-        self.app.var_crit_filter.set("critical")
+        self.app.right_tabs.setCurrentIndex(1)
+        _pump(80)
+        self.app.critical_panel.set_filter("critical")
         self.app._refresh_critical_table()
-        _pump(self.app, 60)
-        for pid in self.app.tree_critical.get_children():
-            u_txt = self.app.tree_critical.set(pid, "util").split("%")[0].strip()
+        _pump(60)
+        for pid in self.app.critical_panel.row_pipe_ids():
+            u_txt = self.app.critical_panel.row_utilization_text(pid).split("%")[0].strip()
             u_val = float(u_txt)
             self.assertGreater(u_val, 75.0)
             self.assertLessEqual(u_val, 100.0)
-        self.app.var_crit_filter.set("overloaded")
+        self.app.critical_panel.set_filter("overloaded")
         self.app._refresh_critical_table()
-        _pump(self.app, 60)
-        for pid in self.app.tree_critical.get_children():
-            u_txt = self.app.tree_critical.set(pid, "util").split("%")[0].strip()
+        _pump(60)
+        for pid in self.app.critical_panel.row_pipe_ids():
+            u_txt = self.app.critical_panel.row_utilization_text(pid).split("%")[0].strip()
             self.assertGreater(float(u_txt), 100.0)
-        self.app.var_crit_filter.set("rest")
+        self.app.critical_panel.set_filter("rest")
         self.app._refresh_critical_table()
-        _pump(self.app, 60)
-        for pid in self.app.tree_critical.get_children():
-            u_txt = self.app.tree_critical.set(pid, "util").split("%")[0].strip()
+        _pump(60)
+        for pid in self.app.critical_panel.row_pipe_ids():
+            u_txt = self.app.critical_panel.row_utilization_text(pid).split("%")[0].strip()
             self.assertLessEqual(float(u_txt), 75.0)
 
         # U2: Comparación actualiza timestamp y marca sucio al cambiar parámetros
-        self.app.notebook.select(3)
-        _pump(self.app, 200)
-        self.assertIn("Al día", self.app.lbl_comp_hint.cget("text"))
-        self.app.var_ingress_pct.set(2.5)
-        self.app._schedule_param_rerun()
-        _pump(self.app, 180)
-        self.assertIn("Parámetros modificados", self.app.lbl_comp_hint.cget("text"))
-        self.app.btn_compare_scenarios.invoke()
-        _pump(self.app, 180)
-        self.assertIn("Al día", self.app.lbl_comp_hint.cget("text"))
-        self.app._apply_preset(100.0, 0.0)
-        _pump(self.app, 80)
+        self.app.right_tabs.setCurrentIndex(3)
+        _wait_tasks(self.app)
+        self.assertIn("Al día", self.app.comparison_panel.lbl_comp_hint.text())
+        self.app.controls_panel.spin_ingress_pct.setValue(2.5)
+        _pump(220)
+        self.assertIn(
+            "Parámetros modificados", self.app.comparison_panel.lbl_comp_hint.text()
+        )
+        self.app.comparison_panel.btn_compare.click()
+        _wait_tasks(self.app)
+        self.assertIn("Al día", self.app.comparison_panel.lbl_comp_hint.text())
+        self.app.controls_panel.apply_preset(100.0, 0.0)
+        _pump(80)
 
         # U2 tabla completa + scroll horizontal en Comparación (sin recorte en panel mediano)
-        self.app.geometry("1080x680+20+20")
-        self.app.notebook.select(3)
-        _pump(self.app, 180)
-        self.assertTrue(bool(self.app.comp_xscroll.winfo_ismapped()))
-        self.assertEqual(
-            self.app.tree_comp.item("3", "values")[0],
-            "E3 Lluvia moderada",
-        )
-        self.assertEqual(
-            self.app.tree_comp.item("5", "values")[0],
-            "E5 Lluvia extrema",
-        )
-        total_comp_w = sum(
-            self.app.tree_comp.column(c, "width") for c in self.app.tree_comp["columns"]
-        )
-        self.assertGreater(total_comp_w, self.app.tree_comp.winfo_width())
-        self.assertLess(self.app.tree_comp.xview()[1], 1.0)
+        self.app.resize(1080, 680)
+        self.app.right_tabs.setCurrentIndex(3)
+        _wait_tasks(self.app)
+        comp_tbl = self.app.comparison_panel.table
+        self.assertEqual(comp_tbl.item(2, 0).text(), "E3 Lluvia moderada")
+        self.assertEqual(comp_tbl.item(4, 0).text(), "E5 Lluvia extrema")
+        total_comp_w = sum(comp_tbl.columnWidth(c) for c in range(comp_tbl.columnCount()))
+        self.assertGreater(total_comp_w, comp_tbl.viewport().width())
+        self.assertGreater(comp_tbl.horizontalScrollBar().maximum(), 0)
 
-        # U4: _ScenarioMenuButton pausa reproducción al desplegar y reemplaza los selectores de simulación
-        self.assertEqual(len(self.app.combo_scenario["values"]), 5)
-        for combo_attr in ("combo_split_rule", "combo_source_dist"):
-            widget = getattr(self.app, combo_attr)
-            self.assertEqual(widget.winfo_class(), "Menubutton")
-            before_txt = widget.cget("text")
+        # U4: PauseOnOpenComboBox pausa reproducción al desplegar sin perder el valor
+        self.assertEqual(self.app.controls_panel.combo_scenario.count(), 5)
+        for combo_attr in ("combo_split_rule", "combo_source_dist", "combo_scenario"):
+            widget = getattr(self.app.controls_panel, combo_attr)
+            before_txt = widget.currentText()
             self.assertTrue(bool(before_txt))
             self.app.toggle_play_pause()
-            self.assertTrue(self.app.is_playing)
-            widget._handle_postcommand()
-            self.assertFalse(self.app.is_playing)
-            self.assertEqual(widget.cget("text"), before_txt)
-        self.app.combo_scenario._handle_postcommand()
-        self.assertFalse(self.app.is_playing)
+            self.assertTrue(self.app.state.is_playing)
+            widget.aboutToShowPopup.emit()
+            self.assertFalse(self.app.state.is_playing)
+            self.assertEqual(widget.currentText(), before_txt)
 
     def test_network_canvas_compact_hidpi_no_node_or_badge_overlap(self) -> None:
-        from src.gui.network_canvas import NetworkCanvas
-
         for width, height, dpi_scale, zoom, expect_all_texts in (
             (652, 378, 1.5, 1.0, True),
             (652, 378, 1.0, 1.0, True),
             (644, 374, 1.5, 0.55, False),
         ):
-            canvas = NetworkCanvas(self.app, dpi_scale=dpi_scale, width=width, height=height)
-            canvas.place(x=0, y=0, width=width, height=height)
-            _pump(self.app, 40)
-            canvas.set_graph(self.app.dataset.graph)
+            canvas = NetworkCanvas(
+                ui_font=self.app.ui_font,
+                mono_font=self.app.mono_font,
+                dpi_scale=dpi_scale,
+            )
+            canvas.resize(width, height)
+            canvas.show()
+            _pump(40)
+            canvas.set_graph(self.app.state.dataset.graph)
             canvas._zoom = zoom
             canvas.redraw()
-            _pump(self.app, 40)
+            _pump(40)
 
-            ovals = {}
-            node_texts = {}
-            ptar_box = None
-            fuente_boxes = []
-            for iid in canvas.find_all():
-                tags = canvas.gettags(iid)
-                if "node_layer" not in tags:
-                    continue
-                nid = canvas._item_to_node.get(iid)
-                if not nid:
-                    continue
-                itype = canvas.type(iid)
-                if itype == "oval":
-                    bb = canvas.coords(iid)
-                    w_o = bb[2] - bb[0]
-                    if nid not in ovals or w_o < (ovals[nid][2] - ovals[nid][0]):
-                        ovals[nid] = bb
-                elif itype == "text":
-                    txt = canvas.itemcget(iid, "text")
-                    if txt == nid:
-                        node_texts[nid] = canvas.bbox(iid)
-                    elif "PTAR" in txt:
-                        ptar_box = canvas.bbox(iid)
-                    elif txt == "Fuente":
-                        fuente_boxes.append((nid, canvas.bbox(iid)))
-
-            self.assertEqual(len(ovals), 46)
+            scene = canvas.current_scene
+            self.assertEqual(len(scene.nodes), 46)
+            visible_node_labels = [n for n in scene.nodes if n.show_label]
             if expect_all_texts:
-                self.assertEqual(len(node_texts), 46)
+                self.assertEqual(len(visible_node_labels), 46)
             else:
-                self.assertLessEqual(len(node_texts), 2)
+                self.assertLessEqual(len(visible_node_labels), 2)
 
             # Ningún par de nodos debe solaparse
-            nids = list(ovals.keys())
-            for i in range(len(nids)):
-                a = ovals[nids[i]]
-                for j in range(i + 1, len(nids)):
-                    b = ovals[nids[j]]
-                    overlaps = not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3])
-                    self.assertFalse(overlaps, f"Nodos solapados {nids[i]}-{nids[j]} en zoom={zoom}")
-
-            # Las etiquetas internas visibles deben caber dentro de su círculo
-            for nid, tb in node_texts.items():
-                ob = ovals[nid]
-                self.assertGreaterEqual(tb[0], ob[0] - 1)
-                self.assertLessEqual(tb[2], ob[2] + 1)
-                self.assertGreaterEqual(tb[1], ob[1] - 1)
-                self.assertLessEqual(tb[3], ob[3] + 1)
-
-            # El cartel PTAR no debe invadir otros nodos ni overlays
-            self.assertIsNotNone(ptar_box)
-            for nid, ob in ovals.items():
-                if nid == "31":
-                    continue
-                self.assertFalse(
-                    not (ptar_box[2] < ob[0] or ptar_box[0] > ob[2] or ptar_box[3] < ob[1] or ptar_box[1] > ob[3])
-                )
-            for ov_box in canvas._overlay_boxes(width, height):
-                for _nid, fb in fuente_boxes:
+            for i in range(len(scene.nodes)):
+                a = scene.nodes[i]
+                ax0, ay0, ax1, ay1 = a.x - a.radius, a.y - a.radius, a.x + a.radius, a.y + a.radius
+                for j in range(i + 1, len(scene.nodes)):
+                    b = scene.nodes[j]
+                    bx0, by0, bx1, by1 = b.x - b.radius, b.y - b.radius, b.x + b.radius, b.y + b.radius
+                    overlaps = not (ax1 < bx0 or ax0 > bx1 or ay1 < by0 or ay0 > by1)
                     self.assertFalse(
-                        not (fb[2] < ov_box[0] or fb[0] > ov_box[2] or fb[3] < ov_box[1] or fb[1] > ov_box[3])
+                        overlaps,
+                        f"Nodos solapados {a.node_id}-{b.node_id} en zoom={zoom}",
                     )
 
-            canvas.destroy()
+            # Las etiquetas internas visibles deben caber dentro de su círculo
+            for nv in visible_node_labels:
+                f = QFont(self.app.ui_font)
+                f.setPixelSize(nv.font_px)
+                f.setBold(True)
+                fm = QFontMetricsF(f)
+                rect = fm.tightBoundingRect(nv.node_id)
+                self.assertLessEqual(rect.width(), nv.radius * 2.0 + 2.0)
+                self.assertLessEqual(rect.height(), nv.radius * 2.0 + 2.0)
+
+            # El cartel PTAR no debe invadir otros nodos ni overlays
+            ptar_badges = [b for b in scene.badges if b.kind == "sink"]
+            self.assertEqual(len(ptar_badges), 1)
+            pb = ptar_badges[0]
+            for nv in scene.nodes:
+                if nv.node_id == "31":
+                    continue
+                nx0, ny0, nx1, ny1 = nv.x - nv.radius, nv.y - nv.radius, nv.x + nv.radius, nv.y + nv.radius
+                self.assertFalse(
+                    not (pb.x1 < nx0 or pb.x0 > nx1 or pb.y1 < ny0 or pb.y0 > ny1)
+                )
+
+            ov_boxes = canvas.overlay_boxes()
+            for fb in [b for b in scene.badges if b.kind == "source"]:
+                for ov_box in ov_boxes:
+                    self.assertFalse(
+                        not (
+                            fb.x1 < ov_box[0]
+                            or fb.x0 > ov_box[2]
+                            or fb.y1 < ov_box[1]
+                            or fb.y0 > ov_box[3]
+                        )
+                    )
+
+            canvas.close_overlays()
+            canvas.close()
+            canvas.deleteLater()
+            _pump(20)
 
     def test_charts_baseline_persistence_symlog_profile_and_comparison(self) -> None:
         # 1. Múltiples intervenciones seguidas conservan siempre la base original sin intervenciones
         self.app.network_canvas.select_pipe("P29")
         self.app._on_pipe_selected("P29")
-        self.app.var_obstruction_pct.set(50.0)
-        self.app._action_apply_intervention()
-        _pump(self.app, 80)
-        base_ref = self.app._baseline_result
+        self.app.inspector_panel.set_obstruction_pct(50.0)
+        self.app._action_apply_intervention(
+            50.0, self.app.inspector_panel.combo_diam_override.currentText()
+        )
+        _pump(80)
+        base_ref = self.app.state.baseline_result
         self.assertIsNotNone(base_ref)
         self.assertEqual(len(base_ref.config.interventions), 0)
-        self.assertIs(self.app._previous_result, base_ref)
+        self.assertIs(self.app.state.previous_result, base_ref)
 
-        self.app.var_obstruction_pct.set(80.0)
-        self.app._action_apply_intervention()
-        _pump(self.app, 80)
-        self.assertIs(self.app._previous_result, base_ref)
-        self.assertEqual(len(self.app._previous_result.config.interventions), 0)
+        self.app.inspector_panel.set_obstruction_pct(80.0)
+        self.app._action_apply_intervention(
+            80.0, self.app.inspector_panel.combo_diam_override.currentText()
+        )
+        _pump(80)
+        self.assertIs(self.app.state.previous_result, base_ref)
+        self.assertEqual(len(self.app.state.previous_result.config.interventions), 0)
 
         # 2. En pestaña Evolución muestra el banner de impacto y ticks symlog explícitos (>2 marcas)
-        self.app.notebook.select(2)
-        _pump(self.app, 180)
+        self.app.right_tabs.setCurrentIndex(2)
+        _wait_tasks(self.app)
         self.assertTrue(self.app.temporal_charts._banner_visible)
         self.assertGreaterEqual(len(self.app.temporal_charts.ax_util.get_yticks()), 4)
 
-        # 3. Restaurar todo oculta el banner y limpia _previous_result
+        # 3. Restaurar todo oculta el banner y limpia previous_result
         self.app._action_restore_all_interventions()
-        _pump(self.app, 120)
-        self.assertIsNone(self.app._previous_result)
+        _pump(120)
+        self.assertIsNone(self.app.state.previous_result)
         self.assertFalse(self.app.temporal_charts._banner_visible)
 
         # 4. Escenario 5 (16k%): Perfil longitudinal en modos '% Uso vs Cap.' y 'Caudal m³/s'
-        vals = list(self.app.combo_scenario["values"])
-        self.app.var_scenario.set(vals[4])
-        self.app.combo_scenario.event_generate("<<ComboboxSelected>>")
-        _pump(self.app, 140)
+        self.app.controls_panel.combo_scenario.setCurrentIndex(4)
+        _pump(140)
         self.app._set_step(25)
         self.app.temporal_charts.set_subtab("profile")
-        _pump(self.app, 120)
+        _pump(120)
         self.assertEqual(self.app.temporal_charts._profile_mode, "pct")
-        ytick_labels = [t.get_text() for t in self.app.temporal_charts.ax_profile.get_yticklabels()]
+        ytick_labels = [
+            t.get_text() for t in self.app.temporal_charts.ax_profile.get_yticklabels()
+        ]
         self.assertTrue(any("Rebose" in lbl for lbl in ytick_labels))
         self.app.temporal_charts.set_profile_mode("flow")
-        _pump(self.app, 80)
+        _pump(80)
         self.assertEqual(self.app.temporal_charts._profile_mode, "flow")
         self.app.temporal_charts.set_profile_mode("pct")
         self.app.temporal_charts.set_subtab("hydro")
 
         # 5. Comparación de 5 escenarios permite alternar entre Rebose (m³) y Descarga PTAR 31
-        self.app.notebook.select(3)
-        _pump(self.app, 200)
+        self.app.right_tabs.setCurrentIndex(3)
+        _wait_tasks(self.app)
         self.assertEqual(self.app.comparison_charts._metric_mode, "flood")
         self.app.comparison_charts.set_metric_mode("ptar")
-        _pump(self.app, 100)
+        _pump(100)
         self.assertEqual(self.app.comparison_charts._metric_mode, "ptar")
         self.app.comparison_charts.set_metric_mode("flood")
+
+    def test_async_charts_spinner_and_visible_guided_tour_buttons(self) -> None:
+        # 1. Ambas entradas del Tour Guiado están visibles y activan el recorrido sincronizadas
+        self.assertTrue(self.app.top_bar.btn_guided_tour.isVisible())
+        self.assertIn("Tour Guiado", self.app.top_bar.btn_guided_tour.text())
+        self.assertTrue(self.app.center_panel.btn_tour_quick.isVisible())
+        self.assertIn("Tour Guiado", self.app.center_panel.btn_tour_quick.text())
+
+        self.app.center_panel.btn_tour_quick.click()
+        _pump(120)
+        self.assertTrue(self.app.state.tour_active)
+        self.assertTrue(self.app.center_panel.tour_card.isVisible())
+        self.assertEqual(self.app.top_bar.btn_guided_tour.property("variant"), "dark_primary")
+        self.assertEqual(self.app.center_panel.btn_tour_quick.property("variant"), "primary")
+
+        self.app.center_panel.btn_tour_quick.click()
+        _pump(120)
+        self.assertFalse(self.app.state.tour_active)
+        self.assertEqual(self.app.top_bar.btn_guided_tour.property("variant"), "dark_tour")
+        self.assertEqual(
+            self.app.center_panel.btn_tour_quick.property("variant"), "light_secondary"
+        )
+
+        # 2. Al seleccionar tuberías estando en Inspector, no redibuja Evolución innecesariamente
+        t0 = time.perf_counter()
+        self.app.network_canvas.select_pipe("P29")
+        self.app._on_pipe_selected("P29")
+        self.app.network_canvas.select_pipe("P31")
+        self.app._on_pipe_selected("P31")
+        select_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertLess(select_elapsed_ms, 250.0)
+        self.assertTrue(self.app._charts_tab_dirty)
+
+        # 3. Al abrir Evolución activa el spinner brevemente y luego lo oculta al completar
+        self.app.right_tabs.setCurrentIndex(2)
+        self.assertTrue(self.app.temporal_charts.loading_overlay.isVisible())
+        _wait_tasks(self.app)
+        self.assertFalse(self.app.temporal_charts.loading_overlay.isVisible())
+        self.assertFalse(self.app._charts_tab_dirty)
+
+        # 4. Al abrir Comparación devuelve el control de UI rápido con spinner animándose
+        self.app.controls_panel.apply_preset(100.0, 0.0)
+        self.app.state.comparisons = []
+        self.app.state.comparisons_dirty = False
+        spinner_angles = [self.app.comparison_panel.loading_overlay.spinner._angle]
+        loop = QEventLoop(self.app)
+        probe_timer = QTimer()
+        probe_timer.setInterval(30)
+
+        def _probe_tick() -> None:
+            spinner_angles.append(
+                self.app.comparison_panel.loading_overlay.spinner._angle
+            )
+            if not self.app.is_comparison_running():
+                loop.quit()
+
+        probe_timer.timeout.connect(_probe_tick)
+        QTimer.singleShot(8000, loop.quit)
+
+        t_sw = time.perf_counter()
+        self.app.right_tabs.setCurrentIndex(3)
+        switch_ms = (time.perf_counter() - t_sw) * 1000.0
+        self.assertLess(switch_ms, 250.0)
+        self.assertTrue(self.app.comparison_panel.loading_overlay.isVisible())
+        self.assertFalse(self.app.comparison_panel.btn_compare.isEnabled())
+
+        probe_timer.start()
+        loop.exec()
+        probe_timer.stop()
+        _wait_tasks(self.app)
+
+        self.assertGreaterEqual(len(set(spinner_angles)), 8)
+        self.assertFalse(self.app.comparison_panel.loading_overlay.isVisible())
+        self.assertTrue(self.app.comparison_panel.btn_compare.isEnabled())
+        self.assertEqual(self.app.comparison_panel.table.rowCount(), 5)
 
 
 if __name__ == "__main__":
