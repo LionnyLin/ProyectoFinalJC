@@ -51,6 +51,12 @@ class PipeVisual:
     halo_end_y: float = 0.0
     parallel_offset: float = 0.0
     obstruction_bars: Tuple[Tuple[float, float, float, float, float], ...] = ()
+    is_focus: bool = False
+    is_dimmed: bool = False
+    is_overloaded: bool = False
+    utilization_tier: int = 0
+    route_index: int = -1
+    route_total: int = 0
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,12 @@ class PulseTrack:
     color: str
     chevron_size: float
     line_width: float
+    is_focus: bool = False
+    is_dimmed: bool = False
+    tier_idx: int = 0
+    utilization_pct: float = 0.0
+    route_offset_px: float = -1.0
+    glow_color: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,6 +107,9 @@ class NodeVisual:
     outer_ring_color: Optional[str] = None
     outer_ring_radius: float = 0.0
     outer_ring_width: float = 0.0
+    is_focus: bool = False
+    is_route_endpoint: bool = False
+    focus_order_idx: int = -1
 
 
 @dataclass(frozen=True)
@@ -125,6 +140,7 @@ class CanvasScene:
     dense_mode: bool
     pipes: List[PipeVisual] = field(default_factory=list)
     pulse_tracks: List[PulseTrack] = field(default_factory=list)
+    route_tracks: List[PulseTrack] = field(default_factory=list)
     flood_rings: List[FloodRingVisual] = field(default_factory=list)
     nodes: List[NodeVisual] = field(default_factory=list)
     badges: List[BadgeVisual] = field(default_factory=list)
@@ -357,6 +373,7 @@ class CanvasLayoutEngine:
         total_duration_min: float,
         traversal_frame: Optional[TraversalAnimFrame],
         overlay_boxes: List[Tuple[float, float, float, float]],
+        ordered_route_pipe_ids: Optional[List[str]] = None,
     ) -> CanvasScene:
         w = max(200, width)
         h = max(200, height)
@@ -414,6 +431,37 @@ class CanvasLayoutEngine:
                 edge = graph.get_pipe(pid)
                 if edge and edge.from_node in isolated_nodes:
                     cut_boundary_nodes.add(edge.from_node)
+
+        route_index_map: Dict[str, int] = {}
+        route_offset_map: Dict[str, float] = {}
+        route_endpoints: Set[str] = set()
+        ordered_list = [pid for pid in (ordered_route_pipe_ids or ()) if graph.get_pipe(pid) is not None]
+        if ordered_list:
+            cum_px = 0.0
+            for idx_r, pid_r in enumerate(ordered_list):
+                if pid_r in route_index_map:
+                    continue
+                edge_r = graph.get_pipe(pid_r)
+                if edge_r is None:
+                    continue
+                p1_r = positions.get(edge_r.from_node)
+                p2_r = positions.get(edge_r.to_node)
+                route_index_map[pid_r] = idx_r
+                route_offset_map[pid_r] = cum_px
+                if p1_r is not None and p2_r is not None:
+                    dist_r = math.hypot(p2_r[0] - p1_r[0], p2_r[1] - p1_r[1])
+                    start_gap_r = min(1.5, node_radius * 0.14)
+                    end_gap_r = min(3.0, node_radius * 0.24)
+                    seg_len_r = max(8.0, dist_r - 2.0 * node_radius - start_gap_r - end_gap_r)
+                    cum_px += max(8.0, seg_len_r - 13.0)
+            first_e = graph.get_pipe(ordered_list[0])
+            last_e = graph.get_pipe(ordered_list[-1])
+            if first_e is not None:
+                route_endpoints.add(first_e.from_node)
+            if last_e is not None:
+                route_endpoints.add(last_e.to_node)
+        route_total = len(route_index_map) if route_index_map else len(highlight_pipe_ids)
+        fallback_focus_idx = 0
 
         label_queue = []
         pipe_segments: List[Tuple[float, float, float, float]] = []
@@ -578,6 +626,15 @@ class CanvasLayoutEngine:
                 if (anim is None and not is_closed and is_overloaded and not is_dimmed_context)
                 else None
             )
+            pipe_route_idx = -1
+            if is_focus_pipe:
+                if pipe.pipe_id in route_index_map:
+                    pipe_route_idx = route_index_map[pipe.pipe_id]
+                else:
+                    pipe_route_idx = fallback_focus_idx
+                    fallback_focus_idx += 1
+            pipe_route_tot = route_total if route_total > 0 else max(1, fallback_focus_idx)
+
             mx, my = (sx1 + sx2) / 2.0, (sy1 + sy2) / 2.0
             obst_bars = (
                 self._build_obstruction_bars(mx, my, ux, uy, geom_width, is_closed)
@@ -610,6 +667,12 @@ class CanvasLayoutEngine:
                     halo_end_y=halo_end_y,
                     parallel_offset=par_offset,
                     obstruction_bars=obst_bars,
+                    is_focus=is_focus_pipe,
+                    is_dimmed=is_dimmed_context,
+                    is_overloaded=is_overloaded,
+                    utilization_tier=tier_idx,
+                    route_index=pipe_route_idx,
+                    route_total=pipe_route_tot,
                 )
             )
 
@@ -622,8 +685,18 @@ class CanvasLayoutEngine:
                 and ps.conveyed_flow_m3s > 1e-5
             ):
                 usable = max(8.0, seg_len - 13.0)
-                n_pulses = 3 if (seg_len > 115.0 or is_overloaded) else 2
+                if is_focus_pipe and seg_len > 70.0:
+                    n_pulses = 4
+                elif is_focus_pipe or seg_len > 110.0 or is_overloaded:
+                    n_pulses = 3
+                else:
+                    n_pulses = 2
                 chev_col = theme.INK_PRIMARY if tier_idx in (0, 1) else theme.PAPER_BG
+                track_glow = (
+                    "#FCA5A5"
+                    if is_overloaded
+                    else (theme.ACCENT_PRIMARY if is_focus_pipe else color)
+                )
                 scene.pulse_tracks.append(
                     PulseTrack(
                         pipe_id=pipe.pipe_id,
@@ -637,6 +710,38 @@ class CanvasLayoutEngine:
                         color=chev_col,
                         chevron_size=max(3.6, min(5.4, geom_width * 0.88)),
                         line_width=max(1.4, min(2.2, geom_width * 0.42)),
+                        is_focus=is_focus_pipe,
+                        is_dimmed=is_dimmed_context,
+                        tier_idx=tier_idx,
+                        utilization_pct=ps.utilization_pct,
+                        route_offset_px=route_offset_map.get(pipe.pipe_id, -1.0),
+                        glow_color=track_glow,
+                    )
+                )
+
+            if is_focus_pipe and not is_closed and seg_len >= 16.0:
+                r_usable = max(8.0, seg_len - 10.0)
+                r_vel = 2.05 if anim is not None else max(1.35, min(2.4, vel_ms))
+                r_pulses = 4 if seg_len > 85.0 else (3 if seg_len > 42.0 else 2)
+                scene.route_tracks.append(
+                    PulseTrack(
+                        pipe_id=pipe.pipe_id,
+                        sx1=sx1,
+                        sy1=sy1,
+                        ux=ux,
+                        uy=uy,
+                        usable_len=r_usable,
+                        velocity_ms=r_vel,
+                        n_pulses=r_pulses,
+                        color=theme.PAPER_BG,
+                        chevron_size=max(3.8, min(5.2, geom_width * 0.85)),
+                        line_width=max(1.5, min(2.2, geom_width * 0.44)),
+                        is_focus=True,
+                        is_dimmed=False,
+                        tier_idx=tier_idx,
+                        utilization_pct=ps.utilization_pct if ps is not None else 0.0,
+                        route_offset_px=route_offset_map.get(pipe.pipe_id, -1.0),
+                        glow_color=theme.ACCENT_PRIMARY,
                     )
                 )
 
@@ -1031,6 +1136,18 @@ class CanvasLayoutEngine:
             show_label = node_radius >= 5.6 or node.node_type == "sink" or node.node_id == selected_node_id
             node_font_px = self._fit_node_font_px(node.node_id, self.ui_font, r) if show_label else 6
 
+            node_is_focus = (
+                (not is_dimmed_basin)
+                and (
+                    (anim is not None and (is_anim_wave or is_anim_cursor))
+                    or (anim is None and is_hl_node)
+                )
+            )
+            node_is_endpoint = (
+                (not is_dimmed_basin)
+                and ((node.node_id in route_endpoints) or is_anim_cursor)
+            )
+
             scene.nodes.append(
                 NodeVisual(
                     node_id=node.node_id,
@@ -1047,6 +1164,8 @@ class CanvasLayoutEngine:
                     outer_ring_color=outer_col,
                     outer_ring_radius=outer_r,
                     outer_ring_width=outer_w,
+                    is_focus=node_is_focus,
+                    is_route_endpoint=node_is_endpoint,
                 )
             )
 

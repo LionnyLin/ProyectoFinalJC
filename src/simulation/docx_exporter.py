@@ -725,7 +725,7 @@ def generate_technical_document_docx(
     )
     _add_bullet(
         doc,
-        "Permite alternar en vivo bifurcación (Proporcional / Equitativa), reparto entre fuentes (Por capacidad / Uniforme) y presets (Oficial Guía 100 % vs. Calibrado 2.5 % + Q_san).",
+        "Permite alternar en vivo bifurcación (Proporcional / Equitativa), reparto entre fuentes (Por capacidad / Uniforme), presets de ingreso (Guía 100 % · 2.5 % + Q_san · E3 = F_max) y el modo de demanda (Lluvia del escenario / % de F_max).",
         "Reglas configurables desde la GUI: ",
     )
     _add_screenshot_if_exists(

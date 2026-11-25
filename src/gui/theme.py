@@ -277,8 +277,52 @@ def apply_variant(widget: QWidget, variant: str) -> None:
     widget.update()
 
 
+def _chevron_svg(direction: str, color: str) -> str:
+    """Chevron vectorial de trazo redondeado (estilo moderno) para combos y spinbox."""
+    pts = {
+        "down": "3,6 8,11 13,6",
+        "up": "3,10 8,5 13,10",
+    }[direction]
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2" '
+        'stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    )
+
+
+def ensure_qss_icons() -> Dict[str, str]:
+    """Escribe los chevrons SVG en caché temporal y devuelve sus rutas (formato url() de QSS)."""
+    import tempfile
+
+    out_dir = os.path.join(tempfile.gettempdir(), "bicentenario_qss_icons")
+    os.makedirs(out_dir, exist_ok=True)
+    specs = {
+        "chev_down": ("down", INK_PRIMARY),
+        "chev_up": ("up", INK_PRIMARY),
+        "chev_down_hover": ("down", ACCENT_TEXT_ON_LIGHT),
+        "chev_up_hover": ("up", ACCENT_TEXT_ON_LIGHT),
+        "chev_down_off": ("down", "#A3A39A"),
+        "chev_up_off": ("up", "#A3A39A"),
+    }
+    paths: Dict[str, str] = {}
+    for key, (direction, color) in specs.items():
+        path = os.path.join(out_dir, f"{key}.svg")
+        svg = _chevron_svg(direction, color)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                current = fh.read()
+        except OSError:
+            current = ""
+        if current != svg:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(svg)
+        paths[key] = path.replace("\\", "/")
+    return paths
+
+
 def build_stylesheet(ui_font: str, mono_font: str, display_font: str) -> str:
     """Construye la hoja de estilo QSS global manteniendo la paleta oficial exacta."""
+    ic = ensure_qss_icons()
     return f"""
 QWidget {{
     font-family: "{ui_font}";
@@ -381,7 +425,8 @@ QWidget#SectionBody {{
 }}
 
 QFrame#RightSheetFrame {{
-    background-color: {PAPER_BG};
+    /* Mismo tono que las barras de acciones bajo las pestañas: la franja queda continua */
+    background-color: {PAPER_SUBTLE};
     border: 1px solid {DOCK_BORDER};
 }}
 QTabWidget#RightTabs::pane {{
@@ -390,18 +435,16 @@ QTabWidget#RightTabs::pane {{
     border-top: 1px solid {DOCK_BORDER};
 }}
 QTabWidget#RightTabs > QTabBar {{
-    background-color: {DOCK_BG};
+    background-color: {PAPER_SUBTLE};
 }}
 QTabWidget#RightTabs > QTabBar::tab {{
-    background-color: {PAPER_SUBTLE};
+    background-color: {PAPER_BG};
     color: {INK_PRIMARY};
     border: 1px solid {DOCK_BORDER};
     border-bottom: none;
     padding: 6px 10px;
     margin-top: 5px;
     margin-right: 2px;
-    font-weight: bold;
-    font-size: 9pt;
 }}
 QTabWidget#RightTabs > QTabBar::tab:hover:!selected {{
     background-color: {PAPER_HOVER};
@@ -412,8 +455,9 @@ QTabWidget#RightTabs > QTabBar::tab:selected {{
 }}
 QTabWidget#RightTabs[compactTabs="true"] > QTabBar::tab {{
     padding: 5px 6px;
-    font-size: 8pt;
-    font-weight: normal;
+}}
+QTabWidget#RightTabs[compactTabs="tight"] > QTabBar::tab {{
+    padding: 5px 4px;
 }}
 
 QFrame#TelemetryHeader {{
@@ -619,6 +663,85 @@ QComboBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
 QDoubleSpinBox {{
     font-family: "{mono_font}";
     font-size: 9pt;
+    padding-right: 17px;
+}}
+QComboBox {{
+    padding: 3px 26px 3px 7px;
+}}
+QComboBox:hover, QDoubleSpinBox:hover {{
+    border: 1px solid {ACCENT_PRIMARY};
+}}
+QComboBox:disabled, QDoubleSpinBox:disabled {{
+    color: #8C8C84;
+    background-color: {PAPER_SUBTLE};
+    border: 1px solid {PAPER_BORDER};
+}}
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 22px;
+    border: none;
+    background: transparent;
+}}
+QComboBox::drop-down:hover, QComboBox::drop-down:on {{
+    background-color: {ACCENT_SOFT};
+}}
+QComboBox::down-arrow {{
+    image: url("{ic['chev_down']}");
+    width: 11px;
+    height: 11px;
+}}
+QComboBox::down-arrow:hover {{
+    image: url("{ic['chev_down_hover']}");
+}}
+QComboBox::down-arrow:on {{
+    image: url("{ic['chev_up_hover']}");
+}}
+QComboBox::down-arrow:disabled {{
+    image: url("{ic['chev_down_off']}");
+}}
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+    /* Dentro del borde: el marco del campo envuelve también los botones */
+    subcontrol-origin: padding;
+    width: 15px;
+    border: none;
+    border-left: 1px solid {PAPER_BORDER};
+    background-color: {PAPER_SUBTLE};
+}}
+QDoubleSpinBox::up-button {{
+    subcontrol-position: top right;
+    border-bottom: 1px solid {PAPER_BORDER};
+}}
+QDoubleSpinBox::down-button {{
+    subcontrol-position: bottom right;
+}}
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
+    background-color: {ACCENT_SOFT};
+}}
+QDoubleSpinBox::up-button:pressed, QDoubleSpinBox::down-button:pressed {{
+    background-color: {DOCK_HOVER};
+}}
+QDoubleSpinBox::up-arrow {{
+    image: url("{ic['chev_up']}");
+    width: 7px;
+    height: 7px;
+}}
+QDoubleSpinBox::down-arrow {{
+    image: url("{ic['chev_down']}");
+    width: 7px;
+    height: 7px;
+}}
+QDoubleSpinBox::up-arrow:hover {{
+    image: url("{ic['chev_up_hover']}");
+}}
+QDoubleSpinBox::down-arrow:hover {{
+    image: url("{ic['chev_down_hover']}");
+}}
+QDoubleSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:off {{
+    image: url("{ic['chev_up_off']}");
+}}
+QDoubleSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:off {{
+    image: url("{ic['chev_down_off']}");
 }}
 QComboBox QAbstractItemView {{
     background-color: {PAPER_BG};

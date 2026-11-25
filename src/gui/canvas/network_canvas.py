@@ -20,7 +20,7 @@ from src.data_structures import DirectedGraph, ManholeNode, PipeEdge
 from src.simulation.models import PipeIntervention, TimeStepSnapshot
 from .. import theme
 from ..widgets import make_separator
-from .layout import CanvasLayoutEngine, CanvasScene
+from .layout import CanvasLayoutEngine, CanvasScene, blend_hex
 from .renderer import CanvasRenderer
 
 
@@ -44,7 +44,7 @@ class NetworkCanvas(QWidget):
     pipeSelected = Signal(str)
     nodeSelected = Signal(str)
 
-    _PULSE_TICK_MS = 55
+    _PULSE_TICK_MS = 32
 
     def __init__(
         self,
@@ -90,6 +90,13 @@ class NetworkCanvas(QWidget):
         self._is_playing: bool = False
         self._playback_speed_factor: float = 1.0
         self._pulse_time_s: float = 0.0
+        self._effect_time_s: float = 0.0
+        self._ordered_route_pipes: List[str] = []
+        self._prev_pipe_colors: Dict[str, str] = {}
+        self._color_lerp_t: float = 1.0
+        self._route_transition_t: float = 1.0
+        self._color_lerp_duration_s: float = 0.20
+        self._route_transition_duration_s: float = 0.45
 
         self._zoom: float = 1.0
         self._pan_x: float = 0.0
@@ -266,6 +273,10 @@ class NetworkCanvas(QWidget):
         self._peak_util_map.clear()
         self._overload_minutes_map.clear()
         self._traversal_frame = None
+        self._ordered_route_pipes.clear()
+        self._prev_pipe_colors.clear()
+        self._color_lerp_t = 1.0
+        self._route_transition_t = 1.0
         self._update_stamp_label()
         self.reset_view()
 
@@ -301,9 +312,17 @@ class NetworkCanvas(QWidget):
         self._total_duration_min = max(1.0, float(total_duration_min))
 
     def set_snapshot(self, snapshot: Optional[TimeStepSnapshot]) -> None:
+        had_snap = self.snapshot is not None and not self._scene_dirty
+        if had_snap and snapshot is not None:
+            self._prev_pipe_colors = self._capture_current_pipe_colors()
+            self._color_lerp_t = 0.0
+        else:
+            self._prev_pipe_colors.clear()
+            self._color_lerp_t = 1.0
         self.snapshot = snapshot
         self._update_stamp_label()
         self.redraw()
+        self._sync_effect_timer()
 
     def set_interventions(
         self,
@@ -366,17 +385,60 @@ class NetworkCanvas(QWidget):
         self.redraw()
 
     def set_traversal_frame(self, frame: Optional[TraversalAnimFrame]) -> None:
+        if not self._scene_dirty and frame is not None:
+            self._prev_pipe_colors = self._capture_current_pipe_colors()
+            self._color_lerp_t = 0.0
+        else:
+            self._prev_pipe_colors.clear()
+            self._color_lerp_t = 1.0
         self._traversal_frame = frame
         self.redraw()
+        self._sync_effect_timer()
 
     def set_highlights(
         self,
         pipe_ids: Optional[Set[str]] = None,
         node_ids: Optional[Set[str]] = None,
+        ordered_route_pipes: Optional[List[str]] = None,
+        animate_transition: bool = True,
     ) -> None:
-        self.highlight_pipe_ids = set(pipe_ids or ())
-        self.highlight_node_ids = set(node_ids or ())
+        pipes_set = set(pipe_ids or ())
+        nodes_set = set(node_ids or ())
+        ordered_list = list(ordered_route_pipes or ())
+        if not self._scene_dirty and (pipes_set or self.highlight_pipe_ids):
+            self._prev_pipe_colors = self._capture_current_pipe_colors()
+            self._color_lerp_t = 0.0
+        else:
+            self._prev_pipe_colors.clear()
+            self._color_lerp_t = 1.0
+        self.highlight_pipe_ids = pipes_set
+        self.highlight_node_ids = nodes_set
+        self._ordered_route_pipes = ordered_list if pipes_set else []
+        if pipes_set and animate_transition:
+            self._route_transition_t = 0.0
+        else:
+            self._route_transition_t = 1.0
         self.redraw()
+        self._sync_effect_timer()
+
+    def promote_traversal_to_highlights(
+        self,
+        pipe_ids: Optional[Set[str]],
+        node_ids: Optional[Set[str]],
+        ordered_route_pipes: Optional[List[str]] = None,
+    ) -> None:
+        """Consolida un recorrido animado hacia la vista resaltada en vivo con transición."""
+        if not self._scene_dirty:
+            self._prev_pipe_colors = self._capture_current_pipe_colors()
+            self._color_lerp_t = 0.0
+        self._traversal_frame = None
+        pipes_set = set(pipe_ids or ())
+        self.highlight_pipe_ids = pipes_set
+        self.highlight_node_ids = set(node_ids or ())
+        self._ordered_route_pipes = list(ordered_route_pipes or ()) if pipes_set else []
+        self._route_transition_t = 0.0 if pipes_set else 1.0
+        self.redraw()
+        self._sync_effect_timer()
 
     def select_pipe(self, pipe_id: Optional[str]) -> None:
         self.selected_pipe_id = pipe_id
@@ -388,28 +450,78 @@ class NetworkCanvas(QWidget):
         self.selected_pipe_id = None
         self.redraw()
 
+    def _capture_current_pipe_colors(self) -> Dict[str, str]:
+        if self._scene_dirty or not self._scene.pipes:
+            return {}
+        overrides = self._interpolated_pipe_colors() or {}
+        return {pv.pipe_id: overrides.get(pv.pipe_id, pv.color) for pv in self._scene.pipes}
+
+    def _interpolated_pipe_colors(self) -> Optional[Dict[str, str]]:
+        if self._color_lerp_t >= 0.999 or not self._prev_pipe_colors:
+            return None
+        t = max(0.0, min(1.0, self._color_lerp_t))
+        eased = 1.0 - (1.0 - t) ** 3
+        out: Dict[str, str] = {}
+        for pv in self._scene.pipes:
+            prev_c = self._prev_pipe_colors.get(pv.pipe_id)
+            if prev_c and prev_c.lower() != pv.color.lower():
+                out[pv.pipe_id] = blend_hex(prev_c, pv.color, eased)
+        return out or None
+
+    def _needs_effect_timer(self) -> bool:
+        return (
+            self._is_playing
+            or (self._traversal_frame is not None)
+            or bool(self.highlight_pipe_ids)
+            or (self._color_lerp_t < 0.999)
+            or (self._route_transition_t < 0.999)
+        )
+
+    def _sync_effect_timer(self) -> None:
+        if self._needs_effect_timer() and self.isVisible():
+            if not self._pulse_timer.isActive():
+                self._pulse_timer.start()
+        elif self._pulse_timer.isActive():
+            self._pulse_timer.stop()
+
     def set_playing(self, playing: bool, speed_factor: float = 1.0) -> None:
         self._playback_speed_factor = max(0.5, min(3.5, float(speed_factor)))
-        if playing and not self._is_playing:
-            self._is_playing = True
-            self._pulse_timer.start()
+        was_playing = self._is_playing
+        self._is_playing = bool(playing)
+        self._sync_effect_timer()
+        if self._is_playing and not was_playing:
             self.redraw()
-        elif not playing and self._is_playing:
-            self.stop_pulse_animation()
+        elif not self._is_playing and was_playing:
             self.update()
 
     def stop_pulse_animation(self) -> None:
         self._is_playing = False
+        self._color_lerp_t = 1.0
+        self._route_transition_t = 1.0
+        self._prev_pipe_colors.clear()
         if self._pulse_timer.isActive():
             self._pulse_timer.stop()
 
     def _tick_flow_pulses(self) -> None:
-        if not self._is_playing:
+        if not self._needs_effect_timer():
             self._pulse_timer.stop()
             return
-        dt_s = (self._PULSE_TICK_MS / 1000.0) * self._playback_speed_factor
-        self._pulse_time_s += dt_s
+        dt_real_s = self._PULSE_TICK_MS / 1000.0
+        self._effect_time_s += dt_real_s
+        if self._is_playing:
+            self._pulse_time_s += dt_real_s * self._playback_speed_factor
+        if self._color_lerp_t < 1.0:
+            dur = max(0.06, self._color_lerp_duration_s / max(1.0, self._playback_speed_factor * 0.7))
+            self._color_lerp_t = min(1.0, self._color_lerp_t + dt_real_s / dur)
+            if self._color_lerp_t >= 1.0:
+                self._prev_pipe_colors.clear()
+        if self._route_transition_t < 1.0:
+            self._route_transition_t = min(
+                1.0, self._route_transition_t + dt_real_s / self._route_transition_duration_s
+            )
         self.update()
+        if not self._needs_effect_timer():
+            self._pulse_timer.stop()
 
     def zoom_in(self) -> None:
         w = max(200, self.width())
@@ -632,6 +744,7 @@ class NetworkCanvas(QWidget):
             total_duration_min=self._total_duration_min,
             traversal_frame=self._traversal_frame,
             overlay_boxes=self.overlay_boxes(),
+            ordered_route_pipe_ids=self._ordered_route_pipes,
         )
         self._scene_dirty = False
 
@@ -876,6 +989,15 @@ class NetworkCanvas(QWidget):
         self._hide_tooltip()
         super().leaveEvent(event)
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_effect_timer()
+
+    def hideEvent(self, event) -> None:
+        if self._pulse_timer.isActive():
+            self._pulse_timer.stop()
+        super().hideEvent(event)
+
     def paintEvent(self, _event) -> None:
         if self._scene_dirty:
             self._rebuild_scene()
@@ -886,6 +1008,10 @@ class NetworkCanvas(QWidget):
             pulse_time_s=self._pulse_time_s,
             is_playing=self._is_playing,
             zoom=self._zoom,
+            pipe_color_overrides=self._interpolated_pipe_colors(),
+            route_transition_t=self._route_transition_t,
+            effect_time_s=self._effect_time_s,
+            has_active_traversal_anim=(self._traversal_frame is not None),
         )
         painter.setPen(theme.CANVAS_BORDER)
         painter.setBrush(Qt.BrushStyle.NoBrush)

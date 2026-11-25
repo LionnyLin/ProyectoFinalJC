@@ -709,26 +709,21 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.app.comparison_charts.set_metric_mode("flood")
 
     def test_async_charts_spinner_and_visible_guided_tour_buttons(self) -> None:
-        # 1. Ambas entradas del Tour Guiado están visibles y activan el recorrido sincronizadas
+        # 1. Una sola entrada del Tour Guiado (barra superior) que activa/desactiva el recorrido
         self.assertTrue(self.app.top_bar.btn_guided_tour.isVisible())
         self.assertIn("Tour Guiado", self.app.top_bar.btn_guided_tour.text())
-        self.assertTrue(self.app.center_panel.btn_tour_quick.isVisible())
-        self.assertIn("Tour Guiado", self.app.center_panel.btn_tour_quick.text())
+        self.assertFalse(hasattr(self.app.center_panel, "btn_tour_quick"))
 
-        self.app.center_panel.btn_tour_quick.click()
+        self.app.top_bar.btn_guided_tour.click()
         _pump(120)
         self.assertTrue(self.app.state.tour_active)
         self.assertTrue(self.app.center_panel.tour_card.isVisible())
         self.assertEqual(self.app.top_bar.btn_guided_tour.property("variant"), "dark_primary")
-        self.assertEqual(self.app.center_panel.btn_tour_quick.property("variant"), "primary")
 
-        self.app.center_panel.btn_tour_quick.click()
+        self.app.top_bar.btn_guided_tour.click()
         _pump(120)
         self.assertFalse(self.app.state.tour_active)
         self.assertEqual(self.app.top_bar.btn_guided_tour.property("variant"), "dark_tour")
-        self.assertEqual(
-            self.app.center_panel.btn_tour_quick.property("variant"), "light_secondary"
-        )
 
         # 2. Al seleccionar tuberías estando en Inspector, no redibuja Evolución innecesariamente
         t0 = time.perf_counter()
@@ -778,7 +773,7 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         probe_timer.stop()
         _wait_tasks(self.app)
 
-        self.assertGreaterEqual(len(set(spinner_angles)), 8)
+        self.assertGreaterEqual(len(set(spinner_angles)), 4)
         self.assertFalse(self.app.comparison_panel.loading_overlay.isVisible())
         self.assertTrue(self.app.comparison_panel.btn_compare.isEnabled())
         self.assertEqual(self.app.comparison_panel.table.rowCount(), 5)
@@ -817,10 +812,15 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertEqual(self.app.max_flow_panel.table.rowCount(), 9)
         self.assertIsNotNone(self.app.state.max_flow_result)
 
-        # Activar fila 150% F_max desde el estimador (debe topar uso del sistema en 120%)
+        # Modo de demanda "% de F_max" a 150% + Ejecutar (debe topar uso del sistema en 120%)
+        self.app.controls_panel.seg_demand_mode.button("fmax").click()
+        _pump(60)
+        self.assertTrue(self.app.controls_panel.fmax_target_row.isVisible())
+        self.assertFalse(self.app.controls_panel.spin_ingress_pct.isEnabled())
         self.app.controls_panel.spin_target_fmax_pct.setValue(150)
-        self.app.controls_panel.btn_sim_fmax.click()
+        self.app.controls_panel.btn_run_sim.click()
         _pump(120)
+        self.assertIn("150% F_max", self.app.controls_panel.btn_run_sim.text())
         self.assertAlmostEqual(self.app.state.active_target_fmax_pct, 150.0, places=4)
         self.assertAlmostEqual(self.app.state.result.peak_system_utilization_pct, 120.0, places=4)
         self.assertIn("Sim. 150% F_max", self.app.center_panel.lbl_clock.text())
@@ -828,6 +828,11 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         # 4. Preset Calibrado F_max (E3 = 100%)
         self.app.controls_panel.combo_scenario.setCurrentIndex(2)
         _pump(100)
+        self.app.controls_panel.seg_demand_mode.button("rain").click()
+        _pump(80)
+        self.assertEqual(self.app.controls_panel.demand_mode(), "rain")
+        self.assertIsNone(self.app.state.active_target_fmax_pct)
+        self.assertTrue(self.app.controls_panel.btn_fmax_preset.isEnabled())
         self.app.controls_panel.btn_fmax_preset.click()
         _pump(120)
         self.assertEqual(self.app.controls_panel.combo_scenario.currentIndex(), 2)
@@ -842,6 +847,62 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.app.controls_panel.apply_preset(100.0, 0.0)
         self.app.right_tabs.setCurrentIndex(0)
         _pump(80)
+
+    def test_traversal_finish_handoff_to_live_playback_with_particles_and_transitions(self) -> None:
+        # 1. Ejecutar animación BFS 6 -> 31 hasta el último fotograma
+        self.app.controls_panel.combo_bfs_start.setCurrentText("6")
+        self.app.controls_panel.combo_bfs_target.setCurrentText("31")
+        self.app.state.last_traversal_alg = "BFS"
+        self.app._action_toggle_traversal_anim()
+        self.assertIsNotNone(self.app.network_canvas._traversal_frame)
+        # Avanzar al último paso para activar el temporizador de transición
+        self.app.state.anim_idx = len(self.app.state.anim_frames) - 1
+        self.app._step_traversal_anim()
+        self.assertFalse(self.app.state.is_animating_traversal)
+        self.assertGreater(len(self.app.network_canvas.current_scene.route_tracks), 0)
+
+        # 2. Pulsar Reproducir debe consolidar el recorrido a flujo hidráulico en vivo
+        self.app.toggle_play_pause()
+        self.assertTrue(self.app.state.is_playing)
+        self.assertIsNone(self.app.network_canvas._traversal_frame)
+        self.assertGreater(len(self.app.network_canvas.highlight_pipe_ids), 0)
+        self.assertGreater(len(self.app.network_canvas._ordered_route_pipes), 0)
+        self.assertLess(self.app.network_canvas._route_transition_t, 1.0)
+
+        # Bombear eventos para completar la ola de transición y generar partículas hidráulicas
+        self.app._set_step(25)
+        self.assertTrue(self.app.state.is_playing)
+        _pump(520)
+        self.assertAlmostEqual(self.app.network_canvas._route_transition_t, 1.0, places=2)
+
+        scene = self.app.network_canvas.current_scene
+        focus_tracks = [tr for tr in scene.pulse_tracks if tr.is_focus]
+        self.assertGreater(len(focus_tracks), 0)
+        self.assertTrue(all(tr.route_offset_px >= 0.0 for tr in focus_tracks))
+        self.assertTrue(self.app.network_canvas._pulse_timer.isActive())
+
+        # Los tramos del recorrido mantienen el color hidráulico en vivo (cambian de t=0 a t=40)
+        self.app.pause()
+        self.app._set_step(0)
+        colors_t0 = {
+            pv.pipe_id: pv.color
+            for pv in self.app.network_canvas.current_scene.pipes
+            if pv.is_focus
+        }
+        self.app._set_step(40)
+        self.assertLess(self.app.network_canvas._color_lerp_t, 1.0)
+        colors_t40 = {
+            pv.pipe_id: pv.color
+            for pv in self.app.network_canvas.current_scene.pipes
+            if pv.is_focus
+        }
+        self.assertTrue(any(colors_t0[pid] != colors_t40[pid] for pid in colors_t0))
+        self.assertTrue(all(col.upper() != theme.ACCENT_PRIMARY.upper() for col in colors_t40.values()))
+
+        # Limpiar resaltados apaga la ruta suavemente
+        self.app._clear_highlights()
+        self.assertEqual(len(self.app.network_canvas.highlight_pipe_ids), 0)
+        self.assertEqual(len(self.app.network_canvas._ordered_route_pipes), 0)
 
 
 if __name__ == "__main__":

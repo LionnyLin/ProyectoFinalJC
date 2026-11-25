@@ -13,6 +13,8 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
+from ..mpl_canvas import ResponsiveFigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
@@ -202,7 +204,7 @@ class TemporalChartsPanel(QWidget):
         self.figure = Figure(figsize=(4.0, 5.2), dpi=self._dpi, facecolor=theme.PAPER_BG)
         self.ax_flow = self.figure.add_subplot(211)
         self.ax_util = self.figure.add_subplot(212)
-        self.canvas = FigureCanvasQTAgg(self.figure)
+        self.canvas = ResponsiveFigureCanvas(self.figure)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.canvas.setMinimumSize(220, 220)
         hydro_lay.addWidget(self.canvas)
@@ -254,7 +256,7 @@ class TemporalChartsPanel(QWidget):
 
         self.profile_figure = Figure(figsize=(4.0, 5.2), dpi=self._dpi, facecolor=theme.PAPER_BG)
         self.ax_profile = self.profile_figure.add_subplot(111)
-        self.profile_canvas = FigureCanvasQTAgg(self.profile_figure)
+        self.profile_canvas = ResponsiveFigureCanvas(self.profile_figure)
         self.profile_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.profile_canvas.setMinimumSize(220, 220)
         prof_lay.addWidget(self.profile_canvas, 1)
@@ -279,6 +281,9 @@ class TemporalChartsPanel(QWidget):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(120)
         self._resize_timer.timeout.connect(self._refit_layout)
+        # El reflujo se dispara al estabilizarse el tamaño del canvas, no en cada paso del arrastre.
+        self.canvas.resizeSettled.connect(self._refit_layout)
+        self.profile_canvas.resizeSettled.connect(self._refit_layout)
 
         self._last_result: Optional[SimulationResult] = None
         self._last_prev_result: Optional[SimulationResult] = None
@@ -303,8 +308,10 @@ class TemporalChartsPanel(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if self.width() >= 160 and self.height() >= 160:
-            self._resize_timer.start()
+        # Si el canvas no cambia de tamaño (p. ej. solo cambió la altura del panel) no hay reflujo.
+        if not (self.canvas.is_resizing() or self.profile_canvas.is_resizing()):
+            if self.width() >= 160 and self.height() >= 160:
+                self._resize_timer.start()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -321,6 +328,8 @@ class TemporalChartsPanel(QWidget):
             self._blit_bg = None
 
     def _refit_layout(self) -> None:
+        if self.canvas.is_resizing() or self.profile_canvas.is_resizing():
+            return  # se reintenta en canvas.resizeSettled
         self._blit_bg = None
         if self._subtab == "profile":
             cw, ch = self.profile_canvas.width(), self.profile_canvas.height()
@@ -1482,7 +1491,7 @@ class ComparisonChartsPanel(QWidget):
         self.ax_bar = self.figure.add_subplot(211)
         self.ax_ptar = self.figure.add_subplot(212)
 
-        self.canvas = FigureCanvasQTAgg(self.figure)
+        self.canvas = ResponsiveFigureCanvas(self.figure)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.canvas.setMinimumSize(220, 200)
         lay.addWidget(self.canvas, 1)
@@ -1491,6 +1500,7 @@ class ComparisonChartsPanel(QWidget):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(100)
         self._resize_timer.timeout.connect(self._reflow)
+        self.canvas.resizeSettled.connect(self._reflow)
 
         self._draw_empty()
 
@@ -1508,7 +1518,7 @@ class ComparisonChartsPanel(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if self.width() >= 180 and self.height() >= 180:
+        if not self.canvas.is_resizing() and self.width() >= 180 and self.height() >= 180:
             self._resize_timer.start()
 
     def showEvent(self, event) -> None:
@@ -1516,6 +1526,8 @@ class ComparisonChartsPanel(QWidget):
         QTimer.singleShot(0, self._reflow)
 
     def _reflow(self) -> None:
+        if self.canvas.is_resizing():
+            return  # se reintenta en canvas.resizeSettled
         w = max(1, self.width())
         h = max(1, self.height())
         if w < 180 or h < 180:

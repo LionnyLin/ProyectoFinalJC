@@ -5,14 +5,16 @@ from typing import List, Optional, Tuple
 
 os.environ.setdefault("QT_API", "pyside6")
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QScrollArea,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -21,6 +23,8 @@ from PySide6.QtWidgets import (
 )
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
+from ..mpl_canvas import ResponsiveFigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 
@@ -32,7 +36,15 @@ from .charts_panel import _apply_axis_style, _fmt_vol_compact, _safe_tight_layou
 
 
 class MaxFlowPanel(QWidget):
-    """Pestaña analítica del algoritmo Ford-Fulkerson y simulaciones de saturación por % de F_max."""
+    """Pestaña analítica del algoritmo Ford-Fulkerson y simulaciones de saturación por % de F_max.
+
+    Estructura: barra de acciones fija arriba + contenido desplazable como una sola lámina
+    (resumen, tabla a altura completa y gráficas), de modo que el scroll es el de la pestaña
+    entera y no un scroll anidado dentro de la tabla.
+    """
+
+    ROW_HEIGHT = 22
+    CHARTS_MIN_HEIGHT = 520
 
     recalculateRequested = Signal()
     highlightMinCutRequested = Signal()
@@ -98,8 +110,25 @@ class MaxFlowPanel(QWidget):
         lay.addWidget(top_bar)
         lay.addWidget(make_separator("h", theme.DOCK_BORDER, 1, self))
 
+        # Contenido desplazable: todo lo que está bajo la barra de acciones
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setObjectName("MaxFlowScroll")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet(
+            f"QScrollArea#MaxFlowScroll, QWidget#MaxFlowContent {{ background-color: {theme.PAPER_BG}; }}"
+        )
+        content = QWidget(self.scroll_area)
+        content.setObjectName("MaxFlowContent")
+        body = QVBoxLayout(content)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        self.scroll_area.setWidget(content)
+        lay.addWidget(self.scroll_area, 1)
+
         # Tarjeta resumen Ford-Fulkerson
-        summary_card = QFrame(self)
+        summary_card = QFrame(content)
         summary_card.setObjectName("InspectorSubCard")
         sc_lay = QVBoxLayout(summary_card)
         sc_lay.setContentsMargins(8, 5, 8, 5)
@@ -107,6 +136,7 @@ class MaxFlowPanel(QWidget):
 
         lbl_sc_title = QLabel("Flujo Máximo del Sistema · Ford-Fulkerson (Edmonds-Karp)", summary_card)
         lbl_sc_title.setFont(QFont(display_font, 8, QFont.Weight.Bold))
+        lbl_sc_title.setWordWrap(True)
         lbl_sc_title.setStyleSheet(f"color: {theme.ACCENT_TEXT_ON_LIGHT}; background: transparent;")
         sc_lay.addWidget(lbl_sc_title)
 
@@ -119,8 +149,8 @@ class MaxFlowPanel(QWidget):
         self.lbl_ff_summary.setStyleSheet(f"color: {theme.INK_PRIMARY}; background: transparent;")
         sc_lay.addWidget(self.lbl_ff_summary)
 
-        lay.addWidget(summary_card)
-        lay.addWidget(make_separator("h", theme.DOCK_BORDER, 1, self))
+        body.addWidget(summary_card)
+        body.addWidget(make_separator("h", theme.DOCK_BORDER, 1, content))
 
         fm = QFontMetrics(QFont(ui_font, 8))
         self._col_specs: List[Tuple[str, Qt.AlignmentFlag, int]] = [
@@ -134,7 +164,7 @@ class MaxFlowPanel(QWidget):
             ("Estado", Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, max(112, fm.horizontalAdvance("Rebose total (tope)") + 14)),
         ]
 
-        table_wrap = QWidget(self)
+        table_wrap = QWidget(content)
         table_wrap.setObjectName("CompTableWrap")
         tw_lay = QVBoxLayout(table_wrap)
         tw_lay.setContentsMargins(6, 4, 6, 4)
@@ -145,20 +175,22 @@ class MaxFlowPanel(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(22)
+        self.table.verticalHeader().setDefaultSectionSize(self.ROW_HEIGHT)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.setHorizontalHeaderLabels([h for h, _, _ in self._col_specs])
 
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(False)
-        self.table.setFixedHeight(178)
         self.table.cellDoubleClicked.connect(self._on_row_double_clicked)
         tw_lay.addWidget(self.table)
-        lay.addWidget(table_wrap)
+        body.addWidget(table_wrap)
+        self.table.installEventFilter(self)
+        self._fit_table_height()
 
         # Gráfica Matplotlib 2x1
-        charts_host = QWidget(self)
+        charts_host = QWidget(content)
         charts_host.setObjectName("ChartsHost")
         ch_lay = QVBoxLayout(charts_host)
         ch_lay.setContentsMargins(0, 0, 0, 0)
@@ -166,11 +198,12 @@ class MaxFlowPanel(QWidget):
         self.figure = Figure(figsize=(4.0, 4.2), dpi=self._dpi, facecolor=theme.PAPER_BG)
         self.ax_usage = self.figure.add_subplot(211)
         self.ax_flood = self.figure.add_subplot(212)
-        self.canvas = FigureCanvasQTAgg(self.figure)
+        self.canvas = ResponsiveFigureCanvas(self.figure)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.canvas.setMinimumSize(220, 190)
+        self.canvas.setMinimumSize(220, self.CHARTS_MIN_HEIGHT)
+        self.canvas.installEventFilter(self)
         ch_lay.addWidget(self.canvas, 1)
-        lay.addWidget(charts_host, 1)
+        body.addWidget(charts_host, 1)
 
         self.loading_overlay = LoadingOverlay(self, ui_font=ui_font)
 
@@ -178,6 +211,7 @@ class MaxFlowPanel(QWidget):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(110)
         self._resize_timer.timeout.connect(self._reflow)
+        self.canvas.resizeSettled.connect(self._reflow)
 
         self._resize_columns()
         self._draw_empty()
@@ -190,6 +224,25 @@ class MaxFlowPanel(QWidget):
         if isinstance(pct, (int, float)):
             self.targetFmaxActivated.emit(float(pct))
 
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        # La aparición del scroll vertical cambia el ancho de la tabla sin redimensionar el panel.
+        if obj is self.table and event.type() == QEvent.Type.Resize:
+            self._resize_columns()
+        # Matplotlib acepta la rueda del ratón; la redirigimos para desplazar toda la pestaña.
+        elif obj is self.canvas and event.type() == QEvent.Type.Wheel:
+            QApplication.sendEvent(self.scroll_area.verticalScrollBar(), event)
+            return True
+        return super().eventFilter(obj, event)
+
+    def _fit_table_height(self) -> None:
+        """Ajusta la tabla a la altura exacta de sus filas: el scroll lo lleva la pestaña completa."""
+        rows = max(1, self.table.rowCount())
+        hdr_h = self.table.horizontalHeader().sizeHint().height()
+        hbar = self.table.horizontalScrollBar()
+        hbar_h = hbar.sizeHint().height() if hbar.isVisible() else 0
+        frame = self.table.frameWidth() * 2
+        self.table.setFixedHeight(hdr_h + rows * self.ROW_HEIGHT + hbar_h + frame + 2)
+
     def _resize_columns(self) -> None:
         avail_w = max(220, self.table.viewport().width())
         total_min = sum(min_w for _, _, min_w in self._col_specs)
@@ -201,7 +254,7 @@ class MaxFlowPanel(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._resize_columns()
-        if self.width() >= 180 and self.height() >= 180:
+        if not self.canvas.is_resizing() and self.width() >= 180 and self.height() >= 180:
             self._resize_timer.start()
 
     def showEvent(self, event) -> None:
@@ -209,6 +262,8 @@ class MaxFlowPanel(QWidget):
         QTimer.singleShot(0, self._reflow)
 
     def _reflow(self) -> None:
+        if self.canvas.is_resizing():
+            return  # se reintenta en canvas.resizeSettled
         cw = self.canvas.width()
         ch = self.canvas.height()
         if cw < 180 or ch < 180:
@@ -265,6 +320,7 @@ class MaxFlowPanel(QWidget):
 
     def clear_table(self) -> None:
         self.table.setRowCount(0)
+        self._fit_table_height()
         self._last_ff_res = None
         self._last_rows = []
         self._draw_empty()
@@ -310,6 +366,7 @@ class MaxFlowPanel(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, r.target_fmax_pct)
                 self.table.setItem(row_i, col_i, item)
         self._resize_columns()
+        self._fit_table_height()
         self._redraw_charts()
 
     def _draw_empty(self) -> None:

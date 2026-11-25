@@ -28,7 +28,6 @@ class CenterPanel(QFrame):
 
     labelsToggled = Signal(bool, bool)
     mapModeChanged = Signal(str)
-    guidedTourRequested = Signal()
     resetRequested = Signal()
     stepRequested = Signal(int)
     playPauseRequested = Signal()
@@ -151,21 +150,6 @@ class CenterPanel(QFrame):
         mm_lay.addWidget(self.seg_map_mode)
         mm_lay.addStretch(1)
 
-        self.btn_tour_quick = StyledButton(
-            " Tour Guiado",
-            variant="light_secondary",
-            icon=icons["tour_ink"],
-            icon_size=12,
-            font_pt=8,
-            pad_x=8,
-            pad_y=3,
-            parent=self.map_mode_bar,
-        )
-        self.btn_tour_quick.setToolTip(
-            "Abrir recorrido guiado interactivo (4 hallazgos clave del escenario)"
-        )
-        self.btn_tour_quick.clicked.connect(self.guidedTourRequested.emit)
-        mm_lay.addWidget(self.btn_tour_quick)
         canvas_block.addWidget(self.map_mode_bar)
 
         self.network_canvas = NetworkCanvas(
@@ -550,14 +534,5 @@ class CenterPanel(QFrame):
                     },
                     pad_x=6,
                 )
-            self.btn_tour_quick.setVisible(mm_tier in ("full", "mid"))
 
         self.network_canvas.reposition_tour_card()
-
-    def set_tour_active(self, active: bool) -> None:
-        if active:
-            self.btn_tour_quick.set_variant("primary")
-            self.btn_tour_quick.setIcon(self._icons["tour_light"])
-        else:
-            self.btn_tour_quick.set_variant("light_secondary")
-            self.btn_tour_quick.setIcon(self._icons["tour_ink"])

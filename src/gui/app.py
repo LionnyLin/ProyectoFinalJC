@@ -7,8 +7,8 @@ import sys
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeySequence, QPalette, QResizeEvent, QShortcut
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QColor, QFont, QFontMetrics, QKeySequence, QPalette, QResizeEvent, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -123,7 +123,7 @@ class BicentenarioSewerApp(QMainWindow):
         self._insp_tab_dirty: bool = False
         self._crit_tab_dirty: bool = False
         self._charts_tab_dirty: bool = False
-        self._right_tabs_compact: Optional[bool] = None
+        self._right_tabs_compact: Optional[str] = None
         self._auto_collapsed_right: bool = False
 
         self._icons = build_icon_set(
@@ -144,6 +144,16 @@ class BicentenarioSewerApp(QMainWindow):
         self._anim_timer = QTimer(self)
         self._anim_timer.setSingleShot(True)
         self._anim_timer.timeout.connect(self._step_traversal_anim)
+
+        self._traversal_handoff_timer = QTimer(self)
+        self._traversal_handoff_timer.setSingleShot(True)
+        self._traversal_handoff_timer.setInterval(420)
+        self._traversal_handoff_timer.timeout.connect(
+            self._promote_finished_traversal_to_live_route
+        )
+        self._pending_traversal_highlights: Optional[
+            Tuple[Set[str], Set[str], List[str]]
+        ] = None
 
         self._task_runner = AsyncTaskRunner(self)
 
@@ -270,6 +280,10 @@ class BicentenarioSewerApp(QMainWindow):
 
         self.right_tabs = QTabWidget(sheet_frame)
         self.right_tabs.setObjectName("RightTabs")
+        # Sin flechas de desplazamiento: las pestañas se compactan o se eliden para caber siempre.
+        self.right_tabs.setUsesScrollButtons(False)
+        self.right_tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        self.right_tabs.tabBar().setExpanding(False)
 
         self.inspector_panel = InspectorPanel(
             self._icons,
@@ -313,6 +327,8 @@ class BicentenarioSewerApp(QMainWindow):
 
         sf_lay.addWidget(self.right_tabs)
         rp_lay.addWidget(sheet_frame)
+        # Al arrastrar el splitter el panel cambia de ancho sin redimensionar la ventana.
+        self.right_panel.installEventFilter(self)
 
         self.main_splitter.addWidget(self.controls_panel)
         self.main_splitter.addWidget(self.center_panel)
@@ -366,7 +382,7 @@ class BicentenarioSewerApp(QMainWindow):
         self.controls_panel.paramsChanged.connect(self._on_params_changed)
         self.controls_panel.executeSimulationRequested.connect(self._on_execute_sim_clicked)
         self.controls_panel.calibrateFmaxRequested.connect(self._action_calibrate_fmax)
-        self.controls_panel.simulateTargetFmaxRequested.connect(self._action_simulate_target_fmax)
+        self.controls_panel.demandTargetChanged.connect(self._on_demand_target_changed)
         self.controls_panel.maxFlowHighlightRequested.connect(self._action_highlight_ford_fulkerson)
         self.controls_panel.searchRequested.connect(self._action_search)
         self.controls_panel.traversalRequested.connect(self._run_traversal)
@@ -377,7 +393,6 @@ class BicentenarioSewerApp(QMainWindow):
         # Panel central + Canvas + Tour
         self.center_panel.labelsToggled.connect(self._toggle_labels)
         self.center_panel.mapModeChanged.connect(self._set_map_mode)
-        self.center_panel.guidedTourRequested.connect(self.toggle_guided_tour)
         self.center_panel.resetRequested.connect(self._player_reset)
         self.center_panel.stepRequested.connect(self._player_step)
         self.center_panel.playPauseRequested.connect(self.toggle_play_pause)
@@ -552,30 +567,45 @@ class BicentenarioSewerApp(QMainWindow):
         else:
             self.main_splitter.setSizes([0, total_w, 0])
 
+    _RIGHT_TAB_LABELS_FULL = ("Inspector", "Tuberías Críticas", "Evolución", "Comparación", "Flujo Máx.")
+    _RIGHT_TAB_LABELS_COMPACT = ("Inspector", "Críticas", "Evolución", "Comparar", "F_max")
+
+    # (padding horizontal px, tamaño pt, negrita) por nivel; debe coincidir con el QSS de RightTabs.
+    _RIGHT_TAB_TIERS = {"false": (10, 9, True), "true": (6, 8, True), "tight": (4, 7, False)}
+
+    def _tabs_required_width(self, labels: Tuple[str, ...], tier: str) -> int:
+        pad_x, pt, bold = self._RIGHT_TAB_TIERS[tier]
+        fm = QFontMetrics(QFont(self.ui_font, pt, QFont.Weight.Bold if bold else QFont.Weight.Normal))
+        per_tab_chrome = pad_x * 2 + 2 + 2  # padding + bordes + margin-right
+        return sum(fm.horizontalAdvance(t) + per_tab_chrome for t in labels) + 12
+
     def _update_right_panel_responsive(self) -> None:
         rw = self.right_panel.width()
         if rw <= 0:
             return
-        compact = rw < 395
-        if compact != self._right_tabs_compact:
-            self._right_tabs_compact = compact
-            self.right_tabs.setProperty("compactTabs", "true" if compact else "false")
+        if rw >= self._tabs_required_width(self._RIGHT_TAB_LABELS_FULL, "false"):
+            tier = "false"
+        elif rw >= self._tabs_required_width(self._RIGHT_TAB_LABELS_COMPACT, "true"):
+            tier = "true"
+        else:
+            tier = "tight"
+        if tier != self._right_tabs_compact:
+            self._right_tabs_compact = tier
+            self.right_tabs.setProperty("compactTabs", tier)
+            bar = self.right_tabs.tabBar()
             st = self.right_tabs.style()
             if st is not None:
                 st.unpolish(self.right_tabs)
                 st.polish(self.right_tabs)
-            if compact:
-                self.right_tabs.setTabText(0, "Inspector")
-                self.right_tabs.setTabText(1, "Críticas")
-                self.right_tabs.setTabText(2, "Evolución")
-                self.right_tabs.setTabText(3, "Comparar")
-                self.right_tabs.setTabText(4, "F_max")
-            else:
-                self.right_tabs.setTabText(0, "Inspector")
-                self.right_tabs.setTabText(1, "Tuberías Críticas")
-                self.right_tabs.setTabText(2, "Evolución")
-                self.right_tabs.setTabText(3, "Comparación")
-                self.right_tabs.setTabText(4, "Flujo Máx.")
+                st.unpolish(bar)
+                st.polish(bar)
+            # La fuente se fija en el widget (no en QSS) para que el cálculo de ancho de cada
+            # pestaña y el dibujo usen la misma métrica; el cambio de fuente recalcula el layout.
+            pad_x, pt, bold = self._RIGHT_TAB_TIERS[tier]
+            bar.setFont(QFont(self.ui_font, pt, QFont.Weight.Bold if bold else QFont.Weight.Normal))
+            labels = self._RIGHT_TAB_LABELS_FULL if tier == "false" else self._RIGHT_TAB_LABELS_COMPACT
+            for idx, txt in enumerate(labels):
+                self.right_tabs.setTabText(idx, txt)
         self.comparison_panel.set_hint_visible(rw >= 365)
         self.max_flow_panel.set_hint_visible(rw >= 365)
 
@@ -597,6 +627,11 @@ class BicentenarioSewerApp(QMainWindow):
         self.top_bar.set_panel_toggle_states(self.state.show_left, self.state.show_right)
         self._clamp_splitter_sizes(self.width())
         self._update_right_panel_responsive()
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if obj is getattr(self, "right_panel", None) and event.type() == QEvent.Type.Resize:
+            self._update_right_panel_responsive()
+        return super().eventFilter(obj, event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -632,8 +667,11 @@ class BicentenarioSewerApp(QMainWindow):
             self._deferred_compare_timer.stop()
         if self._deferred_fmax_timer.isActive():
             self._deferred_fmax_timer.stop()
+        if self._traversal_handoff_timer.isActive():
+            self._traversal_handoff_timer.stop()
         self._pending_compare_job = None
         self._pending_fmax_job = None
+        self._pending_traversal_highlights = None
         self.comparison_panel.set_loading(False)
         self.max_flow_panel.set_loading(False)
         self.temporal_charts.set_loading(False)
@@ -749,12 +787,21 @@ class BicentenarioSewerApp(QMainWindow):
         self.max_flow_panel.mark_dirty(bool(self.state.max_flow_estimations))
 
     def _on_scenario_changed(self) -> None:
+        # Elegir un escenario de lluvia vuelve al modo de demanda "Lluvia del escenario".
         self.state.active_target_fmax_pct = None
+        self.controls_panel.set_demand_target(None)
         self._on_simulation_option_changed(mark_comp=False)
 
     def _on_execute_sim_clicked(self) -> None:
-        self.state.active_target_fmax_pct = None
+        self.state.active_target_fmax_pct = self.controls_panel.read_target_fmax_pct()
         self.run_simulation(preserve_previous=False, auto_play=True)
+
+    def _on_demand_target_changed(self, target_pct: Optional[float]) -> None:
+        """Cambio de modo de demanda o de % objetivo: se trata como un parámetro más."""
+        self.state.active_target_fmax_pct = (
+            None if target_pct is None else max(0.0, min(300.0, float(target_pct)))
+        )
+        self.run_simulation(preserve_previous=False)
 
     def _on_params_changed(self) -> None:
         self._mark_comparisons_dirty()
@@ -913,10 +960,18 @@ class BicentenarioSewerApp(QMainWindow):
         else:
             self._charts_tab_dirty = True
 
+    def _handoff_active_traversal_if_any(self) -> None:
+        if self._traversal_handoff_timer.isActive():
+            self._traversal_handoff_timer.stop()
+        if self.state.is_animating_traversal or self.network_canvas._traversal_frame is not None:
+            self._stop_traversal_anim(clear_canvas=False)
+            self._promote_finished_traversal_to_live_route()
+
     def _on_slider_move(self, step: int) -> None:
         if step == self.state.current_step:
             return
         self.pause()
+        self._handoff_active_traversal_if_any()
         if self.state.map_mode != "instant":
             self.state.map_mode = "instant"
             self.center_panel.set_map_mode_active("instant")
@@ -943,7 +998,7 @@ class BicentenarioSewerApp(QMainWindow):
             self._close_guided_tour(reset_view=True)
         if self.state.map_mode != "instant":
             self._set_map_mode("instant")
-        self._stop_traversal_anim(clear_canvas=False)
+        self._handoff_active_traversal_if_any()
         if self.state.current_step >= len(self.state.result.snapshots) - 1:
             self._set_step(0)
         self.state.is_playing = True
@@ -968,6 +1023,7 @@ class BicentenarioSewerApp(QMainWindow):
 
     def _player_reset(self) -> None:
         self.pause()
+        self._handoff_active_traversal_if_any()
         if self.state.map_mode != "instant":
             self.state.map_mode = "instant"
             self.center_panel.set_map_mode_active("instant")
@@ -976,6 +1032,7 @@ class BicentenarioSewerApp(QMainWindow):
 
     def _player_step(self, delta: int) -> None:
         self.pause()
+        self._handoff_active_traversal_if_any()
         if self.state.map_mode != "instant":
             self.state.map_mode = "instant"
             self.center_panel.set_map_mode_active("instant")
@@ -1576,6 +1633,7 @@ class BicentenarioSewerApp(QMainWindow):
             reference_intensity_mm_h=30.0,
         )
         self.state.active_target_fmax_pct = None
+        self.controls_panel.set_demand_target(None)
         self.controls_panel.apply_preset(f_ing * 100.0, 0.0)
         self._set_status(
             f"Calibrado a F_max = {ff_res.max_flow_m3s:.4f} m³/s (ingreso = {f_ing * 100.0:.2f}% para E3 = 100%)."
@@ -1585,8 +1643,7 @@ class BicentenarioSewerApp(QMainWindow):
         if self.state.dataset is None:
             return
         pct = max(0.0, min(300.0, float(target_pct)))
-        with blocked_signals(self.controls_panel.spin_target_fmax_pct):
-            self.controls_panel.spin_target_fmax_pct.setValue(pct)
+        self.controls_panel.set_demand_target(pct)
         self.state.active_target_fmax_pct = pct
         self.run_simulation(preserve_previous=False, auto_play=True)
 
@@ -1618,7 +1675,12 @@ class BicentenarioSewerApp(QMainWindow):
             edge = g.get_pipe(pid)
             if edge is not None:
                 hl_nodes.update((edge.from_node, edge.to_node))
-        self.network_canvas.set_highlights(hl_pipes, hl_nodes)
+        ordered_ff = list(ff_res.min_cut_pipes) + [
+            pid for pid in sorted(sat_pipes) if pid not in cut_pipes
+        ]
+        self.network_canvas.set_highlights(
+            hl_pipes, hl_nodes, ordered_route_pipes=ordered_ff
+        )
 
         self.controls_panel.update_structure_strip(
             "Queue",
@@ -1747,12 +1809,16 @@ class BicentenarioSewerApp(QMainWindow):
             hl_pipes = {p.pipe_id for p in res.path_pipes}
             hl_nodes = set(res.path_nodes)
             self.state.active_route_pipes = list(res.path_pipes)
+            ordered_pipes = [p.pipe_id for p in res.path_pipes]
         else:
             hl_pipes = {p.pipe_id for p in res.traversed_edges}
             hl_nodes = set(res.visited_order)
             self.state.active_route_pipes = []
+            ordered_pipes = [p.pipe_id for p in res.traversed_edges]
 
-        self.network_canvas.set_highlights(hl_pipes, hl_nodes)
+        self.network_canvas.set_highlights(
+            hl_pipes, hl_nodes, ordered_route_pipes=ordered_pipes
+        )
         if frames:
             mid_fr = frames[min(1, len(frames) - 1)]
             self.controls_panel.update_structure_strip(
@@ -1795,6 +1861,8 @@ class BicentenarioSewerApp(QMainWindow):
 
         self.pause()
         self._deactivate_focus_filters_for_traversal()
+        if self._traversal_handoff_timer.isActive():
+            self._traversal_handoff_timer.stop()
         start = self.controls_panel.combo_bfs_start.currentText().strip()
         target = self.controls_panel.combo_bfs_target.currentText().strip() or None
         alg = self.state.last_traversal_alg
@@ -1810,6 +1878,19 @@ class BicentenarioSewerApp(QMainWindow):
 
         if res.path_pipes:
             self.state.active_route_pipes = list(res.path_pipes)
+            ordered_pipes = [p.pipe_id for p in res.path_pipes]
+            self._pending_traversal_highlights = (
+                {p.pipe_id for p in res.path_pipes},
+                set(res.path_nodes),
+                ordered_pipes,
+            )
+        else:
+            ordered_pipes = [p.pipe_id for p in res.traversed_edges]
+            self._pending_traversal_highlights = (
+                {p.pipe_id for p in res.traversed_edges},
+                set(res.visited_order),
+                ordered_pipes,
+            )
         self.state.anim_frames = frames
         self.state.anim_idx = 0
         self.state.is_animating_traversal = True
@@ -1838,16 +1919,54 @@ class BicentenarioSewerApp(QMainWindow):
         if self.state.anim_idx >= len(self.state.anim_frames):
             self.state.is_animating_traversal = False
             self.controls_panel.set_animating(False)
+            self._set_status(
+                f"Recorrido {fr.algorithm} completado · Transicionando ruta a flujo hidráulico en vivo..."
+            )
+            self._traversal_handoff_timer.start()
             return
         delay = 560 if fr.algorithm == "BFS" else 340
         self._anim_timer.start(delay)
+
+    def _promote_finished_traversal_to_live_route(self) -> None:
+        if self._traversal_handoff_timer.isActive():
+            self._traversal_handoff_timer.stop()
+        fr = self.network_canvas._traversal_frame
+        if fr is None:
+            return
+        pending = self._pending_traversal_highlights
+        self._pending_traversal_highlights = None
+        if pending is not None:
+            hl_pipes, hl_nodes, ordered_pipes = pending
+        else:
+            ordered_pipes = [p.pipe_id for p in self.state.active_route_pipes]
+            hl_pipes = (
+                set(ordered_pipes)
+                if ordered_pipes
+                else (set(fr.active_edges) or set(fr.visited_edges))
+            )
+            hl_nodes = set(fr.active_nodes) or set(fr.visited_nodes)
+        self.network_canvas.promote_traversal_to_highlights(
+            hl_pipes, hl_nodes, ordered_route_pipes=ordered_pipes
+        )
+        if self.state.result is not None and self.state.result.snapshots:
+            if self.right_tabs.currentIndex() == 2:
+                self._charts_tab_dirty = False
+                self._push_temporal_charts(throttle_draw=False)
+            else:
+                self._charts_tab_dirty = True
+            self._set_status(
+                f"Ruta {fr.algorithm} activa en vivo ({len(hl_pipes)} tramos). Presione Reproducir para ver el flujo."
+            )
 
     def _stop_traversal_anim(self, clear_canvas: bool = True) -> None:
         self.state.is_animating_traversal = False
         if self._anim_timer.isActive():
             self._anim_timer.stop()
+        if self._traversal_handoff_timer.isActive():
+            self._traversal_handoff_timer.stop()
         self.controls_panel.set_animating(False)
         if clear_canvas:
+            self._pending_traversal_highlights = None
             self.network_canvas.set_traversal_frame(None)
 
     def _run_trace(self, direction: str) -> None:
@@ -1865,7 +1984,11 @@ class BicentenarioSewerApp(QMainWindow):
         except KeyError as exc:
             QMessageBox.warning(self, "Nodo inválido", str(exc))
             return
-        self.network_canvas.set_highlights({p.pipe_id for p in pipes}, set(nodes))
+        self.network_canvas.set_highlights(
+            {p.pipe_id for p in pipes},
+            set(nodes),
+            ordered_route_pipes=[p.pipe_id for p in pipes],
+        )
         label = "Aguas abajo" if direction == "down" else "Aguas arriba"
         self.controls_panel.set_traversal_text(
             f"[{label} desde {nid}]\n"
@@ -1879,6 +2002,7 @@ class BicentenarioSewerApp(QMainWindow):
     def _clear_highlights(self) -> None:
         self.state.inspector_trace_state = None
         self._stop_traversal_anim(clear_canvas=True)
+        self._pending_traversal_highlights = None
         self.state.active_route_pipes = []
         self.state.basin_isolated = False
         self.network_canvas.set_basin_focus(None, None)
@@ -1913,7 +2037,6 @@ class BicentenarioSewerApp(QMainWindow):
                 self._set_map_mode("instant")
             self.state.tour_active = True
             self.top_bar.set_tour_active(True)
-            self.center_panel.set_tour_active(True)
             self._go_tour_stop(0, animate_cam=True)
 
     def _go_tour_stop(self, stop_idx: int, animate_cam: bool = True) -> None:
@@ -1961,7 +2084,6 @@ class BicentenarioSewerApp(QMainWindow):
         self.state.tour_active = False
         self.center_panel.tour_card.hide()
         self.top_bar.set_tour_active(False)
-        self.center_panel.set_tour_active(False)
         self.network_canvas.set_tour_focus(None, None)
         if reset_view:
             self.network_canvas.animate_reset_view()
@@ -2108,8 +2230,11 @@ class BicentenarioSewerApp(QMainWindow):
             self._deferred_compare_timer.stop()
         if self._deferred_fmax_timer.isActive():
             self._deferred_fmax_timer.stop()
+        if self._traversal_handoff_timer.isActive():
+            self._traversal_handoff_timer.stop()
         self._pending_compare_job = None
         self._pending_fmax_job = None
+        self._pending_traversal_highlights = None
         self._task_runner.cancel_channel("comparison")
         self._task_runner.cancel_channel("max_flow")
         self._task_runner.cancel_channel("report")

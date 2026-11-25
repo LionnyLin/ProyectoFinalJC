@@ -48,7 +48,8 @@ class ControlsPanel(QFrame):
     paramsChanged = Signal()
     executeSimulationRequested = Signal()
     calibrateFmaxRequested = Signal()
-    simulateTargetFmaxRequested = Signal(float)
+    # Modo de demanda: None = lluvia del escenario; float = demanda fija como % de F_max
+    demandTargetChanged = Signal(object)
     maxFlowHighlightRequested = Signal()
 
     searchRequested = Signal(str)
@@ -73,6 +74,12 @@ class ControlsPanel(QFrame):
         self._param_timer.setSingleShot(True)
         self._param_timer.setInterval(140)
         self._param_timer.timeout.connect(self.paramsChanged.emit)
+
+        self._last_fmax_m3s: Optional[float] = None
+        self._demand_timer = QTimer(self)
+        self._demand_timer.setSingleShot(True)
+        self._demand_timer.setInterval(260)
+        self._demand_timer.timeout.connect(self._emit_demand_target)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -149,6 +156,78 @@ class ControlsPanel(QFrame):
         self.combo_scenario.currentIndexChanged.connect(lambda _idx: self.scenarioChanged.emit())
         sec_sim.body_layout.addWidget(self.combo_scenario)
 
+        # --- Demanda de entrada: lluvia del escenario o % fijo de F_max (Ford-Fulkerson) ---
+        lbl_demand = QLabel("Demanda de entrada", sec_sim)
+        lbl_demand.setFont(QFont(self._ui_font, 8, QFont.Weight.Bold))
+        lbl_demand.setContentsMargins(0, 6, 0, 0)
+        sec_sim.body_layout.addWidget(lbl_demand)
+
+        self.seg_demand_mode = SegmentedControl(
+            [("rain", "Lluvia del escenario"), ("fmax", "% de F_max")],
+            initial_key="rain",
+            inactive_variant="dock_secondary",
+            font_pt=8,
+            pad_x=6,
+            pad_y=4,
+            spacing=1,
+            framed=True,
+            parent=sec_sim,
+        )
+        for key in ("rain", "fmax"):
+            b = self.seg_demand_mode.button(key)
+            if b is not None:
+                b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.seg_demand_mode.button("rain").setToolTip(
+            "El caudal pluvial sale de la intensidad del escenario (método racional)."
+        )
+        self.seg_demand_mode.button("fmax").setToolTip(
+            "Ignora la intensidad del escenario y fija la demanda pluvial como un % del "
+            "flujo máximo F_max calculado con Ford-Fulkerson."
+        )
+        self.seg_demand_mode.selectionChanged.connect(self._on_demand_mode_changed)
+        sec_sim.body_layout.addWidget(self.seg_demand_mode)
+
+        self.fmax_target_row = QWidget(sec_sim)
+        ft_lay = QHBoxLayout(self.fmax_target_row)
+        ft_lay.setContentsMargins(0, 2, 0, 0)
+        ft_lay.setSpacing(6)
+        lbl_tf = QLabel("Objetivo (% F_max)", self.fmax_target_row)
+        lbl_tf.setFont(QFont(self._ui_font, 8))
+        ft_lay.addWidget(lbl_tf)
+        ft_lay.addStretch(1)
+        self.lbl_fmax_equiv = QLabel("", self.fmax_target_row)
+        self.lbl_fmax_equiv.setFont(QFont(self._mono_font, 7))
+        self.lbl_fmax_equiv.setStyleSheet(f"color: {theme.INK_MUTED}; background: transparent;")
+        ft_lay.addWidget(self.lbl_fmax_equiv)
+        self.spin_target_fmax_pct = QDoubleSpinBox(self.fmax_target_row)
+        self.spin_target_fmax_pct.setLocale(QLocale(QLocale.Language.C))
+        self.spin_target_fmax_pct.setRange(0.0, 300.0)
+        self.spin_target_fmax_pct.setSingleStep(5.0)
+        self.spin_target_fmax_pct.setDecimals(0)
+        self.spin_target_fmax_pct.setSuffix(" %")
+        self.spin_target_fmax_pct.setValue(100.0)
+        self.spin_target_fmax_pct.setMinimumWidth(72)
+        self.spin_target_fmax_pct.setMaximumWidth(84)
+        self.spin_target_fmax_pct.valueChanged.connect(self._on_target_fmax_value_changed)
+        self.spin_target_fmax_pct.editingFinished.connect(self._flush_demand_target)
+        ft_lay.addWidget(self.spin_target_fmax_pct)
+        self.fmax_target_row.setVisible(False)
+        sec_sim.body_layout.addWidget(self.fmax_target_row)
+
+        self.lbl_fmax_badge = QLabel("F_max (Ford-Fulkerson): calculando…", sec_sim)
+        self.lbl_fmax_badge.setWordWrap(True)
+        self.lbl_fmax_badge.setFont(QFont(self._mono_font, 7))
+        self.lbl_fmax_badge.setToolTip(
+            "F_max: caudal máximo que la red puede llevar de las fuentes a la PTAR 31 "
+            "(Ford-Fulkerson / Edmonds-Karp). El tope de uso fija cuánto se admite antes de rebosar."
+        )
+        self.lbl_fmax_badge.setStyleSheet(
+            f"background-color: {theme.PAPER_SUBTLE}; color: {theme.INK_PRIMARY}; "
+            f"border: 1px solid {theme.PAPER_BORDER}; border-left: 3px solid {theme.ACCENT_PRIMARY}; "
+            f"padding: 3px 6px;"
+        )
+        sec_sim.body_layout.addWidget(self.lbl_fmax_badge)
+
         grid = QGridLayout()
         grid.setContentsMargins(0, 4, 0, 2)
         grid.setHorizontalSpacing(4)
@@ -195,78 +274,36 @@ class ControlsPanel(QFrame):
         grid.setColumnStretch(0, 1)
         sec_sim.body_layout.addLayout(grid)
 
+        # --- Ajustes rápidos del ingreso pluvial (solo aplican en modo lluvia) ---
+        self.lbl_presets = QLabel("Ajuste rápido del ingreso pluvial", sec_sim)
+        self.lbl_presets.setFont(QFont(self._ui_font, 7, QFont.Weight.Bold))
+        self.lbl_presets.setStyleSheet(f"color: {theme.INK_MUTED}; background: transparent;")
+        self.lbl_presets.setContentsMargins(0, 4, 0, 0)
+        sec_sim.body_layout.addWidget(self.lbl_presets)
+
         preset_row = QHBoxLayout()
         preset_row.setSpacing(4)
-        btn_p1 = StyledButton(
-            "Oficial Guía (100%)", variant="dock_secondary", font_pt=7, pad_x=4, pad_y=3, parent=sec_sim
+        self.btn_preset_guide = StyledButton(
+            "Guía 100%", variant="dock_secondary", font_pt=7, pad_x=4, pad_y=3, parent=sec_sim
         )
-        btn_p1.clicked.connect(lambda: self.apply_preset(100.0, 0.0))
-        btn_p2 = StyledButton(
-            "Calibrado (2.5% + Q_san)", variant="dock_secondary", font_pt=7, pad_x=4, pad_y=3, parent=sec_sim
+        self.btn_preset_guide.setToolTip("Ingreso pluvial 100% y sin caudal sanitario (valores de la guía).")
+        self.btn_preset_guide.clicked.connect(lambda: self.apply_preset(100.0, 0.0))
+        self.btn_preset_calib = StyledButton(
+            "2.5% + Q_san", variant="dock_secondary", font_pt=7, pad_x=4, pad_y=3, parent=sec_sim
         )
-        btn_p2.clicked.connect(lambda: self.apply_preset(2.5, 0.003))
-        preset_row.addWidget(btn_p1, 1)
-        preset_row.addWidget(btn_p2, 1)
-        sec_sim.body_layout.addLayout(preset_row)
-
+        self.btn_preset_calib.setToolTip("Ingreso pluvial 2.5% con caudal sanitario 0.003 m³/s por fuente.")
+        self.btn_preset_calib.clicked.connect(lambda: self.apply_preset(2.5, 0.003))
         self.btn_fmax_preset = StyledButton(
-            "Calibrado F_max (E3 = 100%)",
-            variant="dock_secondary",
-            font_pt=7,
-            pad_x=6,
-            pad_y=3,
-            parent=sec_sim,
+            "E3 = F_max", variant="dock_secondary", font_pt=7, pad_x=4, pad_y=3, parent=sec_sim
         )
         self.btn_fmax_preset.setToolTip(
-            "Ajusta el ingreso pluvial para que Lluvia moderada (30 mm/h) iguale el flujo máximo F_max de Ford-Fulkerson."
+            "Ajusta el ingreso pluvial para que la Lluvia moderada (E3, 30 mm/h) "
+            "produzca exactamente el flujo máximo F_max."
         )
         self.btn_fmax_preset.clicked.connect(self.calibrateFmaxRequested.emit)
-        sec_sim.body_layout.addWidget(self.btn_fmax_preset)
-
-        self.lbl_fmax_badge = QLabel(
-            "Ford-Fulkerson: F_max = - · Tope = 120%", sec_sim
-        )
-        self.lbl_fmax_badge.setWordWrap(True)
-        self.lbl_fmax_badge.setFont(QFont(self._mono_font, 7))
-        self.lbl_fmax_badge.setStyleSheet(
-            f"background-color: {theme.PAPER_SUBTLE}; color: {theme.INK_PRIMARY}; "
-            f"border: 1px solid {theme.PAPER_BORDER}; padding: 3px 5px;"
-        )
-        sec_sim.body_layout.addWidget(self.lbl_fmax_badge)
-
-        fmax_sim_row = QHBoxLayout()
-        fmax_sim_row.setSpacing(4)
-        lbl_tf = QLabel("Simular % F_max", sec_sim)
-        lbl_tf.setFont(QFont(self._ui_font, 8))
-        fmax_sim_row.addWidget(lbl_tf)
-        fmax_sim_row.addStretch(1)
-
-        self.spin_target_fmax_pct = QDoubleSpinBox(sec_sim)
-        self.spin_target_fmax_pct.setLocale(c_loc)
-        self.spin_target_fmax_pct.setRange(0.0, 300.0)
-        self.spin_target_fmax_pct.setSingleStep(5.0)
-        self.spin_target_fmax_pct.setDecimals(0)
-        self.spin_target_fmax_pct.setValue(100.0)
-        self.spin_target_fmax_pct.setMinimumWidth(58)
-        self.spin_target_fmax_pct.setMaximumWidth(68)
-        fmax_sim_row.addWidget(self.spin_target_fmax_pct)
-
-        self.btn_sim_fmax = StyledButton(
-            "Simular %",
-            variant="dock_secondary",
-            font_pt=7,
-            pad_x=6,
-            pad_y=3,
-            parent=sec_sim,
-        )
-        self.btn_sim_fmax.setToolTip(
-            "Simula directamente una demanda equivalente al porcentaje indicado de F_max."
-        )
-        self.btn_sim_fmax.clicked.connect(
-            lambda: self.simulateTargetFmaxRequested.emit(float(self.spin_target_fmax_pct.value()))
-        )
-        fmax_sim_row.addWidget(self.btn_sim_fmax)
-        sec_sim.body_layout.addLayout(fmax_sim_row)
+        for btn in (self.btn_preset_guide, self.btn_preset_calib, self.btn_fmax_preset):
+            preset_row.addWidget(btn, 1)
+        sec_sim.body_layout.addLayout(preset_row)
 
         rule_grid = QGridLayout()
         rule_grid.setContentsMargins(0, 2, 0, 2)
@@ -493,6 +530,68 @@ class ControlsPanel(QFrame):
         if self._param_timer.isActive():
             self._param_timer.stop()
 
+    # --- Modo de demanda ---------------------------------------------------------------
+
+    def demand_mode(self) -> str:
+        return self.seg_demand_mode.current_key()
+
+    def read_target_fmax_pct(self) -> Optional[float]:
+        """% de F_max activo, o None si la demanda proviene de la lluvia del escenario."""
+        if self.demand_mode() != "fmax":
+            return None
+        return float(self.spin_target_fmax_pct.value())
+
+    def set_demand_target(self, target_pct: Optional[float]) -> None:
+        """Sincroniza el selector sin emitir señales (p. ej. al activar una fila de la tabla)."""
+        if self._demand_timer.isActive():
+            self._demand_timer.stop()
+        if target_pct is not None:
+            with blocked_signals(self.spin_target_fmax_pct):
+                self.spin_target_fmax_pct.setValue(float(target_pct))
+        self.seg_demand_mode.set_current("rain" if target_pct is None else "fmax")
+        self._sync_demand_widgets()
+
+    def _on_demand_mode_changed(self, _key: str) -> None:
+        self._sync_demand_widgets()
+        self._flush_demand_target()
+
+    def _on_target_fmax_value_changed(self, _v: float) -> None:
+        self._refresh_fmax_equiv()
+        if self.demand_mode() == "fmax":
+            self._demand_timer.start()
+
+    def _flush_demand_target(self) -> None:
+        if self._demand_timer.isActive():
+            self._demand_timer.stop()
+        self._emit_demand_target()
+
+    def _emit_demand_target(self) -> None:
+        self.demandTargetChanged.emit(self.read_target_fmax_pct())
+
+    def _sync_demand_widgets(self) -> None:
+        fmax_mode = self.demand_mode() == "fmax"
+        self.fmax_target_row.setVisible(fmax_mode)
+        # En modo % F_max la intensidad del escenario y el ingreso pluvial no intervienen.
+        for w in (self.spin_ingress_pct, self.lbl_presets, self.btn_preset_guide,
+                  self.btn_preset_calib, self.btn_fmax_preset):
+            w.setEnabled(not fmax_mode)
+        self._refresh_fmax_equiv()
+        self.btn_run_sim.setText(
+            f" Ejecutar simulación · {self.spin_target_fmax_pct.value():.0f}% F_max"
+            if fmax_mode else " Ejecutar simulación"
+        )
+
+    def _refresh_fmax_equiv(self) -> None:
+        if self._last_fmax_m3s is None:
+            self.lbl_fmax_equiv.setText("")
+            return
+        q = self._last_fmax_m3s * self.spin_target_fmax_pct.value() / 100.0
+        self.lbl_fmax_equiv.setText(f"= {q:.4f} m³/s")
+        if self.demand_mode() == "fmax":
+            self.btn_run_sim.setText(
+                f" Ejecutar simulación · {self.spin_target_fmax_pct.value():.0f}% F_max"
+            )
+
     def apply_preset(self, ingress_pct: float, dry_flow: float) -> None:
         with blocked_signals(self.spin_ingress_pct, self.spin_dry_flow):
             self.spin_ingress_pct.setValue(ingress_pct)
@@ -538,20 +637,21 @@ class ControlsPanel(QFrame):
         self, max_flow_res: Optional[MaxFlowResult], cap_pct: Optional[float]
     ) -> None:
         if max_flow_res is None:
-            self.lbl_fmax_badge.setText("Ford-Fulkerson: F_max = -")
+            self._last_fmax_m3s = None
+            self.lbl_fmax_badge.setText("F_max (Ford-Fulkerson): -")
+            self._refresh_fmax_equiv()
             return
         f_max = max_flow_res.max_flow_m3s
+        self._last_fmax_m3s = f_max
         cut_txt = ", ".join(max_flow_res.min_cut_pipes[:5]) or "Ninguno"
         if cap_pct is not None:
-            q_adm = f_max * (cap_pct / 100.0)
-            self.lbl_fmax_badge.setText(
-                f"F_max = {f_max:.4f} m³/s · Tope {cap_pct:.0f}% = {q_adm:.4f} m³/s\n"
-                f"Corte mín.: {cut_txt}"
-            )
+            cap_txt = f"Tope {cap_pct:.0f}% → {f_max * (cap_pct / 100.0):.4f} m³/s"
         else:
-            self.lbl_fmax_badge.setText(
-                f"F_max = {f_max:.4f} m³/s · Sin tope\nCorte mín.: {cut_txt}"
-            )
+            cap_txt = "Sin tope de uso"
+        self.lbl_fmax_badge.setText(
+            f"F_max (Ford-Fulkerson) = {f_max:.4f} m³/s\n{cap_txt}\nCorte mínimo: {cut_txt}"
+        )
+        self._refresh_fmax_equiv()
 
     def read_sim_inputs(self) -> Tuple[str, float, float, float, float, float, str, str]:
         split_rule = theme.ES_TO_SPLIT_RULE.get(
