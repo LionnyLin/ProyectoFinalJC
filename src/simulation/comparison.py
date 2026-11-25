@@ -57,6 +57,7 @@ def compare_all_scenarios(
             max_manhole_storage_m3=base_config.max_manhole_storage_m3,
             max_physical_utilization_pct=base_config.max_physical_utilization_pct,
             use_ford_fulkerson_admission=base_config.use_ford_fulkerson_admission,
+            admission_mode=base_config.admission_mode,
             target_fmax_pct=None,
             interventions=dict(base_config.interventions),
         )

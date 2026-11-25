@@ -784,6 +784,7 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         _pump(120)
         self.assertAlmostEqual(self.app.state.result.system_max_flow_m3s, 0.35914566, places=5)
         self.assertAlmostEqual(self.app.state.result.utilization_cap_pct, 120.0, places=5)
+        self.assertAlmostEqual(self.app.state.result.peak_pipe_utilization["P31"], 120.0, places=4)
 
         self.app.controls_panel.set_util_cap_pct(130.0)
         _pump(120)
@@ -823,6 +824,7 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertIn("150% F_max", self.app.controls_panel.btn_run_sim.text())
         self.assertAlmostEqual(self.app.state.active_target_fmax_pct, 150.0, places=4)
         self.assertAlmostEqual(self.app.state.result.peak_system_utilization_pct, 120.0, places=4)
+        self.assertAlmostEqual(self.app.state.result.peak_pipe_utilization["P31"], 120.0, places=4)
         self.assertIn("Sim. 150% F_max", self.app.center_panel.lbl_clock.text())
 
         # 4. Preset Calibrado F_max (E3 = 100%)

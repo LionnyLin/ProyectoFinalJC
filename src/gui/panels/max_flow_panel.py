@@ -338,8 +338,14 @@ class MaxFlowPanel(QWidget):
         if ff_res is not None:
             cut_str = ", ".join(ff_res.min_cut_pipes) or "Ninguno"
             if cap_pct is not None:
-                q_adm_max = ff_res.max_flow_m3s * (cap_pct / 100.0)
-                cap_txt = f"Tope {cap_pct:.0f}% = {q_adm_max:.4f} m³/s"
+                tot_src_cap = (
+                    rows[-1].result.total_source_capacity_m3s if rows else 0.0
+                )
+                if tot_src_cap > 0.0:
+                    q_src_max = tot_src_cap * (cap_pct / 100.0)
+                    cap_txt = f"Tope {cap_pct:.0f}% · Entr. ≤ {q_src_max:.4f} m³/s"
+                else:
+                    cap_txt = f"Tope {cap_pct:.0f}%"
             else:
                 cap_txt = "Sin tope artificial"
             self.lbl_ff_summary.setText(

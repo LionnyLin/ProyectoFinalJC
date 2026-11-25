@@ -776,6 +776,7 @@ class BicentenarioSewerApp(QMainWindow):
             source_distribution=source_dist,
             max_physical_utilization_pct=util_cap_pct,
             use_ford_fulkerson_admission=True,
+            admission_mode="source_local",
             target_fmax_pct=self.state.active_target_fmax_pct,
             interventions=dict(self.state.interventions),
         )
@@ -2210,7 +2211,7 @@ class BicentenarioSewerApp(QMainWindow):
             "Supuestos del Modelo Computacional (Ciudad Bicentenario):\n\n"
             "1. Grafo Dirigido Propio: 46 vértices (8 fuentes, 37 pozos, 1 sumidero PTAR 31) y 59 aristas.\n"
             "2. Flujo Máximo (Ford-Fulkerson / Edmonds-Karp): F_max = 0.3591 m³/s (corte mínimo: P28, P3, P43, P53).\n"
-            "3. Admisión y Tope Físico por Rebose (120% configurable): el sistema admite hasta (tope/100)·F_max; al llegar al tope no entra más agua y el porcentaje deja de crecer mientras el exceso rebosa.\n"
+            "3. Admisión Local en Fuentes y Tope Físico por Rebose (120% configurable): cada fuente admite hasta (tope/100)·Q_max,fuente (0.5943 m³/s en conjunto al 120%), permitiendo que las tuberías fuente también se llenen hasta su tope mientras el % de uso del sistema se mide contra F_max y el exceso rebosa.\n"
             "4. Tiempo de Tránsito Continuo: t_i = L_i / V_i con sub-paso hidráulico interno (≤10 s) y cola de prioridad de eventos.\n"
             "5. Pozos Finitos y Conservación de Masa: cada pozo retiene hasta 4.0 m³ antes de derivar el excedente a rebose superficial en vía (~10⁻⁹ m³)."
         )

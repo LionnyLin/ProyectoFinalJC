@@ -78,7 +78,8 @@ class SimulationConfig:
     source_distribution: str = "capacity"  # "capacity" (ponderado por Qmax) o "equal" (1/N)
     max_manhole_storage_m3: float = 4.0  # Capacidad física amortiguadora por pozo antes de rebose
     max_physical_utilization_pct: Optional[float] = 120.0  # Tope físico de uso por rebose (>=100%, ej. 120%)
-    use_ford_fulkerson_admission: bool = True  # Limita admisión global a (tope/100)*F_max vía Ford-Fulkerson
+    use_ford_fulkerson_admission: bool = True  # Activa recorte de admisión en entradas al alcanzar tope físico
+    admission_mode: str = "source_local"  # "source_local" (tope/100 * Qmax fuente) o "system_fmax" (tope/100 * F_max)
     target_fmax_pct: Optional[float] = None  # Si se define, fija la demanda de lluvia como % de F_max
     interventions: Dict[str, PipeIntervention] = field(default_factory=dict)
 
@@ -195,6 +196,7 @@ class SimulationResult:
     total_admitted_inflow_m3: float = 0.0
     total_inlet_overflow_m3: float = 0.0
     overflow_capped_pipes: List[str] = field(default_factory=list)
+    total_source_capacity_m3s: float = 0.0
 
 
 def compute_symlog_ticks(max_u_val: float) -> List[float]:

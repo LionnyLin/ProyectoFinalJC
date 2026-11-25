@@ -635,7 +635,7 @@ def generate_technical_document_docx(
     )
     _add_bullet(
         doc,
-        "ford_fulkerson_max_flow() (Edmonds-Karp con Queue, HashTable, LinkedList y Stack) calcula el flujo máximo del sistema (F_max = 0.35915 m³/s) y su corte mínimo (P28, P3, P43, P53) para acotar la admisión al tope físico (120 %).",
+        "ford_fulkerson_max_flow() (Edmonds-Karp con Queue, HashTable, LinkedList y Stack) calcula el flujo máximo del sistema (F_max = 0.35915 m³/s) y su corte mínimo (P28, P3, P43, P53), evaluando el % de uso del sistema frente a F_max hasta el tope físico (120 %).",
         "Flujo Máximo Ford-Fulkerson y estimaciones por % de F_max: ",
     )
     _add_screenshot_if_exists(
@@ -660,8 +660,9 @@ def generate_technical_document_docx(
     _add_body(
         doc,
         "Sobre la red de capacidades de Manning, el algoritmo de Ford-Fulkerson determina el flujo máximo "
-        "del sistema F_max = 0.35915 m³/s (corte mínimo: P28, P3, P43, P53), acotando el caudal admitido y el "
-        "porcentaje de uso del sistema hasta el tope físico U_tope (120 % configurable) antes de rebosar:",
+        "del sistema F_max = 0.35915 m³/s (corte mínimo: P28, P3, P43, P53); cada fuente admite localmente "
+        "hasta (U_tope/100)·Q_max,fuente (0.59427 m³/s en conjunto al 120 %) mientras el porcentaje de uso "
+        "del sistema respecto a F_max y el de cada tubería se acotan al tope físico U_tope antes de rebosar:",
     )
     add_omml_equation(doc, "ford_fulkerson", "3")
     add_omml_equation(doc, "admitted_flow", "4")
@@ -810,8 +811,8 @@ def generate_technical_document_docx(
     _add_body(
         doc,
         "La simulación ejecutada durante 90 min (lluvia uniforme de 60 min, paso de 1 min, f_ing = 100 %, "
-        "admisión acotada por Ford-Fulkerson F_max = 0.35915 m³/s con tope físico = 120 %, reparto por capacidad "
-        "y Q_san = 0.0 m³/s) evidencia la estabilización al 120 % por rebose en E2–E5:",
+        "admisión local por fuente hasta tope = 120 % (0.59427 m³/s) con referencia Ford-Fulkerson F_max = 0.35915 m³/s, "
+        "reparto por capacidad y Q_san = 0.0 m³/s) evidencia la estabilización al 120 % en fuentes y cuellos de E2–E5:",
     )
     _add_plain_table(
         doc,
@@ -889,18 +890,18 @@ def generate_technical_document_docx(
     )
     _add_bullet(
         doc,
-        "Batería automatizada de 47 pruebas unitarias en tests/ cubriendo estructuras de datos, cargador, algoritmos (BFS/DFS/Ford-Fulkerson), motor hidráulico (invariancia Δt, tope 120% por rebose, masa ~10^-10 m³), DOCX y GUI.",
-        "Suite de 47 pruebas unitarias: ",
+        "Batería automatizada de 48 pruebas unitarias en tests/ cubriendo estructuras de datos, cargador, algoritmos (BFS/DFS/Ford-Fulkerson), motor hidráulico (invariancia Δt, tope 120% por rebose, masa ~10^-10 m³), DOCX y GUI.",
+        "Suite de 48 pruebas unitarias: ",
     )
     _add_screenshot_if_exists(
         doc,
         "04_3_tests_41.png",
-        "Figura 28. Ejecución completa de la suite de 47 pruebas unitarias con unittest (OK).",
+        "Figura 28. Ejecución completa de la suite de 48 pruebas unitarias con unittest (OK).",
     )
 
     _add_heading_1(doc, "8. Conclusiones, Limitaciones y Bibliografía")
     _add_bullet(doc, "El algoritmo Ford-Fulkerson fija el flujo máximo en F_max = 0.35915 m³/s (corte mínimo: P28, P3, P43, P53); al superar el tope de rebose (120 %), no entra más agua y el % de uso deja de crecer.")
-    _add_bullet(doc, "Los tramos convergentes P25, P3 y P23 concentran el tope de sobrecarga (120 %) bajo admisión acotada y reparto por capacidad.")
+    _add_bullet(doc, "Con admisión local al 120 % en entradas (0.59427 m³/s) y reparto por capacidad, los 10 tramos fuente y los cuellos internos (P25, P3, P23, P28) alcanzan el tope de saturación estabilizando la PTAR en 0.3078 m³/s.")
     _add_bullet(doc, "La arquitectura propia sin librerías externas de grafos permite auditar cada operación y ejecutar 90 pasos con sub-pasos continuos en menos de 90 ms.")
     _add_bullet(doc, "Limitación: el modelo no resuelve ecuaciones hidrodinámicas de Saint-Venant ni lámina libre; representa una abstracción volumétrica académica.")
     _add_bullet(doc, "Universidad Tecnológica de Bolívar. Guía del Proyecto Final: Simulación y visualización del flujo en la red de alcantarillado de Ciudad Bicentenario. 2026.", "Ref. 1: ")

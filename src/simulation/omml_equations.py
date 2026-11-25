@@ -111,15 +111,15 @@ OMML_TEMPLATES: Dict[str, str] = {
     "admitted_flow": (
         f'<m:oMathPara {NS_DECL}><m:oMathParaPr><m:jc m:val="center"/></m:oMathParaPr>'
         '<m:oMath>'
-        '<m:sSub><m:e><m:r><m:t>Q</m:t></m:r></m:e><m:sub><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>adm</m:t></m:r></m:sub></m:sSub>'
+        '<m:sSub><m:e><m:r><m:t>Q</m:t></m:r></m:e><m:sub><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>adm,</m:t></m:r><m:r><m:t>s</m:t></m:r></m:sub></m:sSub>'
         '<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>(t) = min(</m:t></m:r>'
-        '<m:sSub><m:e><m:r><m:t>Q</m:t></m:r></m:e><m:sub><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>req</m:t></m:r></m:sub></m:sSub>'
+        '<m:sSub><m:e><m:r><m:t>Q</m:t></m:r></m:e><m:sub><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>req,</m:t></m:r><m:r><m:t>s</m:t></m:r></m:sub></m:sSub>'
         '<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>(t), </m:t></m:r>'
         '<m:f><m:fPr><m:type m:val="bar"/></m:fPr>'
         '<m:num><m:sSub><m:e><m:r><m:t>U</m:t></m:r></m:e><m:sub><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>tope</m:t></m:r></m:sub></m:sSub></m:num>'
         '<m:den><m:r><m:t>100</m:t></m:r></m:den></m:f>'
         '<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>·</m:t></m:r>'
-        '<m:sSub><m:e><m:r><m:t>F</m:t></m:r></m:e><m:sub><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>max</m:t></m:r></m:sub></m:sSub>'
+        '<m:sSub><m:e><m:r><m:t>Q</m:t></m:r></m:e><m:sub><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>max,</m:t></m:r><m:r><m:t>s</m:t></m:r></m:sub></m:sSub>'
         '<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>)</m:t></m:r>'
         '</m:oMath></m:oMathPara>'
     ),

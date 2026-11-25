@@ -199,26 +199,26 @@ def build_tour_stops(
         sys_u2 = s1.system_utilization_pct if s1 else 0.0
         return [
             TourStop(
-                title="Admisión acotada por F_max en lluvia ligera (10 mm/h)",
+                title="Admisión local hasta tope y referencia F_max (10 mm/h)",
                 target_min=5.0,
                 step_idx=idx1,
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    f"La demanda racional supera el tope del 120% de F_max ({1.2 * fmax2:.4f} m³/s); "
-                    "el sistema admite hasta el tope físico y el exceso rebosa en entrada sin seguir subiendo el % de uso."
+                    f"La demanda racional supera el tope del 120% de F_max ({1.2 * fmax2:.4f} m³/s) y la capacidad "
+                    "de entrada local de las 8 fuentes (0.5943 m³/s al 120%): el uso del sistema se topa en 120% y el exceso rebosa."
                 ),
                 metrics=f"Uso Sis.: {sys_u2:.1f}%  ·  F_max = {fmax2:.4f} m³/s  ·  Rebose: {flood1:.0f} m³",
             ),
             TourStop(
-                title='Cabeceras de 8" bajo admisión F_max (10 mm/h)',
+                title='Saturación en cabeceras de 8" (10 mm/h)',
                 target_min=25.0,
                 step_idx=idx2,
                 nodes=n_head8,
                 pipes=set(p_head8),
                 desc=(
-                    'Al limitar el ingreso al 120% de F_max con reparto por capacidad, P31, P39 y P43 (8") '
-                    "operan cerca del 87%–94% de su capacidad sin saturarse localmente."
+                    'Cada fuente admite agua hasta el 120% de su propia tubería de salida (P31, P39, P43 de 8"), '
+                    "alcanzando el tope físico del 120% mientras el excedente que ya no cabe en la rejilla rebosa."
                 ),
                 metrics=f"Util. máx: {u2_max:.2f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",
             ),
@@ -264,16 +264,16 @@ def build_tour_stops(
         fmax4 = result.system_max_flow_m3s if result else 0.3591
         return [
             TourStop(
-                title="Tope 120% F_max alcanzado en lluvia fuerte (60 mm/h)",
+                title="Tope 120% en entradas y sistema en lluvia fuerte (60 mm/h)",
                 target_min=5.0,
                 step_idx=idx1,
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    f"Con 60 mm/h, la red alcanza inmediatamente el tope del 120% de F_max ({1.2 * fmax4:.4f} m³/s): "
-                    "no ingresa más caudal adicional y el excedente rebosa en superficie."
+                    f"Con 60 mm/h, las 8 fuentes alcanzan su límite físico del 120% (0.5943 m³/s en entradas) y el sistema "
+                    f"supera el 120%·F_max ({1.2 * fmax4:.4f} m³/s): no entra más agua adicional y el exceso rebosa."
                 ),
-                metrics=f"Q_in = {q_in1:.2f} m³/s  ·  Admitido ≤ {1.2*fmax4:.3f} m³/s  ·  Rebose: {flood1:.0f} m³",
+                metrics=f"Q_in = {q_in1:.2f} m³/s  ·  Entr. ≤ 0.594 m³/s  ·  Rebose: {flood1:.0f} m³",
             ),
             TourStop(
                 title='Tope físico en cabeceras 8" y 10" (60 mm/h)',
@@ -282,8 +282,8 @@ def build_tour_stops(
                 nodes=n2_nodes,
                 pipes=set(p2_pipes),
                 desc=(
-                    "Gracias a la admisión acotada por Ford-Fulkerson, el porcentaje de uso de las cabeceras "
-                    "se mantiene estable sin crecer indefinidamente mientras el exceso rebosa en las entradas."
+                    "Las tuberías conectadas a fuentes (P31, P39, P43, P1, P2) se llenan hasta el tope del 120% y detienen "
+                    "su aumento porcentual derivando el exceso pluvial a rebose en las rejillas de entrada."
                 ),
                 metrics=f'8": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P1/P2: {u_p12:.1f}% ({d_p12:.2f}×)  ·  Rebose: {v2_flood:.0f} m³',
             ),
@@ -334,8 +334,8 @@ def build_tour_stops(
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    f"El evento extremo supera con holgura el límite 120%·F_max ({1.2 * fmax5:.4f} m³/s): "
-                    "el % de uso del sistema queda acotado en 120% y no entra más agua; el excedente rebosa."
+                    f"El evento extremo supera el tope local de fuentes (0.5943 m³/s) y 120%·F_max ({1.2 * fmax5:.4f} m³/s): "
+                    "el % de uso del sistema queda en 120%, no entra más agua y el excedente rebosa."
                 ),
                 metrics=f"Q_in = {q_in1:.2f} m³/s  ·  Uso Sis: 120.0%  ·  Rebose: {flood1:.0f} m³",
             ),
@@ -346,8 +346,8 @@ def build_tour_stops(
                 nodes=n2_nodes,
                 pipes=set(p2_pipes),
                 desc=(
-                    "Aunque la lluvia pasa de 60 a 100 mm/h, las tuberías no aumentan su % de uso físico por encima del tope "
-                    "porque la red ya no puede admitir más agua y rebosa en superficie."
+                    "Aunque la lluvia pasa de 60 a 100 mm/h, ni las cabeceras ni el sistema aumentan por encima "
+                    "del tope físico (120%) porque las alcantarillas ya están llenas y el exceso rebosa en calle."
                 ),
                 metrics=f'8": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P13: {u_p13:.1f}% ({d_p13:.2f}×)  ·  Rebose: {v2_flood:.0f} m³',
             ),
@@ -384,26 +384,26 @@ def build_tour_stops(
         sys_u3 = s1.system_utilization_pct if s1 else 120.0
         return [
             TourStop(
-                title="Inyección acotada por F_max en las 8 fuentes",
+                title="Inyección local acotada por tope y F_max en las 8 fuentes",
                 target_min=5.0,
                 step_idx=idx1,
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    f"Ford-Fulkerson determina F_max = {fmax3:.4f} m³/s. Con 30 mm/h, el sistema llega a su tope "
-                    "del 120% (0.4310 m³/s admitidos) y deriva el resto a rebose sin dejar entrar más agua."
+                    f"Ford-Fulkerson determina F_max = {fmax3:.4f} m³/s. Con 30 mm/h, las fuentes admiten hasta "
+                    "0.5943 m³/s (120% local), el uso del sistema se topa en 120% y el excedente rebosa sin entrar."
                 ),
                 metrics=f"Uso Sis.: {sys_u3:.1f}%  ·  F_max = {fmax3:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
             ),
             TourStop(
-                title='Respuesta en cabeceras de 8" (Lluvia moderada)',
+                title='Saturación en cabeceras de 8" (Lluvia moderada)',
                 target_min=25.0,
                 step_idx=idx2,
                 nodes=n_head8,
                 pipes=set(p_head8),
                 desc=(
-                    'Al acotar la admisión al 120%·F_max, P31, P39 y P43 (8") conducen cerca del 90%–94% '
-                    "mientras el excedente pluvial rebosa en las alcantarillas de entrada."
+                    'Al admitir hasta su propio tope del 120%, P31, P39 y P43 (8") alcanzan el 120% en la entrada '
+                    "y el excedente pluvial que no cabe en las rejillas rebosa inmediatamente en la fuente."
                 ),
                 metrics=f"Util. máx: {u2_max:.1f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",
             ),

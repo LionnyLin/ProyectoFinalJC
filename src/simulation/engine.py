@@ -153,6 +153,10 @@ class SewerSimulationEngine:
                 raise ValueError(
                     f"El tope físico de utilización debe ser >= 100% (recibido: {config.max_physical_utilization_pct})."
                 )
+        if config.admission_mode not in ("source_local", "system_fmax"):
+            raise ValueError(
+                f"Modo de admisión inválido: {config.admission_mode!r} (use 'source_local' o 'system_fmax')."
+            )
 
         interventions: Dict[str, PipeIntervention] = config.interventions or {}
         eff_params = {
@@ -163,10 +167,20 @@ class SewerSimulationEngine:
         ff_res = ford_fulkerson_max_flow(self.graph, pipe_capacities=eff_cap_map)
         f_max_m3s = ff_res.max_flow_m3s
         min_cut_set = set(ff_res.min_cut_pipes)
+        source_ids = self.graph.source_ids()
+        source_out_cap_m3s: Dict[str, float] = {
+            sid: sum(eff_params[e.pipe_id][0] for e in self.graph.outgoing_pipes(sid))
+            for sid in source_ids
+        }
+        total_source_cap_m3s = sum(source_out_cap_m3s.values())
         cap_factor = (util_cap_pct / 100.0) if util_cap_pct is not None else None
         q_adm_max_m3s = (
             (cap_factor * f_max_m3s)
-            if (config.use_ford_fulkerson_admission and cap_factor is not None)
+            if (
+                config.use_ford_fulkerson_admission
+                and cap_factor is not None
+                and config.admission_mode == "system_fmax"
+            )
             else None
         )
 
@@ -269,7 +283,6 @@ class SewerSimulationEngine:
 
         all_node_ids = self.graph.node_ids()
         all_pipe_ids = self.graph.pipe_ids()
-        source_ids = self.graph.source_ids()
         basin_denom = (
             0.00278
             * self.basin.runoff_coefficient_c
@@ -335,11 +348,22 @@ class SewerSimulationEngine:
                     new_transit = max(0.0, pipe_transit_vol[ev.pipe_id] - ev.volume_m3)
                     pipe_transit_vol.put(ev.pipe_id, new_transit)
 
-                # 2. Inyectar caudal admitido (acotado por tope * F_max) y registrar rebose en entrada
+                # 2. Inyectar caudal admitido (tope local por fuente o tope global F_max) y registrar rebose en entrada
+                use_local_cap = (
+                    config.use_ford_fulkerson_admission
+                    and cap_factor is not None
+                    and q_adm_max_m3s is None
+                )
                 for sid in source_ids:
                     q_src = sub_q_by_source.get(sid, 0.0)
                     vol_req = q_src * sub_dt_s
-                    vol_adm = vol_req * admit_ratio
+                    if q_adm_max_m3s is not None:
+                        vol_adm = vol_req * admit_ratio
+                    elif use_local_cap and cap_factor is not None:
+                        vol_cap_src = cap_factor * source_out_cap_m3s.get(sid, 0.0) * sub_dt_s
+                        vol_adm = min(vol_req, vol_cap_src)
+                    else:
+                        vol_adm = vol_req
                     vol_inlet_spill = max(0.0, vol_req - vol_adm)
 
                     sub_arrivals[sid] += vol_adm
@@ -634,4 +658,5 @@ class SewerSimulationEngine:
             total_admitted_inflow_m3=cum_admitted_m3,
             total_inlet_overflow_m3=cum_inlet_spill_m3,
             overflow_capped_pipes=sorted(ever_overflow_capped),
+            total_source_capacity_m3s=total_source_cap_m3s,
         )

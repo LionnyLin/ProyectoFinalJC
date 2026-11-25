@@ -645,7 +645,7 @@ class ControlsPanel(QFrame):
         self._last_fmax_m3s = f_max
         cut_txt = ", ".join(max_flow_res.min_cut_pipes[:5]) or "Ninguno"
         if cap_pct is not None:
-            cap_txt = f"Tope {cap_pct:.0f}% → {f_max * (cap_pct / 100.0):.4f} m³/s"
+            cap_txt = f"Tope uso {cap_pct:.0f}% (ref. {f_max * (cap_pct / 100.0):.4f} m³/s)"
         else:
             cap_txt = "Sin tope de uso"
         self.lbl_fmax_badge.setText(
