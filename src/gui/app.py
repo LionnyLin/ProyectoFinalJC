@@ -794,12 +794,30 @@ class BicentenarioSewerApp(QMainWindow):
         self.state.max_flow_dirty = True
         self.max_flow_panel.mark_dirty(bool(self.state.max_flow_estimations))
 
+    def _show_extra_fmax_banner(self) -> None:
+        ff_res = self.state.max_flow_result
+        if ff_res is None or self.state.dataset is None:
+            return
+        f_max = ff_res.max_flow_m3s
+        cap_pct = self.controls_panel.read_util_cap_pct()
+        cut_txt = ", ".join(ff_res.min_cut_pipes[:6]) or "Ninguno"
+        self.network_canvas.set_banner(
+            f"Escenario Extra · F_max = {f_max:.4f} m³/s",
+            (
+                f"• Tope físico de uso: {cap_pct:.0f}% (ref. {f_max * (cap_pct / 100.0):.4f} m³/s)\n"
+                f"• Corte mínimo ({len(ff_res.min_cut_pipes)} tramos): {cut_txt}"
+            ),
+        )
+
     def _on_scenario_changed(self) -> None:
         if self.controls_panel.demand_mode() == "fmax":
             self.state.active_target_fmax_pct = self.controls_panel.read_target_fmax_pct()
+            self._on_simulation_option_changed(mark_comp=False)
+            self._show_extra_fmax_banner()
         else:
             self.state.active_target_fmax_pct = None
-        self._on_simulation_option_changed(mark_comp=False)
+            self.network_canvas.clear_banner()
+            self._on_simulation_option_changed(mark_comp=False)
 
     def _on_execute_sim_clicked(self) -> None:
         self.state.active_target_fmax_pct = self.controls_panel.read_target_fmax_pct()
@@ -1655,6 +1673,7 @@ class BicentenarioSewerApp(QMainWindow):
         self.controls_panel.set_demand_target(pct)
         self.state.active_target_fmax_pct = pct
         self.run_simulation(preserve_previous=False, auto_play=True)
+        self._show_extra_fmax_banner()
 
     def _action_highlight_ford_fulkerson(self) -> None:
         if self.state.dataset is None:

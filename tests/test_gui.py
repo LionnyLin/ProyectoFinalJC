@@ -556,7 +556,7 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertGreater(comp_tbl.horizontalScrollBar().maximum(), 0)
 
         # U4: PauseOnOpenComboBox pausa reproducción al desplegar sin perder el valor
-        self.assertEqual(self.app.controls_panel.combo_scenario.count(), 5)
+        self.assertEqual(self.app.controls_panel.combo_scenario.count(), 6)
         for combo_attr in ("combo_split_rule", "combo_source_dist", "combo_scenario"):
             widget = getattr(self.app.controls_panel, combo_attr)
             before_txt = widget.currentText()

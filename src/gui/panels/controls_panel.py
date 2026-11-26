@@ -185,20 +185,6 @@ class ControlsPanel(QFrame):
         self.fmax_target_row.setVisible(False)
         sec_sim.body_layout.addWidget(self.fmax_target_row)
 
-        self.lbl_fmax_badge = QLabel("F_max (Ford-Fulkerson): calculando…", sec_sim)
-        self.lbl_fmax_badge.setWordWrap(True)
-        self.lbl_fmax_badge.setFont(QFont(self._mono_font, 7))
-        self.lbl_fmax_badge.setToolTip(
-            "F_max: caudal máximo que la red puede llevar de las fuentes a la PTAR 31 "
-            "(Ford-Fulkerson / Edmonds-Karp). El tope de uso fija cuánto se admite antes de rebosar."
-        )
-        self.lbl_fmax_badge.setStyleSheet(
-            f"background-color: {theme.PAPER_SUBTLE}; color: {theme.INK_PRIMARY}; "
-            f"border: 1px solid {theme.PAPER_BORDER}; border-left: 3px solid {theme.ACCENT_PRIMARY}; "
-            f"padding: 3px 6px;"
-        )
-        sec_sim.body_layout.addWidget(self.lbl_fmax_badge)
-
         grid = QGridLayout()
         grid.setContentsMargins(0, 4, 0, 2)
         grid.setHorizontalSpacing(4)
@@ -615,19 +601,9 @@ class ControlsPanel(QFrame):
     ) -> None:
         if max_flow_res is None:
             self._last_fmax_m3s = None
-            self.lbl_fmax_badge.setText("F_max (Ford-Fulkerson): -")
             self._refresh_fmax_equiv()
             return
-        f_max = max_flow_res.max_flow_m3s
-        self._last_fmax_m3s = f_max
-        cut_txt = ", ".join(max_flow_res.min_cut_pipes[:5]) or "Ninguno"
-        if cap_pct is not None:
-            cap_txt = f"Tope uso {cap_pct:.0f}% (ref. {f_max * (cap_pct / 100.0):.4f} m³/s)"
-        else:
-            cap_txt = "Sin tope de uso"
-        self.lbl_fmax_badge.setText(
-            f"F_max (Ford-Fulkerson) = {f_max:.4f} m³/s\n{cap_txt}\nCorte mínimo: {cut_txt}"
-        )
+        self._last_fmax_m3s = max_flow_res.max_flow_m3s
         self._refresh_fmax_equiv()
 
     def read_sim_inputs(self) -> Tuple[str, float, float, float, float, float, str, str]:
