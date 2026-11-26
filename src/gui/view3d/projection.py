@@ -61,7 +61,8 @@ class OrbitCamera:
         self.pan_y = 0.0
 
     def orbit(self, dx_px: float, dy_px: float) -> None:
-        self.yaw += dx_px * 0.0085
+        # Al arrastrar a la derecha (dx > 0), el frente (y1 > 0) debe moverse a la derecha.
+        self.yaw -= dx_px * 0.0085
         self.pitch = max(
             self.MIN_PITCH,
             min(self.MAX_PITCH, self.pitch + dy_px * 0.0070),

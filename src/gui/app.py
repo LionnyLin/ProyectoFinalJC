@@ -940,8 +940,13 @@ class BicentenarioSewerApp(QMainWindow):
                 animate_cam=scenario_changed,
             )
 
+        scen_status = (
+            f"Escenario Extra ({cfg.target_fmax_pct:.0f}% F_max)"
+            if cfg.target_fmax_pct is not None
+            else f"Escenario {cfg.scenario_id} ({cfg.intensity_mm_h:.0f} mm/h)"
+        )
         self._set_status(
-            f"{self.state.dataset_summary_text}  ·  Escenario {cfg.scenario_id} ({cfg.intensity_mm_h:.0f} mm/h) "
+            f"{self.state.dataset_summary_text}  ·  {scen_status} "
             f"en {self.state.result.execution_time_ms:.1f} ms ({n_snaps} instantes)"
         )
 
@@ -1028,6 +1033,7 @@ class BicentenarioSewerApp(QMainWindow):
         self.state.speed_label = speed_label
         if self.state.is_playing:
             self.network_canvas.set_playing(True, self.state.speed_factor())
+            self.basin_3d.set_playing(True, self.state.speed_factor())
 
     def toggle_play_pause(self) -> None:
         if self.state.is_playing:
@@ -1050,6 +1056,7 @@ class BicentenarioSewerApp(QMainWindow):
         self.state.is_playing = True
         self.center_panel.set_playing_state(True)
         self.network_canvas.set_playing(True, self.state.speed_factor())
+        self.basin_3d.set_playing(True, self.state.speed_factor())
         self._play_timer.start(self.state.frame_delay_ms())
 
     def pause(self) -> None:
@@ -1058,6 +1065,7 @@ class BicentenarioSewerApp(QMainWindow):
         if self._play_timer.isActive():
             self._play_timer.stop()
         self.network_canvas.set_playing(False)
+        self.basin_3d.set_playing(False)
         self.center_panel.set_playing_state(False)
         if was_playing and self.state.result is not None and self.state.result.snapshots:
             active_tab = self.right_tabs.currentIndex()
@@ -1149,7 +1157,11 @@ class BicentenarioSewerApp(QMainWindow):
         self.basin_3d.set_highlights(
             self.network_canvas.highlight_pipe_ids,
             self.network_canvas.highlight_node_ids,
+            ordered_route_pipes=self.network_canvas._ordered_route_pipes,
+            highlight_mode=getattr(self, "_highlight_mode_3d", "route"),
         )
+        self.basin_3d.set_traversal_frame(self.network_canvas._traversal_frame)
+        self.basin_3d.set_playing(self.state.is_playing, self.state.speed_factor())
         if self.state.selected_pipe_id:
             self.basin_3d.select_pipe(self.state.selected_pipe_id)
         elif self.state.selected_node_id:
@@ -1862,11 +1874,17 @@ class BicentenarioSewerApp(QMainWindow):
         ordered_ff = list(ff_res.min_cut_pipes) + [
             pid for pid in sorted(sat_pipes) if pid not in cut_pipes
         ]
+        self._highlight_mode_3d = "min_cut"
         self.network_canvas.set_highlights(
             hl_pipes, hl_nodes, ordered_route_pipes=ordered_ff
         )
         if self.state.view_mode == "3d":
-            self.basin_3d.set_highlights(hl_pipes, hl_nodes)
+            self.basin_3d.set_highlights(
+                hl_pipes,
+                hl_nodes,
+                ordered_route_pipes=ordered_ff,
+                highlight_mode="min_cut",
+            )
         cut_str = ", ".join(ff_res.min_cut_pipes) or "Ninguno"
         self.network_canvas.set_banner(
             f"Ford-Fulkerson · F_max = {ff_res.max_flow_m3s:.4f} m³/s",
@@ -1972,6 +1990,7 @@ class BicentenarioSewerApp(QMainWindow):
             self._on_node_selected(nodes[0].node_id)
             self.network_canvas.focus_node(nodes[0].node_id)
 
+        self._highlight_mode_3d = "search"
         self.network_canvas.set_highlights(
             pipe_ids={p.pipe_id for p in pipes},
             node_ids={n.node_id for n in nodes},
@@ -1980,6 +1999,7 @@ class BicentenarioSewerApp(QMainWindow):
             self.basin_3d.set_highlights(
                 pipe_ids={p.pipe_id for p in pipes},
                 node_ids={n.node_id for n in nodes},
+                highlight_mode="search",
             )
         self.controls_panel.set_traversal_text(
             f"[Búsqueda '{q}']\n"
@@ -2018,11 +2038,17 @@ class BicentenarioSewerApp(QMainWindow):
             self.state.active_route_pipes = []
             ordered_pipes = [p.pipe_id for p in res.traversed_edges]
 
+        self._highlight_mode_3d = "route"
         self.network_canvas.set_highlights(
             hl_pipes, hl_nodes, ordered_route_pipes=ordered_pipes
         )
         if self.state.view_mode == "3d":
-            self.basin_3d.set_highlights(hl_pipes, hl_nodes)
+            self.basin_3d.set_highlights(
+                hl_pipes,
+                hl_nodes,
+                ordered_route_pipes=ordered_pipes,
+                highlight_mode="route",
+            )
         if frames:
             mid_fr = frames[min(1, len(frames) - 1)]
             self.controls_panel.update_structure_strip(
@@ -2108,6 +2134,8 @@ class BicentenarioSewerApp(QMainWindow):
 
         fr = self.state.anim_frames[self.state.anim_idx]
         self.network_canvas.set_traversal_frame(fr)
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_traversal_frame(fr)
         self.controls_panel.update_structure_strip(
             fr.structure_name,
             fr.structure_items,
@@ -2149,9 +2177,17 @@ class BicentenarioSewerApp(QMainWindow):
                 else (set(fr.active_edges) or set(fr.visited_edges))
             )
             hl_nodes = set(fr.active_nodes) or set(fr.visited_nodes)
+        self._highlight_mode_3d = "route"
         self.network_canvas.promote_traversal_to_highlights(
             hl_pipes, hl_nodes, ordered_route_pipes=ordered_pipes
         )
+        if self.state.view_mode == "3d":
+            self.basin_3d.promote_traversal_to_highlights(
+                hl_pipes,
+                hl_nodes,
+                ordered_route_pipes=ordered_pipes,
+                highlight_mode="route",
+            )
         if self.state.result is not None and self.state.result.snapshots:
             if self.right_tabs.currentIndex() == 2:
                 self._charts_tab_dirty = False
@@ -2172,6 +2208,7 @@ class BicentenarioSewerApp(QMainWindow):
         if clear_canvas:
             self._pending_traversal_highlights = None
             self.network_canvas.set_traversal_frame(None)
+            self.basin_3d.set_traversal_frame(None)
 
     def _run_trace(self, direction: str) -> None:
         if self.state.dataset is None:
@@ -2188,13 +2225,19 @@ class BicentenarioSewerApp(QMainWindow):
         except KeyError as exc:
             QMessageBox.warning(self, "Nodo inválido", str(exc))
             return
+        self._highlight_mode_3d = "trace"
         self.network_canvas.set_highlights(
             {p.pipe_id for p in pipes},
             set(nodes),
             ordered_route_pipes=[p.pipe_id for p in pipes],
         )
         if self.state.view_mode == "3d":
-            self.basin_3d.set_highlights({p.pipe_id for p in pipes}, set(nodes))
+            self.basin_3d.set_highlights(
+                {p.pipe_id for p in pipes},
+                set(nodes),
+                ordered_route_pipes=[p.pipe_id for p in pipes],
+                highlight_mode="trace",
+            )
         label = "Aguas abajo" if direction == "down" else "Aguas arriba"
         self.controls_panel.set_traversal_text(
             f"[{label} desde {nid}]\n"
