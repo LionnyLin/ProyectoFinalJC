@@ -1100,7 +1100,13 @@ class CanvasLayoutEngine:
             surcharge_vol = 0.0
             if snapshot and node.node_id in snapshot.node_states:
                 ns = snapshot.node_states[node.node_id]
-                surcharge_vol = ns.stored_volume_m3 + ns.surface_flooding_m3
+                if map_mode == "instant":
+                    ponding = getattr(ns, "active_surface_ponding_m3", 0.0)
+                    if ponding <= 0.0 and ns.flooding_rate_m3s > 1e-9:
+                        ponding = ns.surface_flooding_m3
+                    surcharge_vol = ns.stored_volume_m3 + ponding
+                else:
+                    surcharge_vol = ns.stored_volume_m3 + ns.surface_flooding_m3
             if (
                 not is_dimmed_basin
                 and anim is None

@@ -477,21 +477,31 @@ class CenterPanel(QFrame):
         cfg = result.config
         if cfg.target_fmax_pct is not None:
             scen_es = f"Sim. {cfg.target_fmax_pct:.0f}% F_max"
+            rate_txt = f"{snap.rain_intensity_mm_h:.0f} mm/h eq."
         else:
             scen_es = theme.translate_scenario_name(
                 cfg.scenario_name, compact=bool(self._player_compact)
             )
+            rate_txt = f"{cfg.intensity_mm_h:.0f} mm/h"
         if map_mode == "peak":
             txt = (
-                f"Pico 0–{dur_total:.0f}m · {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+                f"Pico 0–{dur_total:.0f}m · {scen_es}"
+                if (self._player_compact and cfg.target_fmax_pct is not None)
+                else f"Pico 0–{dur_total:.0f}m · {scen_es} ({rate_txt})"
                 if self._player_compact
-                else f"Pico máximo · 0–{dur_total:.0f} min  ·  {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+                else f"Pico máximo · 0–{dur_total:.0f} min  ·  {scen_es}"
+                if cfg.target_fmax_pct is not None
+                else f"Pico máximo · 0–{dur_total:.0f} min  ·  {scen_es} ({rate_txt})"
             )
         elif map_mode == "overload_minutes":
             txt = (
-                f"Sobrecarga 0–{dur_total:.0f}m · {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+                f"Sobrecarga 0–{dur_total:.0f}m · {scen_es}"
+                if (self._player_compact and cfg.target_fmax_pct is not None)
+                else f"Sobrecarga 0–{dur_total:.0f}m · {scen_es} ({rate_txt})"
                 if self._player_compact
-                else f"Sobrecarga acumulada · 0–{dur_total:.0f} min  ·  {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+                else f"Sobrecarga acumulada · 0–{dur_total:.0f} min  ·  {scen_es}"
+                if cfg.target_fmax_pct is not None
+                else f"Sobrecarga acumulada · 0–{dur_total:.0f} min  ·  {scen_es} ({rate_txt})"
             )
         elif self._player_compact:
             txt = f"t={snap.time_min:.0f}/{cfg.duration_min:.0f}m · {scen_es} ({snap.rain_intensity_mm_h:.0f} mm/h)"

@@ -223,9 +223,12 @@ class ControlsPanel(QFrame):
             ("Caudal sanitario (m³/s)", self.spin_dry_flow),
             ("Tope físico uso (%)", self.spin_util_cap_pct),
         ]
+        self.lbl_ingress_pct: Optional[QLabel] = None
         for row_i, (label_txt, sb) in enumerate(fields):
             lbl = QLabel(label_txt, sec_sim)
             lbl.setFont(QFont(self._ui_font, 8))
+            if sb is self.spin_ingress_pct:
+                self.lbl_ingress_pct = lbl
             grid.addWidget(lbl, row_i, 0, Qt.AlignmentFlag.AlignLeft)
             grid.addWidget(sb, row_i, 1, Qt.AlignmentFlag.AlignRight)
         grid.setColumnStretch(0, 1)
@@ -534,10 +537,18 @@ class ControlsPanel(QFrame):
     def _sync_demand_widgets(self) -> None:
         fmax_mode = self.demand_mode() == "fmax"
         self.fmax_target_row.setVisible(fmax_mode)
-        # En el escenario extra % F_max el ingreso pluvial no interviene.
-        for w in (self.spin_ingress_pct, self.lbl_presets, self.btn_preset_guide,
-                  self.btn_fmax_preset):
-            w.setEnabled(not fmax_mode)
+        # En el escenario extra % F_max el ingreso pluvial y sus presets no intervienen:
+        # ocultarlos evita mostrar valores obsoletos de otros escenarios bloqueados.
+        for w in (
+            self.lbl_ingress_pct,
+            self.spin_ingress_pct,
+            self.lbl_presets,
+            self.btn_preset_guide,
+            self.btn_fmax_preset,
+        ):
+            if w is not None:
+                w.setVisible(not fmax_mode)
+                w.setEnabled(not fmax_mode)
         self._refresh_fmax_equiv()
         self.btn_run_sim.setText(
             f" Ejecutar simulación · {self.spin_target_fmax_pct.value():.0f}% F_max"

@@ -590,9 +590,18 @@ class InspectorPanel(QWidget):
                         f"Vol. en pozo    : {ns.stored_volume_m3:.3f} m³ (máx {cap_p:.1f} m³)",
                         "alert" if ns.stored_volume_m3 > 1e-3 else None,
                     )
+                    pond = getattr(ns, "active_surface_ponding_m3", 0.0)
                     add_line(
-                        f"Rebose en vía   : {ns.surface_flooding_m3:.2f} m³",
-                        "alert" if ns.surface_flooding_m3 > 1e-3 else None,
+                        f"Rebose activo   : {ns.flooding_rate_m3s:.4f} m³/s",
+                        "alert" if ns.flooding_rate_m3s > 1e-9 else None,
+                    )
+                    add_line(
+                        f"Charco en vía   : {pond:.2f} m³",
+                        "alert" if pond > 1e-2 else None,
+                    )
+                    add_line(
+                        f"Rebose acum.    : {ns.surface_flooding_m3:.2f} m³",
+                        "muted" if ns.flooding_rate_m3s <= 1e-9 else "alert",
                     )
             else:
                 add_line("Seleccione una tubería o pozo del grafo para inspeccionarlo.", "muted")
@@ -604,15 +613,25 @@ class InspectorPanel(QWidget):
                 cfg = result.config
                 scen_es = theme.translate_scenario_name(cfg.scenario_name)
                 src_es = theme.SOURCE_DIST_TO_ES.get(cfg.source_distribution, cfg.source_distribution)
-                add_line(
-                    f"Escenario       : {cfg.scenario_id} — {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
-                )
+                if cfg.target_fmax_pct is not None:
+                    add_line(
+                        f"Escenario       : Extra — Demanda calibrada ({cfg.target_fmax_pct:.0f}% F_max)"
+                    )
+                else:
+                    add_line(
+                        f"Escenario       : {cfg.scenario_id} — {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
+                    )
                 add_line(
                     f"Cuenca          : C={dataset.basin.runoff_coefficient_c}, A={dataset.basin.area_ha} ha"
                 )
-                add_line(
-                    f"Ingreso / Fuent.: {cfg.ingress_factor*100:.1f}% · {src_es} | Q_san={cfg.dry_weather_flow_per_source_m3s:.4f}"
-                )
+                if cfg.target_fmax_pct is not None:
+                    add_line(
+                        f"Demanda / Fuent.: {cfg.target_fmax_pct:.0f}% F_max · {src_es} | Q_san={cfg.dry_weather_flow_per_source_m3s:.4f}"
+                    )
+                else:
+                    add_line(
+                        f"Ingreso / Fuent.: {cfg.ingress_factor*100:.1f}% · {src_es} | Q_san={cfg.dry_weather_flow_per_source_m3s:.4f}"
+                    )
                 add_line(f"Entrada acum.   : {snap.cumulative_inflow_m3:,.2f} m³")
                 cap_lbl = (
                     f"{result.utilization_cap_pct:.0f}%"
