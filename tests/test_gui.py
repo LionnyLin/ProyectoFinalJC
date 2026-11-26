@@ -346,7 +346,7 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
 
     def test_guided_tour_per_scenario_and_autoplay_on_execute(self) -> None:
         combo = self.app.controls_panel.combo_scenario
-        self.assertEqual(combo.count(), 5)
+        self.assertEqual(combo.count(), 6)
 
         self.app.toggle_guided_tour()
         _pump(180)
@@ -813,8 +813,12 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertEqual(self.app.max_flow_panel.table.rowCount(), 9)
         self.assertIsNotNone(self.app.state.max_flow_result)
 
-        # Modo de demanda "% de F_max" a 150% + Ejecutar (debe topar uso del sistema en 120%)
-        self.app.controls_panel.seg_demand_mode.button("fmax").click()
+        # Escenario Extra "% de F_max" a 150% + Ejecutar (debe topar uso del sistema en 120%)
+        extra_idx = self.app.controls_panel.combo_scenario.findText(
+            self.app.controls_panel.EXTRA_FMAX_SCENARIO_LABEL
+        )
+        self.assertGreaterEqual(extra_idx, 0)
+        self.app.controls_panel.combo_scenario.setCurrentIndex(extra_idx)
         _pump(60)
         self.assertTrue(self.app.controls_panel.fmax_target_row.isVisible())
         self.assertFalse(self.app.controls_panel.spin_ingress_pct.isEnabled())
@@ -830,8 +834,6 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         # 4. Preset Calibrado F_max (E3 = 100%)
         self.app.controls_panel.combo_scenario.setCurrentIndex(2)
         _pump(100)
-        self.app.controls_panel.seg_demand_mode.button("rain").click()
-        _pump(80)
         self.assertEqual(self.app.controls_panel.demand_mode(), "rain")
         self.assertIsNone(self.app.state.active_target_fmax_pct)
         self.assertTrue(self.app.controls_panel.btn_fmax_preset.isEnabled())

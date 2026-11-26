@@ -43,6 +43,7 @@ from src.data_structures import PipeEdge
 from src.io.data_loader import (
     DataLoadError,
     NetworkDataset,
+    PrecipitationScenario,
     export_to_csv_dir,
     load_dataset,
 )
@@ -701,7 +702,13 @@ class BicentenarioSewerApp(QMainWindow):
             scen_labels.append(es_lbl)
             self._scenario_display_map[es_lbl] = s
             self._scenario_display_map[s.display_name] = s
-        init_idx = 2 if len(scen_labels) >= 3 else 0
+        extra_sc = PrecipitationScenario(
+            scenario_id=0, intensity_mm_h=0.0, condition="Calibrado F_max"
+        )
+        extra_lbl = self.controls_panel.EXTRA_FMAX_SCENARIO_LABEL
+        scen_labels.append(extra_lbl)
+        self._scenario_display_map[extra_lbl] = extra_sc
+        init_idx = 2 if len(dataset.scenarios) >= 3 else 0
         self.controls_panel.set_scenarios(scen_labels, init_idx)
 
         nids = dataset.graph.node_ids()
@@ -788,9 +795,10 @@ class BicentenarioSewerApp(QMainWindow):
         self.max_flow_panel.mark_dirty(bool(self.state.max_flow_estimations))
 
     def _on_scenario_changed(self) -> None:
-        # Elegir un escenario de lluvia vuelve al modo de demanda "Lluvia del escenario".
-        self.state.active_target_fmax_pct = None
-        self.controls_panel.set_demand_target(None)
+        if self.controls_panel.demand_mode() == "fmax":
+            self.state.active_target_fmax_pct = self.controls_panel.read_target_fmax_pct()
+        else:
+            self.state.active_target_fmax_pct = None
         self._on_simulation_option_changed(mark_comp=False)
 
     def _on_execute_sim_clicked(self) -> None:
@@ -1681,6 +1689,17 @@ class BicentenarioSewerApp(QMainWindow):
         ]
         self.network_canvas.set_highlights(
             hl_pipes, hl_nodes, ordered_route_pipes=ordered_ff
+        )
+        cut_str = ", ".join(ff_res.min_cut_pipes) or "Ninguno"
+        self.network_canvas.set_banner(
+            f"Ford-Fulkerson · F_max = {ff_res.max_flow_m3s:.4f} m³/s",
+            (
+                f"• Corte mínimo ({len(ff_res.min_cut_pipes)} tramos: {cut_str}): "
+                f"cuello de botella global cuya capacidad ({ff_res.min_cut_capacity_m3s:.4f} m³/s) "
+                f"limita el flujo hacia PTAR 31.\n"
+                f"• Tramos resaltados ({len(sat_pipes)} saturados al 100%): "
+                f"tuberías que alcanzan su capacidad máxima en la ruta óptima."
+            ),
         )
 
         self.controls_panel.update_structure_strip(

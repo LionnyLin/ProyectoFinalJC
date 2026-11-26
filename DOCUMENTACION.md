@@ -122,14 +122,15 @@ La ventana principal (`BicentenarioSewerApp`, tamaño mínimo `780×540`) se org
 Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`):
 - **Pestaña `Simulación` (`app.py:1036-1232`):**
   1. **Lámina *Escenario y parámetros*:**
-     - `combo_scenario` (`_ScenarioMenuButton` sobre `tk.Menubutton` + `tk.Menu`): lista los escenarios formateados en español (`theme.format_scenario_display`), pausa la reproducción si está activa antes de abrir y dispara re-simulación inmediata al seleccionar.
-     - 5 campos `tk.Spinbox` con re-ejecución debounced a `140 ms` (`_schedule_param_rerun`):
-       - `Duración simulación (min)`: rango `10–360`, inc `10`, default `90.0`.
-       - `Duración lluvia (min)`: rango `0–360`, inc `5`, default `60.0`.
-       - `Paso temporal Δt (min)`: rango `0.5–10.0`, inc `0.5`, default `1.0`.
-       - `Ingreso pluvial (%)`: rango `0.5–100.0`, inc `0.5`, default `100.0`.
-       - `Caudal sanitario (m³/s)`: rango `0.0–0.05`, inc `0.001`, default `0.000`.
-     - Botones preset rápidos: `Oficial Guía (100%)` ($\to 100.0\%,\; Q_{\text{san}}=0.0$) y `Calibrado (2.5% + Q_san)` ($\to 2.5\%,\; Q_{\text{san}}=0.003$).
+     - `combo_scenario`: lista los 5 escenarios oficiales formateados en español (`theme.format_scenario_display`) más el escenario extra `"Extra: Demanda calibrada (% F_max)"` (que habilita el control `Objetivo (% F_max)` para simular un porcentaje directo de $F_{\max}$ sin depender de la intensidad del escenario), pausa la reproducción si está activa antes de abrir y dispara re-simulación inmediata al seleccionar.
+     - Campos numéricos (`QDoubleSpinBox`) con re-ejecución debounced a `140 ms`:
+       - `Duración simulación (min)`: rango `0–1440`, inc `10`, default `90`.
+       - `Duración lluvia (min)`: rango `0–1440`, inc `5`, default `60`.
+       - `Paso temporal Δt (min)`: rango `0–60`, inc `0.5`, default `1.0`.
+       - `Ingreso pluvial (%)`: rango `0–100`, inc `0.5`, default `100.00`.
+       - `Caudal sanitario (m³/s)`: rango `0–10`, inc `0.001`, default `0.000`.
+       - `Tope físico uso (%)`: rango `100–300`, inc `5`, default `120`.
+     - Botones de ajuste rápido del ingreso pluvial: `Guía 100%` ($\to 100.0\%,\; Q_{\text{san}}=0.0$) y `E3 = F_max` (calibración automática a `1.48%` para igualar $F_{\max}=0.3591\;\text{m}^3/\text{s}$ en Escenario 3).
      - 2 selectores `_ScenarioMenuButton` (`tk.Menubutton` + `tk.Menu` estilizado, inmunes al bug de popdown en blanco bajo Windows `clam` + HiDPI al hacer doble clic sin elegir opción, mapeados ES $\leftrightarrow$ clave interna vía `theme.py`):
        - `Bifurcación`: `"Proporcional"` (`proportional`) | `"Equitativa"` (`equal`).
        - `Reparto fuentes`: `"Por capacidad"` (`capacity`) | `"Uniforme (1/8)"` (`equal`).
@@ -137,7 +138,7 @@ Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`
   2. **Lámina dinámica de Leyenda (`sec_leg`):** muestra los 5 rangos cromáticos y un contador de tuberías por banda. En `instant` muestra `Escala oficial · t = X min` (`theme.COLOR_SCALE_LEGEND`); en las vistas congeladas globales muestra `Pico máximo · 0–X min` (`theme.COLOR_SCALE_LEGEND`) y `Sobrecarga acumulada · 0–X min` (`OVERLOAD_PERSISTENCE_LEVELS`).
 
 - **Pestaña `Recorridos` (`app.py:1234-1443`):**
-  1. **Lámina *Búsqueda y recorridos*:** entrada `entry_search` (`Ctrl+F`, busca por ID/etiqueta/nota con `search_entities` y centra/selecciona el resultado), `combo_bfs_start` (default `"6"`), `combo_bfs_target` (default `"31"`), botones `BFS`, `DFS`, `Limpiar`, `Animar recorrido` (animación paso a paso: `560 ms` BFS, `340 ms` DFS), `Aguas abajo` (`trace_downstream`) y `Aguas arriba` (`trace_upstream`).
+  1. **Lámina *Búsqueda y recorridos*:** entrada `entry_search` (`Ctrl+F`, busca por ID/etiqueta/tipo con `search_entities`, incluyendo alias `"punta"`, `"punta canoa"`, `"sumidero"` y `"ptar"` hacia el sumidero **Nodo 31**, y centra/selecciona el resultado), `combo_bfs_start` (default `"6"`), `combo_bfs_target` (default `"31"`), botones `BFS`, `DFS`, `Limpiar`, `Animar recorrido` (animación paso a paso: `560 ms` BFS, `340 ms` DFS), `Aguas abajo` (`trace_downstream`), `Aguas arriba` (`trace_upstream`) y `Ford-Fulkerson (F_max y Corte Mín.)` (resalta el corte mínimo y los tramos saturados al 100%, mostrando un banner explicativo sobre el lienzo).
   2. **Lámina *Bitácora de recorrido*:** tira visual `_struct_strip_box` que renderiza en tiempo real los primeros 6 elementos de la estructura activa (`Cola (Queue) · FRENTE → FINAL` en BFS o `Pila (Stack) · TOPE ↑` en DFS, resaltando la cabeza en `#6D8196`) y caja de texto oscura `txt_traversal` (`#4A4A4A`).
 
 #### B. Panel Central (`center_panel`, `app.py:1444-1795`)
@@ -220,9 +221,10 @@ Posee dos pestañas superiores (`Simulación` y `Recorridos`, `_switch_rail_tab`
    - **`"proportional"` (*Proporcional a capacidad*, valor por defecto):** si un nodo tiene $k > 1$ tuberías salientes, el volumen disponible se divide en proporción a la capacidad efectiva $Q_{\max,\text{ef},e}$ de cada salida (si todas tienen capacidad nula, usa $1/k$).
    - **`"equal"` (*Equitativa*):** divide el flujo disponible por igual entre todas las tuberías salientes ($w_e = 1/k$).
 4. **Perfil temporal de lluvia (`engine.py`):** bloque **uniforme** constante, $I_{\text{ef}}(t) = I_{\text{media}}$ para $0 < t \le t_{\text{lluvia}}$ y $0$ para $t > t_{\text{lluvia}}$.
-5. **Presets de ingreso y calibración en GUI:**
-   - `Oficial Guía (100%)` *(predeterminado)*: `ingress_factor = 1.0`, `dry_weather_flow_per_source_m3s = 0.0`.
-   - `Calibrado (2.5% + Q_san)` *(análisis de sensibilidad)*: `ingress_factor = 0.025`, `dry_weather_flow_per_source_m3s = 0.003`.
+5. **Ajustes rápidos de ingreso y escenario extra `% F_max` en GUI:**
+   - `Guía 100%` *(predeterminado)*: `ingress_factor = 1.0`, `dry_weather_flow_per_source_m3s = 0.0`.
+   - `E3 = F_max` *(calibración analítica)*: calcula `compute_fmax_calibrated_ingress` ($\approx 1.48\%$) y `Q_san = 0.0` para igualar $F_{\max} = 0.3591\;\text{m}^3/\text{s}$ en Lluvia moderada (E3, 30 mm/h).
+   - `Extra: Demanda calibrada (% F_max)`: opción extra en el selector de escenarios que fija la demanda pluvial directamente como un porcentaje configurable de $F_{\max}$ (sin alterar los 5 escenarios oficiales).
 6. **Modos de lectura cartográfica (`network_canvas.py`):** `"instant"` (utilización instantánea en $t$), `"peak"` (vista congelada global del pico máximo en $0\text{–}t_{\text{total}}$) y `"overload_minutes"` (vista congelada global de minutos acumulados con utilización $> 100\%$ en $0\text{–}t_{\text{total}}$).
 7. **Intervenciones en vivo (`PipeIntervention`):** obstrucción parcial/total ($0\%–100\%$) y cambio de diámetro comercial por tubería sin mutar el `DirectedGraph` base.
 8. **Modos de ejecución:** aplicación interactiva GUI (por defecto en `main.py`) o generación batch por CLI (`--report`, `--report-docx`, `--technical-docx`).

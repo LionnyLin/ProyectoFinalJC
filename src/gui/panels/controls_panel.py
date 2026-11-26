@@ -42,6 +42,8 @@ from ..widgets import (
 class ControlsPanel(QFrame):
     """Muelle izquierdo modular: parámetros hidráulicos, leyenda y recorridos BFS/DFS."""
 
+    EXTRA_FMAX_SCENARIO_LABEL = "Extra: Demanda calibrada (% F_max)"
+
     railTabChanged = Signal(str)
     scenarioChanged = Signal()
     aboutToOpenSelector = Signal()
@@ -153,43 +155,12 @@ class ControlsPanel(QFrame):
         self.combo_scenario.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.combo_scenario.setMinimumWidth(120)
         self.combo_scenario.aboutToShowPopup.connect(self.aboutToOpenSelector.emit)
-        self.combo_scenario.currentIndexChanged.connect(lambda _idx: self.scenarioChanged.emit())
+        self.combo_scenario.currentIndexChanged.connect(self._on_scenario_combo_changed)
         sec_sim.body_layout.addWidget(self.combo_scenario)
-
-        # --- Demanda de entrada: lluvia del escenario o % fijo de F_max (Ford-Fulkerson) ---
-        lbl_demand = QLabel("Demanda de entrada", sec_sim)
-        lbl_demand.setFont(QFont(self._ui_font, 8, QFont.Weight.Bold))
-        lbl_demand.setContentsMargins(0, 6, 0, 0)
-        sec_sim.body_layout.addWidget(lbl_demand)
-
-        self.seg_demand_mode = SegmentedControl(
-            [("rain", "Lluvia del escenario"), ("fmax", "% de F_max")],
-            initial_key="rain",
-            inactive_variant="dock_secondary",
-            font_pt=8,
-            pad_x=6,
-            pad_y=4,
-            spacing=1,
-            framed=True,
-            parent=sec_sim,
-        )
-        for key in ("rain", "fmax"):
-            b = self.seg_demand_mode.button(key)
-            if b is not None:
-                b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.seg_demand_mode.button("rain").setToolTip(
-            "El caudal pluvial sale de la intensidad del escenario (método racional)."
-        )
-        self.seg_demand_mode.button("fmax").setToolTip(
-            "Ignora la intensidad del escenario y fija la demanda pluvial como un % del "
-            "flujo máximo F_max calculado con Ford-Fulkerson."
-        )
-        self.seg_demand_mode.selectionChanged.connect(self._on_demand_mode_changed)
-        sec_sim.body_layout.addWidget(self.seg_demand_mode)
 
         self.fmax_target_row = QWidget(sec_sim)
         ft_lay = QHBoxLayout(self.fmax_target_row)
-        ft_lay.setContentsMargins(0, 2, 0, 0)
+        ft_lay.setContentsMargins(0, 4, 0, 0)
         ft_lay.setSpacing(6)
         lbl_tf = QLabel("Objetivo (% F_max)", self.fmax_target_row)
         lbl_tf.setFont(QFont(self._ui_font, 8))
@@ -288,11 +259,6 @@ class ControlsPanel(QFrame):
         )
         self.btn_preset_guide.setToolTip("Ingreso pluvial 100% y sin caudal sanitario (valores de la guía).")
         self.btn_preset_guide.clicked.connect(lambda: self.apply_preset(100.0, 0.0))
-        self.btn_preset_calib = StyledButton(
-            "2.5% + Q_san", variant="dock_secondary", font_pt=7, pad_x=4, pad_y=3, parent=sec_sim
-        )
-        self.btn_preset_calib.setToolTip("Ingreso pluvial 2.5% con caudal sanitario 0.003 m³/s por fuente.")
-        self.btn_preset_calib.clicked.connect(lambda: self.apply_preset(2.5, 0.003))
         self.btn_fmax_preset = StyledButton(
             "E3 = F_max", variant="dock_secondary", font_pt=7, pad_x=4, pad_y=3, parent=sec_sim
         )
@@ -301,7 +267,7 @@ class ControlsPanel(QFrame):
             "produzca exactamente el flujo máximo F_max."
         )
         self.btn_fmax_preset.clicked.connect(self.calibrateFmaxRequested.emit)
-        for btn in (self.btn_preset_guide, self.btn_preset_calib, self.btn_fmax_preset):
+        for btn in (self.btn_preset_guide, self.btn_fmax_preset):
             preset_row.addWidget(btn, 1)
         sec_sim.body_layout.addLayout(preset_row)
 
@@ -530,10 +496,12 @@ class ControlsPanel(QFrame):
         if self._param_timer.isActive():
             self._param_timer.stop()
 
-    # --- Modo de demanda ---------------------------------------------------------------
+    # --- Modo de demanda (Escenario Extra % F_max) ------------------------------------
 
     def demand_mode(self) -> str:
-        return self.seg_demand_mode.current_key()
+        if self.combo_scenario.currentText() == self.EXTRA_FMAX_SCENARIO_LABEL:
+            return "fmax"
+        return "rain"
 
     def read_target_fmax_pct(self) -> Optional[float]:
         """% de F_max activo, o None si la demanda proviene de la lluvia del escenario."""
@@ -548,12 +516,21 @@ class ControlsPanel(QFrame):
         if target_pct is not None:
             with blocked_signals(self.spin_target_fmax_pct):
                 self.spin_target_fmax_pct.setValue(float(target_pct))
-        self.seg_demand_mode.set_current("rain" if target_pct is None else "fmax")
+            idx = self.combo_scenario.findText(self.EXTRA_FMAX_SCENARIO_LABEL)
+            if idx >= 0:
+                with blocked_signals(self.combo_scenario):
+                    self.combo_scenario.setCurrentIndex(idx)
+        elif self.combo_scenario.currentText() == self.EXTRA_FMAX_SCENARIO_LABEL:
+            with blocked_signals(self.combo_scenario):
+                if self.combo_scenario.count() > 2:
+                    self.combo_scenario.setCurrentIndex(2)
+                elif self.combo_scenario.count() > 0:
+                    self.combo_scenario.setCurrentIndex(0)
         self._sync_demand_widgets()
 
-    def _on_demand_mode_changed(self, _key: str) -> None:
+    def _on_scenario_combo_changed(self, _idx: int) -> None:
         self._sync_demand_widgets()
-        self._flush_demand_target()
+        self.scenarioChanged.emit()
 
     def _on_target_fmax_value_changed(self, _v: float) -> None:
         self._refresh_fmax_equiv()
@@ -571,9 +548,9 @@ class ControlsPanel(QFrame):
     def _sync_demand_widgets(self) -> None:
         fmax_mode = self.demand_mode() == "fmax"
         self.fmax_target_row.setVisible(fmax_mode)
-        # En modo % F_max la intensidad del escenario y el ingreso pluvial no intervienen.
+        # En el escenario extra % F_max el ingreso pluvial no interviene.
         for w in (self.spin_ingress_pct, self.lbl_presets, self.btn_preset_guide,
-                  self.btn_preset_calib, self.btn_fmax_preset):
+                  self.btn_fmax_preset):
             w.setEnabled(not fmax_mode)
         self._refresh_fmax_equiv()
         self.btn_run_sim.setText(

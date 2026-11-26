@@ -22,9 +22,17 @@ def search_entities(
     if not q:
         return graph.nodes(), graph.pipes()
 
+    sink_aliases = ("PUNTA CANOA", "PUNTA", "SUMIDERO", "PTAR")
+    is_sink_alias = any(alias == q or (len(q) >= 4 and q in alias) for alias in sink_aliases)
+
     matching_nodes: List[ManholeNode] = []
     for node in graph.nodes():
-        if q in node.node_id.upper() or q in node.label.upper() or q in node.node_type.upper():
+        if (
+            q in node.node_id.upper()
+            or q in node.label.upper()
+            or q in node.node_type.upper()
+            or (is_sink_alias and node.node_type.lower() == "sink")
+        ):
             matching_nodes.append(node)
 
     matching_pipes: List[PipeEdge] = []

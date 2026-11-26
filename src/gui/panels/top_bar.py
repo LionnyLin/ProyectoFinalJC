@@ -171,6 +171,8 @@ class TopBar(QFrame):
 
     @staticmethod
     def guided_tour_button_label(width: int, scenario_id: int) -> str:
+        if scenario_id == 0:
+            return "Tour Guiado · Extra F_max" if width >= 1220 else "Tour F_max"
         if width >= 1220:
             return f"Tour Guiado · Esc. {scenario_id}"
         return f"Tour Esc. {scenario_id}"

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -143,9 +144,11 @@ class NetworkCanvas(QWidget):
             return
         w = max(220, self.width())
         h = max(200, self.height())
-        preferred = max(290, min(int(round(310 * self.dpi_scale)), int(w * 0.54)))
+        preferred = max(310, min(int(round(360 * self.dpi_scale)), int(w * 0.44)))
         card_w = max(200, min(w - 24, preferred))
         self._tour_card_widget.setFixedWidth(card_w)
+        if self._tour_card_widget.layout() is not None:
+            self._tour_card_widget.layout().activate()
         self._tour_card_widget.adjustSize()
         ch = min(h - 24, self._tour_card_widget.sizeHint().height())
         self._tour_card_widget.setGeometry(12, max(12, h - ch - 12), card_w, ch)
@@ -207,6 +210,55 @@ class NetworkCanvas(QWidget):
             f"border: 1px solid {theme.DOCK_BORDER}; padding: 4px 9px;"
         )
 
+        self._canvas_banner = QFrame(self)
+        self._canvas_banner.setStyleSheet(
+            f"QFrame {{ background-color: {theme.PAPER_BG}; "
+            f"border: 1px solid {theme.DOCK_BORDER}; border-left: 3px solid {theme.ACCENT_PRIMARY}; }}"
+        )
+        cb_lay = QVBoxLayout(self._canvas_banner)
+        cb_lay.setContentsMargins(9, 6, 7, 6)
+        cb_lay.setSpacing(3)
+        cb_hdr = QHBoxLayout()
+        cb_hdr.setContentsMargins(0, 0, 0, 0)
+        cb_hdr.setSpacing(6)
+        self._banner_title = QLabel("", self._canvas_banner)
+        self._banner_title.setFont(QFont(self.mono_font, 8, QFont.Weight.Bold))
+        self._banner_title.setStyleSheet(
+            f"color: {theme.ACCENT_TEXT_ON_LIGHT}; background: transparent; border: none;"
+        )
+        cb_hdr.addWidget(self._banner_title, 1)
+        btn_cb_close = QPushButton("×", self._canvas_banner)
+        btn_cb_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_cb_close.setFont(QFont(self.ui_font, 9, QFont.Weight.Bold))
+        btn_cb_close.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {theme.INK_MUTED}; border: none; padding: 0 4px; }}"
+            f"QPushButton:hover {{ color: {theme.INK_PRIMARY}; }}"
+        )
+        btn_cb_close.clicked.connect(self.clear_banner)
+        cb_hdr.addWidget(btn_cb_close)
+        cb_lay.addLayout(cb_hdr)
+        self._banner_body = QLabel("", self._canvas_banner)
+        self._banner_body.setWordWrap(True)
+        self._banner_body.setFont(QFont(self.ui_font, 8))
+        self._banner_body.setStyleSheet(
+            f"color: {theme.INK_PRIMARY}; background: transparent; border: none;"
+        )
+        cb_lay.addWidget(self._banner_body)
+        self._canvas_banner.hide()
+
+    def set_banner(self, title: str, body: str) -> None:
+        """Muestra una nota explicativa flotante en la esquina superior izquierda del lienzo."""
+        self._banner_title.setText(title)
+        self._banner_body.setText(body)
+        self._canvas_banner.show()
+        self._position_overlays()
+        self._canvas_banner.raise_()
+
+    def clear_banner(self) -> None:
+        """Oculta la nota explicativa flotante del lienzo."""
+        if self._canvas_banner.isVisible():
+            self._canvas_banner.hide()
+
     def _position_overlays(self) -> None:
         w = max(200, self.width())
         h = max(200, self.height())
@@ -226,6 +278,18 @@ class NetworkCanvas(QWidget):
         self._zoom_bar.setGeometry(max(12, w - zh.width() - 12), 12, zh.width(), zh.height())
         self._zoom_bar.show()
 
+        if self._canvas_banner.isVisible():
+            if w >= 320 and h >= 240:
+                bw = min(int(round(360 * self.dpi_scale)), w - 24)
+                top_y = (self._stamp_lbl.geometry().bottom() + 8) if self._stamp_lbl.isVisible() else 12
+                self._canvas_banner.setFixedWidth(bw)
+                if self._canvas_banner.layout() is not None:
+                    self._canvas_banner.layout().activate()
+                self._canvas_banner.adjustSize()
+                bh = min(h - top_y - 24, self._canvas_banner.sizeHint().height())
+                self._canvas_banner.setGeometry(12, top_y, bw, bh)
+                self._canvas_banner.raise_()
+
         if (
             not self._tour_active
             and w >= int(480 * min(1.25, self.dpi_scale))
@@ -242,7 +306,7 @@ class NetworkCanvas(QWidget):
 
     def overlay_boxes(self) -> List[Tuple[float, float, float, float]]:
         boxes: List[Tuple[float, float, float, float]] = []
-        for widget in (self._stamp_lbl, self._zoom_bar, self._hint_bar):
+        for widget in (self._stamp_lbl, self._zoom_bar, self._hint_bar, self._canvas_banner):
             if widget.isVisible() or widget.width() > 2:
                 if not widget.isHidden():
                     g = widget.geometry()
@@ -270,6 +334,7 @@ class NetworkCanvas(QWidget):
         self._tour_active = False
         self._tour_nodes.clear()
         self._tour_pipes.clear()
+        self.clear_banner()
         self._peak_util_map.clear()
         self._overload_minutes_map.clear()
         self._traversal_frame = None
@@ -363,6 +428,7 @@ class NetworkCanvas(QWidget):
             self._tour_active = True
             self._tour_nodes = set(node_ids)
             self._tour_pipes = set(pipe_ids)
+            self.clear_banner()
         self._position_overlays()
         self.redraw()
 
@@ -414,6 +480,8 @@ class NetworkCanvas(QWidget):
         self.highlight_pipe_ids = pipes_set
         self.highlight_node_ids = nodes_set
         self._ordered_route_pipes = ordered_list if pipes_set else []
+        if not pipes_set and not nodes_set:
+            self.clear_banner()
         if pipes_set and animate_transition:
             self._route_transition_t = 0.0
         else:
@@ -596,8 +664,8 @@ class NetworkCanvas(QWidget):
         avail_w = max(180.0, w - safe_left - 44.0)
         avail_h = max(160.0, h - 68.0)
 
-        zoom_x = (avail_w * 0.72) / span_x
-        zoom_y = (avail_h * 0.72) / span_y
+        zoom_x = (avail_w * 0.64) / span_x
+        zoom_y = (avail_h * 0.64) / span_y
         target_zoom = max(1.05, min(2.55, min(zoom_x, zoom_y)))
 
         target_cx = safe_left + avail_w * 0.50

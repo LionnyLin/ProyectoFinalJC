@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -106,9 +107,22 @@ def build_tour_stops(
     intensity = (
         cfg.intensity_mm_h if cfg else (selected_scenario.intensity_mm_h if selected_scenario else 30.0)
     )
+    cap_pct = (
+        cfg.max_physical_utilization_pct
+        if (cfg and cfg.max_physical_utilization_pct is not None)
+        else 120.0
+    )
+    is_custom_demand = bool(
+        cfg is not None and (cfg.target_fmax_pct is not None or cfg.ingress_factor < 0.99)
+    )
 
     src_ids = g.source_ids()
     src_pipes = [e.pipe_id for s in src_ids for e in g.outgoing_pipes(s)]
+    total_src_cap = sum(
+        sum(e.q_max_m3s for e in g.outgoing_pipes(s)) for s in src_ids
+    )
+    src_cap_lim = total_src_cap * (cap_pct / 100.0)
+    fmax_val = result.system_max_flow_m3s if result else 0.3591
     t_vals = [e.transit_time_s / 60.0 for e in g.pipes()]
     t_min_r = min(t_vals) if t_vals else 0.81
     t_max_r = max(t_vals) if t_vals else 18.05
@@ -192,35 +206,35 @@ def build_tour_stops(
             ),
         ]
 
-    if sc_id == 2:
+    if sc_id == 2 and not is_custom_demand:
         idx3, s3 = _snap_for_min(50.0)
         q25, u25, d25 = _pipe_qud(s3, "P25")
-        fmax2 = result.system_max_flow_m3s if result else 0.3591
         sys_u2 = s1.system_utilization_pct if s1 else 0.0
         return [
             TourStop(
-                title="Admisión local hasta tope y referencia F_max (10 mm/h)",
+                title=f"Admisión local hasta tope y referencia F_max ({intensity:.0f} mm/h)",
                 target_min=5.0,
                 step_idx=idx1,
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    f"La demanda racional supera el tope del 120% de F_max ({1.2 * fmax2:.4f} m³/s) y la capacidad "
-                    "de entrada local de las 8 fuentes (0.5943 m³/s al 120%): el uso del sistema se topa en 120% y el exceso rebosa."
+                    f"La demanda racional supera el tope del {cap_pct:.0f}% de F_max "
+                    f"({(cap_pct / 100.0) * fmax_val:.4f} m³/s) y la capacidad de entrada local "
+                    f"de las 8 fuentes ({src_cap_lim:.4f} m³/s al {cap_pct:.0f}%): el exceso rebosa en rejillas."
                 ),
-                metrics=f"Uso Sis.: {sys_u2:.1f}%  ·  F_max = {fmax2:.4f} m³/s  ·  Rebose: {flood1:.0f} m³",
+                metrics=f"Uso Sis.: {sys_u2:.1f}%  ·  F_max = {fmax_val:.4f} m³/s  ·  Rebose: {flood1:.0f} m³",
             ),
             TourStop(
-                title='Saturación en cabeceras de 8" (10 mm/h)',
+                title=f'Saturación en cabeceras de 8" ({intensity:.0f} mm/h)',
                 target_min=25.0,
                 step_idx=idx2,
                 nodes=n_head8,
                 pipes=set(p_head8),
                 desc=(
-                    'Cada fuente admite agua hasta el 120% de su propia tubería de salida (P31, P39, P43 de 8"), '
-                    "alcanzando el tope físico del 120% mientras el excedente que ya no cabe en la rejilla rebosa."
+                    f'Cada fuente admite agua hasta el {cap_pct:.0f}% de su tubería de salida '
+                    '(P31, P39, P43 de 8"), alcanzando el tope físico mientras el excedente rebosa.'
                 ),
-                metrics=f"Util. máx: {u2_max:.2f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",
+                metrics=f"Util. máx: {u2_max:.1f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",
             ),
             TourStop(
                 title="Convergencia máxima en colector P25 (23 → J)",
@@ -229,8 +243,8 @@ def build_tour_stops(
                 nodes=n_25,
                 pipes=set(p_25),
                 desc=(
-                    'La confluencia de subcuencas sobre P25 (12") eleva su uso hasta el tope físico del 120% '
-                    "con rebose controlado en el pozo 23."
+                    f'La confluencia de subcuencas sobre P25 (12") eleva su uso hasta el tope físico '
+                    f'del {cap_pct:.0f}% con rebose en el pozo 23.'
                 ),
                 metrics=f"P25: Q = {q25:.4f} m³/s  ·  Uso tope = {u25:.1f}% (Dem. {d25:.2f}×)",
             ),
@@ -244,11 +258,11 @@ def build_tour_stops(
                     'Al cesar la lluvia, los colectores troncales P29 y P30 (20") evacuan la onda '
                     "descendente hacia el Nodo 31 sin saturar la troncal principal."
                 ),
-                metrics=f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  P29/P30: {u_ptar4:.1f}%  ·  Rebose red: {flood4:.1f} m³",
+                metrics=f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  P29/P30: {u_ptar4:.1f}%  ·  Rebose red: {flood4:.0f} m³",
             ),
         ]
 
-    if sc_id == 4:
+    if sc_id == 4 and not is_custom_demand:
         p2_pipes = _existing_pipes("P31", "P39", "P43", "P1", "P2")
         n2_nodes = _endpoints(p2_pipes)
         u_p12 = _max_util(s2, _existing_pipes("P1", "P2"))
@@ -261,41 +275,42 @@ def build_tour_stops(
         _, u28, _ = _pipe_qud(s3, "P28")
         p4_pipes = _existing_pipes("P29", "P30", "P3")
         n4_nodes = n_ptar | _endpoints(p4_pipes)
-        fmax4 = result.system_max_flow_m3s if result else 0.3591
+        sys_u4 = s1.system_utilization_pct if s1 else 0.0
         return [
             TourStop(
-                title="Tope 120% en entradas y sistema en lluvia fuerte (60 mm/h)",
+                title=f"Tope {cap_pct:.0f}% en entradas y sistema en lluvia fuerte ({intensity:.0f} mm/h)",
                 target_min=5.0,
                 step_idx=idx1,
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    f"Con 60 mm/h, las 8 fuentes alcanzan su límite físico del 120% (0.5943 m³/s en entradas) y el sistema "
-                    f"supera el 120%·F_max ({1.2 * fmax4:.4f} m³/s): no entra más agua adicional y el exceso rebosa."
+                    f"Con {intensity:.0f} mm/h, las 8 fuentes alcanzan su límite físico del {cap_pct:.0f}% "
+                    f"({src_cap_lim:.4f} m³/s en entradas) y superan {(cap_pct / 100.0) * fmax_val:.4f} m³/s: "
+                    "no entra más agua adicional y el exceso rebosa."
                 ),
-                metrics=f"Q_in = {q_in1:.2f} m³/s  ·  Entr. ≤ 0.594 m³/s  ·  Rebose: {flood1:.0f} m³",
+                metrics=f"Q_in = {q_in1:.2f} m³/s  ·  Uso Sis: {sys_u4:.1f}%  ·  Rebose: {flood1:.0f} m³",
             ),
             TourStop(
-                title='Tope físico en cabeceras 8" y 10" (60 mm/h)',
+                title=f'Tope físico en cabeceras 8" y 10" ({intensity:.0f} mm/h)',
                 target_min=25.0,
                 step_idx=idx2,
                 nodes=n2_nodes,
                 pipes=set(p2_pipes),
                 desc=(
-                    "Las tuberías conectadas a fuentes (P31, P39, P43, P1, P2) se llenan hasta el tope del 120% y detienen "
-                    "su aumento porcentual derivando el exceso pluvial a rebose en las rejillas de entrada."
+                    f"Las tuberías conectadas a fuentes (P31, P39, P43, P1, P2) se llenan hasta el tope del {cap_pct:.0f}% "
+                    "y detienen su aumento porcentual derivando el exceso pluvial a rebose en las rejillas de entrada."
                 ),
                 metrics=f'8": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P1/P2: {u_p12:.1f}% ({d_p12:.2f}×)  ·  Rebose: {v2_flood:.0f} m³',
             ),
             TourStop(
-                title='Cuello en cascada: P23, P25, P3 y P28 (16")',
+                title='Cuello en cascada: P23, P25 y P28 (16")',
                 target_min=40.0,
                 step_idx=idx3,
                 nodes=n3_nodes,
                 pipes=set(p3_pipes),
                 desc=(
-                    'P25 (12") y P23 (16") alcanzan el tope de uso del 120% mientras P28 (16", corte mínimo) '
-                    "opera por encima del 100% restringiendo el paso hacia la troncal final."
+                    f'P25 (12") y P23 (16") alcanzan el tope de uso del {cap_pct:.0f}% mientras P28 (16", corte mínimo) '
+                    f"avanza al {u28:.1f}% restringiendo el paso hacia la troncal final."
                 ),
                 metrics=f"P25: {u25:.1f}% ({d25:.2f}×)  ·  P23: {u23:.1f}%  ·  P28: {u28:.1f}%",
             ),
@@ -306,14 +321,14 @@ def build_tour_stops(
                 nodes=n4_nodes,
                 pipes=set(p4_pipes),
                 desc=(
-                    "P3 (corte mínimo, tope 120%) y P29/P30 sostienen la descarga máxima posible hacia la PTAR 31 "
+                    f"P3 (corte mínimo, tope {cap_pct:.0f}%) y P29/P30 sostienen la descarga máxima posible hacia la PTAR 31 "
                     "con conservación exacta de masa."
                 ),
                 metrics=f"PTAR 31 = {q_ptar4:.4f} m³/s  ·  Rebose: {flood4:.0f} m³  ·  Err = {err4:.1e} m³",
             ),
         ]
 
-    if sc_id == 5:
+    if sc_id == 5 and not is_custom_demand:
         p2_pipes = _existing_pipes("P31", "P39", "P43", "P12", "P13")
         n2_nodes = _endpoints(p2_pipes)
         _, u_p13, d_p13 = _pipe_qud(s2, "P13")
@@ -325,29 +340,30 @@ def build_tour_stops(
         flood3 = s3.total_surface_flooding_m3 if s3 else 0.0
         p4_pipes = _existing_pipes("P29", "P30", "P3")
         n4_nodes = n_ptar | _endpoints(p4_pipes)
-        fmax5 = result.system_max_flow_m3s if result else 0.3591
+        sys_u5 = s1.system_utilization_pct if s1 else 0.0
         return [
             TourStop(
-                title="Aporte extremo en las 8 fuentes (100 mm/h)",
+                title=f"Aporte extremo en las 8 fuentes ({intensity:.0f} mm/h)",
                 target_min=5.0,
                 step_idx=idx1,
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    f"El evento extremo supera el tope local de fuentes (0.5943 m³/s) y 120%·F_max ({1.2 * fmax5:.4f} m³/s): "
-                    "el % de uso del sistema queda en 120%, no entra más agua y el excedente rebosa."
+                    f"El evento extremo supera el tope local de fuentes ({src_cap_lim:.4f} m³/s) y "
+                    f"{cap_pct:.0f}%·F_max ({(cap_pct / 100.0) * fmax_val:.4f} m³/s): "
+                    f"el uso del sistema queda acotado en {sys_u5:.1f}% y el excedente rebosa."
                 ),
-                metrics=f"Q_in = {q_in1:.2f} m³/s  ·  Uso Sis: 120.0%  ·  Rebose: {flood1:.0f} m³",
+                metrics=f"Q_in = {q_in1:.2f} m³/s  ·  Uso Sis: {sys_u5:.1f}%  ·  Rebose: {flood1:.0f} m³",
             ),
             TourStop(
-                title='Estabilidad por tope 120% en cabeceras (100 mm/h)',
+                title=f'Estabilidad por tope {cap_pct:.0f}% en cabeceras ({intensity:.0f} mm/h)',
                 target_min=25.0,
                 step_idx=idx2,
                 nodes=n2_nodes,
                 pipes=set(p2_pipes),
                 desc=(
-                    "Aunque la lluvia pasa de 60 a 100 mm/h, ni las cabeceras ni el sistema aumentan por encima "
-                    "del tope físico (120%) porque las alcantarillas ya están llenas y el exceso rebosa en calle."
+                    f"Aunque la lluvia pasa de 60 a {intensity:.0f} mm/h, ni las cabeceras ni el sistema aumentan por encima "
+                    f"del tope físico ({cap_pct:.0f}%) porque las alcantarillas ya están llenas y el exceso rebosa en calle."
                 ),
                 metrics=f'8": {u2_max:.1f}% ({d2_max:.2f}×)  ·  P13: {u_p13:.1f}% ({d_p13:.2f}×)  ·  Rebose: {v2_flood:.0f} m³',
             ),
@@ -358,7 +374,7 @@ def build_tour_stops(
                 nodes=n3_nodes,
                 pipes=set(p3_pipes),
                 desc=(
-                    "Los ejes del corte mínimo (P3 y P28) y convergencias (P25, P23) operan en el tope del sistema "
+                    "Los ejes del corte mínimo (P3 y P28) y convergencias (P25, P23) regulan el caudal hacia la troncal "
                     "mientras la vía absorbe el excedente superficial."
                 ),
                 metrics=f"P25: {u25:.1f}% ({d25:.2f}×)  ·  P3: {u_p3:.1f}%  ·  Rebose red: {flood3:.0f} m³",
@@ -377,11 +393,10 @@ def build_tour_stops(
             ),
         ]
 
-    if sc_id == 3:
+    if sc_id == 3 and not is_custom_demand:
         idx3, s3 = _snap_for_min(40.0)
         q25, u25, d25 = _pipe_qud(s3, "P25")
-        fmax3 = result.system_max_flow_m3s if result else 0.3591
-        sys_u3 = s1.system_utilization_pct if s1 else 120.0
+        sys_u3 = s1.system_utilization_pct if s1 else 0.0
         return [
             TourStop(
                 title="Inyección local acotada por tope y F_max en las 8 fuentes",
@@ -390,10 +405,10 @@ def build_tour_stops(
                 nodes=set(src_ids),
                 pipes=set(src_pipes),
                 desc=(
-                    f"Ford-Fulkerson determina F_max = {fmax3:.4f} m³/s. Con 30 mm/h, las fuentes admiten hasta "
-                    "0.5943 m³/s (120% local), el uso del sistema se topa en 120% y el excedente rebosa sin entrar."
+                    f"Ford-Fulkerson determina F_max = {fmax_val:.4f} m³/s. Con {intensity:.0f} mm/h, las fuentes admiten hasta "
+                    f"{src_cap_lim:.4f} m³/s ({cap_pct:.0f}% local), el uso del sistema queda en {sys_u3:.1f}% y el excedente rebosa."
                 ),
-                metrics=f"Uso Sis.: {sys_u3:.1f}%  ·  F_max = {fmax3:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
+                metrics=f"Uso Sis.: {sys_u3:.1f}%  ·  F_max = {fmax_val:.4f} m³/s  ·  Tránsito: {t_min_r:.2f}–{t_max_r:.2f} min",
             ),
             TourStop(
                 title='Saturación en cabeceras de 8" (Lluvia moderada)',
@@ -402,20 +417,20 @@ def build_tour_stops(
                 nodes=n_head8,
                 pipes=set(p_head8),
                 desc=(
-                    'Al admitir hasta su propio tope del 120%, P31, P39 y P43 (8") alcanzan el 120% en la entrada '
+                    f'Al admitir hasta su propio tope del {cap_pct:.0f}%, P31, P39 y P43 (8") alcanzan el {cap_pct:.0f}% en la entrada '
                     "y el excedente pluvial que no cabe en las rejillas rebosa inmediatamente en la fuente."
                 ),
                 metrics=f"Util. máx: {u2_max:.1f}% ({d2_max:.2f}×)  ·  Pozo/Rebose: {v2_stor:.1f}/{v2_flood:.0f} m³",
             ),
             TourStop(
-                title="Convergencia crítica en el tramo P25 (tope 120%)",
+                title=f"Convergencia crítica en el tramo P25 (tope {cap_pct:.0f}%)",
                 target_min=40.0,
                 step_idx=idx3,
                 nodes=n_25,
                 pipes=set(p_25),
                 desc=(
-                    "La unión de subcuencas sobre el pozo 23 hacia J (P25) lleva la tubería al tope físico "
-                    "del 120% (demanda 3.0× Qmax), deteniendo el incremento de % de uso por rebose en pozo."
+                    f"La unión de subcuencas sobre el pozo 23 hacia J (P25) lleva la tubería al tope físico "
+                    f"del {cap_pct:.0f}% (demanda {d25:.2f}× Qmax), deteniendo el incremento de % de uso por rebose en pozo."
                 ),
                 metrics=f"P25: Q_fís = {q25:.4f} m³/s  ·  Uso = {u25:.1f}% (Dem. {d25:.2f}×)",
             ),
@@ -552,9 +567,10 @@ class GuidedTourCard(QFrame):
         self.lbl_metrics = QLabel("", body)
         self.lbl_metrics.setWordWrap(True)
         self.lbl_metrics.setFont(QFont(mono_font, 8, QFont.Weight.Bold))
+        self.lbl_metrics.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self.lbl_metrics.setStyleSheet(
             f"background-color: {theme.PAPER_SUBTLE}; color: {theme.INK_PRIMARY}; "
-            f"border: 1px solid {theme.PAPER_BORDER}; padding: 3px 6px;"
+            f"border: 1px solid {theme.PAPER_BORDER}; padding: 5px 7px;"
         )
         body_lay.addWidget(self.lbl_metrics)
         outer.addWidget(body)
@@ -597,14 +613,28 @@ class GuidedTourCard(QFrame):
         stop: TourStop,
         time_min: float,
     ) -> None:
-        scen_es = theme.translate_scenario_name(cfg.scenario_name, compact=False)
-        scen_short = theme.translate_scenario_name(cfg.scenario_name, compact=True)
-        self.lbl_hdr.setText(
-            f"ESC. {cfg.scenario_id} ({scen_short.upper()}) · HALLAZGO {stop_idx + 1}/{total_stops} · MIN {time_min:.0f}"
-        )
-        self.lbl_scenario.setText(
-            f"Escenario {cfg.scenario_id}: {scen_es} ({cfg.intensity_mm_h:.0f} mm/h)"
-        )
+        if cfg.scenario_id == 0:
+            self.lbl_hdr.setText(
+                f"EXTRA (F_MAX) · HALLAZGO {stop_idx + 1}/{total_stops} · MIN {time_min:.0f}"
+            )
+            self.lbl_scenario.setText(
+                f"Escenario Extra: Demanda calibrada ({cfg.target_fmax_pct or 100.0:.0f}% de F_max)"
+            )
+        else:
+            scen_es = theme.translate_scenario_name(cfg.scenario_name, compact=False)
+            scen_short = theme.translate_scenario_name(cfg.scenario_name, compact=True)
+            self.lbl_hdr.setText(
+                f"ESC. {cfg.scenario_id} ({scen_short.upper()}) · HALLAZGO {stop_idx + 1}/{total_stops} · MIN {time_min:.0f}"
+            )
+            if cfg.target_fmax_pct is not None:
+                demand_note = f"Demanda: {cfg.target_fmax_pct:.0f}% de F_max"
+            elif cfg.ingress_factor < 0.99:
+                demand_note = f"{cfg.intensity_mm_h:.0f} mm/h · ing. {cfg.ingress_factor * 100.0:.2f}%"
+            else:
+                demand_note = f"{cfg.intensity_mm_h:.0f} mm/h"
+            self.lbl_scenario.setText(
+                f"Escenario {cfg.scenario_id}: {scen_es} ({demand_note})"
+            )
         self.lbl_title.setText(stop.title)
         self.lbl_desc.setText(stop.desc)
         self.lbl_metrics.setText(stop.metrics)
@@ -612,5 +642,7 @@ class GuidedTourCard(QFrame):
         self.btn_next.setText(
             "Finalizar" if stop_idx == total_stops - 1 else "Siguiente hallazgo"
         )
+        for lbl in (self.lbl_scenario, self.lbl_title, self.lbl_desc, self.lbl_metrics):
+            lbl.adjustSize()
         self.show()
         self.raise_()
