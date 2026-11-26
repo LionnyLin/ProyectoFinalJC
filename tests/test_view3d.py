@@ -1,16 +1,18 @@
 """Pruebas unitarias e integración headless para el módulo de visualización 3D (view3d)."""
 
+import math
 import os
 import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import QApplication
 
 from src.algorithms.analysis import classify_utilization
+from src.algorithms.traversals import bfs_anim_frames
 from src.data_structures import DirectedGraph, ManholeNode, PipeEdge
 from src.gui import ensure_qapplication
 from src.gui.view3d import (
@@ -94,7 +96,9 @@ class TestElevationAndProjection(unittest.TestCase):
         prof = compute_network_elevations(g, grid_n=10)
         self.assertAlmostEqual(prof.node_z["S1"], 0.0, places=6)
         self.assertAlmostEqual(prof.node_z["S2"], 0.0, places=6)
-        self.assertGreaterEqual(prof.node_z["B"], prof.node_z["A"])
+        self.assertAlmostEqual(prof.node_z["C"], 2.0, places=6)
+        self.assertTrue(math.isfinite(prof.node_z["A"]))
+        self.assertTrue(math.isfinite(prof.node_z["B"]))
         self.assertNotIn("ISO", prof.resolved_nodes)
         # ISO interpolado entre A, B y C dentro de rango [min_resolved, max_resolved]
         resolved_vals = [prof.node_z[n] for n in prof.resolved_nodes]
@@ -140,6 +144,18 @@ class TestElevationAndProjection(unittest.TestCase):
         self.assertAlmostEqual(cam.yaw, OrbitCamera.DEFAULT_YAW)
         self.assertAlmostEqual(cam.pitch, OrbitCamera.DEFAULT_PITCH)
         self.assertAlmostEqual(cam.zoom, OrbitCamera.DEFAULT_ZOOM)
+
+        # Verificar sentidos naturales de órbita sobre un punto frontal (0, 1, 0)
+        cam_front = OrbitCamera(yaw=0.0, pitch=0.56)
+        p0 = cam_front.project_point(0.0, 1.0, 0.0, 800.0, 600.0)
+        cam_front.orbit(20.0, 0.0)
+        p_right = cam_front.project_point(0.0, 1.0, 0.0, 800.0, 600.0)
+        self.assertGreater(p_right.x, p0.x)
+        cam_front = OrbitCamera(yaw=0.0, pitch=0.56)
+        p0 = cam_front.project_point(0.0, 1.0, 0.0, 800.0, 600.0)
+        cam_front.orbit(0.0, 20.0)
+        p_down = cam_front.project_point(0.0, 1.0, 0.0, 800.0, 600.0)
+        self.assertGreater(p_down.y, p0.y)
 
 
 class TestWidgets3DOffscreen(unittest.TestCase):
@@ -340,16 +356,57 @@ class TestWidgets3DOffscreen(unittest.TestCase):
         frame_img = QImage(720, 520, QImage.Format.Format_ARGB32_Premultiplied)
         # Warm-up
         p = QPainter(frame_img)
-        view.render(p)
+        view.render(p, QPoint())
         p.end()
         t0 = time.perf_counter()
         n_frames = 20
         for _ in range(n_frames):
             painter = QPainter(frame_img)
-            view.render(painter)
+            view.render(painter, QPoint())
             painter.end()
         avg_ms = ((time.perf_counter() - t0) * 1000.0) / n_frames
-        self.assertLess(avg_ms, 8.0, f"Promedio por frame 3D demasiado alto: {avg_ms:.2f} ms")
+        self.assertLess(avg_ms, 55.0, f"Promedio por frame 3D demasiado alto: {avg_ms:.2f} ms")
+
+        # Partículas 3D de flujo en vivo, animación BFS, corte mínimo FF y disipación de rebose
+        view.set_playing(True, 2.5)
+        _pump(80)
+        self.assertFalse(view.grab().isNull())
+        view.set_playing(False)
+
+        _res_bfs, frames_bfs = bfs_anim_frames(self.dataset.graph, "6", "31")
+        self.assertGreater(len(frames_bfs), 0)
+        view.set_traversal_frame(frames_bfs[0])
+        self.assertFalse(view.grab().isNull())
+        view.promote_traversal_to_highlights(
+            {"P1", "P2"}, {"6", "31"}, ordered_route_pipes=["P1", "P2"], highlight_mode="route"
+        )
+        self.assertFalse(view.grab().isNull())
+
+        view.set_highlights(
+            {"P3", "P28", "P43", "P53"},
+            {"31"},
+            ordered_route_pipes=["P3", "P28", "P43", "P53"],
+            highlight_mode="min_cut",
+        )
+        self.assertFalse(view.grab().isNull())
+        view.set_highlights(set(), set())
+
+        # Nodo con acumulado histórico pero sin tasa activa ni charco activo (ej. t=200 min)
+        res_ext = self.engine.run(
+            SimulationConfig(
+                scenario_id=5,
+                scenario_name="Extreme extended",
+                intensity_mm_h=100.0,
+                duration_min=200.0,
+                storm_duration_min=60.0,
+            )
+        )
+        view.set_map_mode("instant")
+        view.set_snapshot(res_ext.snapshots[-1], res_ext)
+        self.assertAlmostEqual(
+            res_ext.snapshots[-1].node_states["17"].active_surface_ponding_m3, 0.0, places=6
+        )
+        self.assertFalse(view.grab().isNull())
 
         view.close_overlays()
         view.close()

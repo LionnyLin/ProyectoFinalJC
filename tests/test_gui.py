@@ -873,10 +873,15 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertGreater(len(self.app.network_canvas._ordered_route_pipes), 0)
         self.assertLess(self.app.network_canvas._route_transition_t, 1.0)
 
-        # Bombear eventos para completar la ola de transición y generar partículas hidráulicas
+        # Bombear eventos hasta completar la ola de transición y generar partículas hidráulicas
         self.app._set_step(25)
         self.assertTrue(self.app.state.is_playing)
-        _pump(520)
+        deadline = time.monotonic() + 2.5
+        while (
+            self.app.network_canvas._route_transition_t < 0.999
+            and time.monotonic() < deadline
+        ):
+            _pump(25)
         self.assertAlmostEqual(self.app.network_canvas._route_transition_t, 1.0, places=2)
 
         scene = self.app.network_canvas.current_scene
