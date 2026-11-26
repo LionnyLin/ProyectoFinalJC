@@ -431,6 +431,28 @@ class TestSimulation(unittest.TestCase):
         self.assertAlmostEqual(res_closed.peak_pipe_utilization["P31"], 0.0, places=9)
         self.assertTrue(res_closed.snapshots[1].pipe_states["P31"].is_closed)
 
+    def test_active_surface_ponding_dissipates_after_storm_in_extended_run(self) -> None:
+        engine = SewerSimulationEngine(self.dataset.graph, self.dataset.basin)
+        res = engine.run(
+            SimulationConfig(
+                scenario_id=5,
+                scenario_name="Extreme extended",
+                intensity_mm_h=100.0,
+                duration_min=200.0,
+                storm_duration_min=60.0,
+            )
+        )
+        self.assertLess(res.max_mass_balance_error_m3, 1e-6)
+        snap_peak = res.snapshots[30]
+        snap_end = res.snapshots[-1]
+        self.assertGreater(snap_peak.node_states["17"].active_surface_ponding_m3, 100.0)
+        self.assertGreater(snap_peak.node_states["17"].flooding_rate_m3s, 0.0)
+        # Al minuto 200 (140 min tras cesar la lluvia), el rebose acumulado histórico se conserva
+        # para el balance de masa, pero la tasa activa y el encharcamiento en vía ya se disiparon.
+        self.assertGreater(snap_end.node_states["17"].surface_flooding_m3, 1000.0)
+        self.assertAlmostEqual(snap_end.node_states["17"].flooding_rate_m3s, 0.0, places=9)
+        self.assertAlmostEqual(snap_end.node_states["17"].active_surface_ponding_m3, 0.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

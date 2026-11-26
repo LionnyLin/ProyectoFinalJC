@@ -133,6 +133,7 @@ class NodeStepState:
     stored_volume_m3: float  # Almacenamiento temporal dentro del pozo (<= max_manhole_storage_m3)
     surface_flooding_m3: float = 0.0  # Rebose superficial acumulado en vía por pozo lleno (m³)
     flooding_rate_m3s: float = 0.0    # Tasa instantánea de rebose superficial (m³/s)
+    active_surface_ponding_m3: float = 0.0  # Lámina/charco superficial transitorio con recesión (m³)
 
 
 @dataclass

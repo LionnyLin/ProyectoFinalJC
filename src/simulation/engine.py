@@ -283,6 +283,8 @@ class SewerSimulationEngine:
 
         all_node_ids = self.graph.node_ids()
         all_pipe_ids = self.graph.pipe_ids()
+        node_active_ponding: Dict[str, float] = {nid: 0.0 for nid in all_node_ids}
+        surface_drain_tau_min = 18.0
         basin_denom = (
             0.00278
             * self.basin.runoff_coefficient_c
@@ -583,17 +585,25 @@ class SewerSimulationEngine:
             peak_sys_util = max(peak_sys_util, sys_util_pct)
             peak_sys_dem = max(peak_sys_dem, sys_dem_pct)
 
-            node_states = {
-                nid: NodeStepState(
+            ponding_decay = math.exp(-snap_dt_min / surface_drain_tau_min)
+            node_states: Dict[str, NodeStepState] = {}
+            for nid in all_node_ids:
+                spill_step = snap_node_spill[nid]
+                ponding = node_active_ponding[nid] * ponding_decay + spill_step
+                if spill_step <= 1e-9:
+                    ponding = max(0.0, ponding - 0.25 * snap_dt_min)
+                    if ponding < 0.1:
+                        ponding = 0.0
+                node_active_ponding[nid] = ponding
+                node_states[nid] = NodeStepState(
                     node_id=nid,
                     inflow_m3s=snap_node_arrivals[nid] / snap_dt_s,
                     outflow_m3s=snap_node_sent[nid] / snap_dt_s,
                     stored_volume_m3=node_stored[nid],
                     surface_flooding_m3=node_flooded[nid],
-                    flooding_rate_m3s=snap_node_spill[nid] / snap_dt_s,
+                    flooding_rate_m3s=spill_step / snap_dt_s,
+                    active_surface_ponding_m3=ponding,
                 )
-                for nid in all_node_ids
-            }
 
             self.history.append(
                 TimeStepSnapshot(
