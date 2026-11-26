@@ -582,18 +582,42 @@ class Basin3DWidget(QWidget):
             z_range = max(1.0, prof.max_z - prof.min_z)
 
             for cell in prof.grid_cells:
+                c00, c10, _c11, c01 = cell.corners
                 pts_2d: List[QPointF] = []
                 d_sum = 0.0
+                z_corners: List[float] = []
                 for cx, cy, cz in cell.corners:
-                    pr = cam.project_point(cx, cy, self._z_to_world(cz), w, h)
+                    zw_c = self._z_to_world(cz)
+                    z_corners.append(zw_c)
+                    pr = cam.project_point(cx, cy, zw_c, w, h)
                     pts_2d.append(QPointF(pr.x, pr.y))
                     d_sum += pr.depth
                 avg_d = d_sum * 0.25
                 elev_t = max(0.0, min(1.0, (cell.center_z - prof.min_z) / z_range))
-                # Tinte mineral sutil según cota sobre vitela
-                shade_r = int(round(244 - elev_t * 16))
-                shade_g = int(round(244 - elev_t * 16))
-                shade_b = int(round(218 - elev_t * 14))
+
+                # Sombreado direccional Lambertiano (relieve topográfico ligero)
+                ux_t = c10[0] - c00[0]
+                uy_t = c10[1] - c00[1]
+                uz_t = z_corners[1] - z_corners[0]
+                vx_t = c01[0] - c00[0]
+                vy_t = c01[1] - c00[1]
+                vz_t = z_corners[3] - z_corners[0]
+                nx_t = uy_t * vz_t - uz_t * vy_t
+                ny_t = uz_t * vx_t - ux_t * vz_t
+                nz_t = ux_t * vy_t - uy_t * vx_t
+                n_len = math.hypot(nx_t, ny_t, nz_t)
+                if n_len > 1e-9:
+                    if nz_t < 0.0:
+                        nx_t, ny_t, nz_t = -nx_t, -ny_t, -nz_t
+                    dot_sun = (-0.45 * nx_t - 0.35 * ny_t + 0.82 * nz_t) / n_len
+                    hill = max(0.86, min(1.08, 0.92 + 0.18 * dot_sun))
+                else:
+                    hill = 1.0
+
+                # Tinte mineral según cota + relieve solar sobre vitela
+                shade_r = max(0, min(255, int(round((244 - elev_t * 16) * hill))))
+                shade_g = max(0, min(255, int(round((244 - elev_t * 16) * hill))))
+                shade_b = max(0, min(255, int(round((218 - elev_t * 14) * hill))))
                 fill_col = QColor(shade_r, shade_g, shade_b, alpha_fill)
 
                 def _draw_cell(
@@ -801,10 +825,12 @@ class Basin3DWidget(QWidget):
 
                     render_queue.append((pr_head.depth - 0.008, 3, _draw_particle))
 
-        # 3. Nodos, columnas piezométricas y charcos de rebose
+        # 3. Nodos, fustes de pozo, tapas en rasante, columnas piezométricas y charcos
         v_max = res.config.max_manhole_storage_m3 if res is not None else 4.0
         v_max = max(1e-6, float(v_max))
         use_global_mode = self._map_mode in ("peak", "overload_minutes")
+        water_top_proj: Dict[str, ProjectedPoint] = {}
+        node_has_water: Dict[str, bool] = {}
 
         for node in graph.nodes():
             nid = node.node_id
@@ -895,6 +921,40 @@ class Basin3DWidget(QWidget):
 
             render_queue.append((np_pt.depth, 2 if not is_hl else 3, _draw_node))
 
+            # Fuste vertical del pozo + brocal/tapa en rasante (y tanque PTAR 31)
+            if not is_dimmed_ctx and self._ground_opacity > 0.05:
+                shaft_alpha = 115 if not is_dimmed else 55
+                is_sink_ptar = node.node_type == "sink"
+                is_src_grate = node.node_type == "source"
+
+                def _draw_manhole_struct(
+                    b_pt: QPointF = QPointF(np_pt.x, np_pt.y),
+                    g_pt: QPointF = QPointF(gp_pt.x, gp_pt.y),
+                    rad: float = nr,
+                    sa: int = shaft_alpha,
+                    sink_flag: bool = is_sink_ptar,
+                    src_flag: bool = is_src_grate,
+                ) -> None:
+                    painter.setPen(QPen(QColor(74, 74, 74, sa), max(1.0, rad * 0.35)))
+                    painter.drawLine(b_pt, g_pt)
+                    if sink_flag:
+                        tr = max(6.0, rad * 1.75)
+                        painter.setPen(QPen(QColor(15, 118, 110, min(220, sa + 80)), 1.5))
+                        painter.setBrush(QBrush(QColor(20, 184, 166, 75)))
+                        painter.drawEllipse(g_pt, tr, tr * 0.56)
+                    elif src_flag:
+                        sr = max(3.2, rad * 0.72)
+                        painter.setPen(QPen(QColor(74, 74, 74, min(200, sa + 60)), 1.0))
+                        painter.setBrush(QBrush(QColor(148, 163, 184, 120)))
+                        painter.drawRect(QRectF(g_pt.x() - sr, g_pt.y() - sr * 0.55, sr * 2.0, sr * 1.1))
+                    else:
+                        lr = max(2.2, rad * 0.55)
+                        painter.setPen(QPen(QColor(74, 74, 74, min(180, sa + 50)), 0.9))
+                        painter.setBrush(QBrush(QColor(214, 211, 196, 130)))
+                        painter.drawEllipse(g_pt, lr, lr * 0.55)
+
+                render_queue.append((0.5 * (np_pt.depth + gp_pt.depth), 1, _draw_manhole_struct))
+
             # Estado piezométrico y rebose del pozo / fuente
             stored_m3 = 0.0
             flood_m3 = 0.0
@@ -939,6 +999,8 @@ class Basin3DWidget(QWidget):
 
             if col_color is not None and top_z_m > node_z_m + 1e-4:
                 top_pt = cam.project_point(wx, wy, self._z_to_world(top_z_m), w, h)
+                water_top_proj[nid] = top_pt
+                node_has_water[nid] = True
                 col_r = max(2.6, nr * 0.62)
                 col_depth = 0.5 * (np_pt.depth + top_pt.depth)
 
@@ -951,6 +1013,9 @@ class Basin3DWidget(QWidget):
                     draw_vertical_cylinder_3d(painter, b_pt, t_pt, rad, cc, alpha=220)
 
                 render_queue.append((col_depth, 3, _draw_piezo))
+            else:
+                water_top_proj[nid] = np_pt
+                node_has_water[nid] = False
 
             if has_surface_puddle:
                 puddle_vol = flood_m3 if use_global_mode else active_ponding_m3
@@ -988,6 +1053,29 @@ class Basin3DWidget(QWidget):
                     )
 
                 render_queue.append((gp_pt.depth, 4, _draw_puddle))
+
+        # 3b. Línea de gradiente hidráulico (HGL) entre pozos con carga activa
+        if self._map_mode == "instant" and snap is not None and not has_hl_focus:
+            for pipe in graph.pipes():
+                if not (node_has_water.get(pipe.from_node) or node_has_water.get(pipe.to_node)):
+                    continue
+                ps = snap.pipe_states.get(pipe.pipe_id)
+                if ps is not None and ps.is_closed:
+                    continue
+                wp1 = water_top_proj.get(pipe.from_node)
+                wp2 = water_top_proj.get(pipe.to_node)
+                if wp1 is None or wp2 is None:
+                    continue
+                hgl_d = 0.5 * (wp1.depth + wp2.depth) - 0.01
+
+                def _draw_hgl(
+                    a: QPointF = QPointF(wp1.x, wp1.y),
+                    b: QPointF = QPointF(wp2.x, wp2.y),
+                ) -> None:
+                    painter.setPen(QPen(QColor(37, 99, 235, 130), 1.35, Qt.PenStyle.DotLine))
+                    painter.drawLine(a, b)
+
+                render_queue.append((hgl_d, 4, _draw_hgl))
 
         # Ordenar pintor: mayor profundidad primero, luego orden de capa
         render_queue.sort(key=lambda item: (-item[0], item[1]))

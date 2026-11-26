@@ -154,6 +154,13 @@ def draw_capsule_3d(
         painter.drawLine(p1, p2)
         return
 
+    if radius_px < 3.0:
+        body_pen = QPen(base_color, diameter)
+        body_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(body_pen)
+        painter.drawLine(p1, p2)
+        return
+
     nx = -dy / seg_len
     ny = dx / seg_len
     mx = 0.5 * (p1.x() + p2.x())
