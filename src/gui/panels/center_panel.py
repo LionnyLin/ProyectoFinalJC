@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QSlider,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -19,6 +20,7 @@ from src.algorithms import classify_overload_persistence, classify_utilization
 from src.simulation import SimulationResult, TimeStepSnapshot
 from .. import theme
 from ..canvas import NetworkCanvas
+from ..view3d import Basin3DWidget
 from ..widgets import KpiCard, SegmentedControl, StyledButton, blocked_signals, make_separator
 from .tour_overlay import GuidedTourCard
 
@@ -28,6 +30,7 @@ class CenterPanel(QFrame):
 
     labelsToggled = Signal(bool, bool)
     mapModeChanged = Signal(str)
+    viewModeChanged = Signal(str)
     resetRequested = Signal()
     stepRequested = Signal(int)
     playPauseRequested = Signal()
@@ -150,13 +153,28 @@ class CenterPanel(QFrame):
         mm_lay.addWidget(self.seg_map_mode)
         mm_lay.addStretch(1)
 
+        self.seg_view_mode = SegmentedControl(
+            [("2d", "2D"), ("3d", "3D")],
+            initial_key="2d",
+            inactive_variant="dock_secondary",
+            font_pt=8,
+            pad_x=8,
+            pad_y=3,
+            spacing=1,
+            framed=True,
+            parent=self.map_mode_bar,
+        )
+        self.seg_view_mode.selectionChanged.connect(self.viewModeChanged.emit)
+        mm_lay.addWidget(self.seg_view_mode)
+
         canvas_block.addWidget(self.map_mode_bar)
 
+        self.canvas_stack = QStackedWidget(self)
         self.network_canvas = NetworkCanvas(
             ui_font=ui_font,
             mono_font=mono_font,
             dpi_scale=dpi_scale,
-            parent=self,
+            parent=self.canvas_stack,
         )
         self.tour_card = GuidedTourCard(
             ui_font=ui_font,
@@ -165,7 +183,15 @@ class CenterPanel(QFrame):
             parent=self.network_canvas,
         )
         self.network_canvas.attach_tour_card(self.tour_card)
-        canvas_block.addWidget(self.network_canvas, 1)
+        self.basin_3d = Basin3DWidget(
+            ui_font=ui_font,
+            mono_font=mono_font,
+            dpi_scale=dpi_scale,
+            parent=self.canvas_stack,
+        )
+        self.canvas_stack.addWidget(self.network_canvas)
+        self.canvas_stack.addWidget(self.basin_3d)
+        canvas_block.addWidget(self.canvas_stack, 1)
         lay.addLayout(canvas_block, 1)
 
         # 3. Reproductor temporal inferior
@@ -279,6 +305,11 @@ class CenterPanel(QFrame):
 
     def set_map_mode_active(self, mode: str) -> None:
         self.seg_map_mode.set_current(mode)
+
+    def set_view_mode_active(self, mode: str) -> None:
+        norm = "3d" if mode == "3d" else "2d"
+        self.seg_view_mode.set_current(norm)
+        self.canvas_stack.setCurrentIndex(1 if norm == "3d" else 0)
 
     def set_slider_range(self, max_step: int, end_min: float) -> None:
         with blocked_signals(self.timeline_slider):
@@ -501,7 +532,7 @@ class CenterPanel(QFrame):
                 self.lbl_speed_cap.setVisible(True)
             self._update_play_button_label()
 
-        mm_tier = "full" if w >= 660 else ("mid" if w >= 480 else "short")
+        mm_tier = "full" if w >= 720 else ("mid" if w >= 520 else "short")
         if mm_tier != self._map_mode_tier:
             self._map_mode_tier = mm_tier
             if mm_tier == "full":

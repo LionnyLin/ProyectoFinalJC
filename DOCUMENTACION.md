@@ -17,9 +17,9 @@ El proyecto implementa un **simulador hidráulico discreto de red de alcantarill
 | `src/io/` | Ingesta, validación topológica/hidráulica y exportación | `load_dataset()`, `load_from_excel()`, `load_from_csv_dir()`, `export_to_csv_dir()` |
 | `src/algorithms/` | Recorridos, flujo máximo, consultas y análisis | `bfs()`, `dfs()`, `ford_fulkerson_max_flow()`, `topological_sort()`, `classify_utilization()`, `rank_critical_pipes()`, `compute_source_attribution()` |
 | `src/simulation/` | Motor hidráulico discreto, estimador F_max, comparación y reportes | `SewerSimulationEngine`, `SimulationConfig`, `PipeIntervention`, `estimate_fmax_scenarios()`, `compare_all_scenarios()`, `generate_markdown_report()`, `generate_docx_report()` |
-| `src/gui/` | Interfaz gráfica modular Tkinter + Matplotlib embebido | `BicentenarioSewerApp`, `ControlsPanelMixin`, `InspectorPanelMixin`, `ComparisonPanelMixin`, `GuidedTourMixin`, `NetworkCanvas`, `TemporalChartsPanel`, `ComparisonChartsPanel`, `widgets`, `theme`, `icons` |
+| `src/gui/` | Interfaz gráfica modular PySide6 + Matplotlib embebido | `BicentenarioSewerApp`, `CenterPanel`, `ControlsPanel`, `InspectorPanel`, `NetworkCanvas`, `view3d/` (`Basin3DWidget`, `PipeInspector3DWidget`), `TemporalChartsPanel`, `ComparisonChartsPanel`, `widgets`, `theme`, `icons` |
 | `data/` | Conjunto de datos oficial (Excel y CSV equivalentes) | `DataSetBicentenario.xlsx`, `data/csv/*.csv` |
-| `tests/` | Suite de pruebas unitarias e integración GUI/DOCX | `test_data_structures.py`, `test_loader.py`, `test_algorithms.py`, `test_simulation.py`, `test_gui.py`, `test_docx_exporter.py` |
+| `tests/` | Suite de pruebas unitarias e integración GUI/DOCX/3D | `test_data_structures.py`, `test_loader.py`, `test_algorithms.py`, `test_simulation.py`, `test_gui.py`, `test_view3d.py`, `test_docx_exporter.py` |
 
 ### 1.2 Estructuras de Datos Propias (`src/data_structures/`)
 
@@ -369,3 +369,14 @@ $$\text{Error}(t_k) = \left|\; V_{\text{entrada}}(t_k) - \Bigl(V_{\text{PTAR}}(t
 Sustituyendo los valores en $t = 30.0\;\text{min}$:
 $$87.944750 + 44.785469 + 704.364210 + 42,847.825571 = 43,684.920000\;\text{m}^3$$
 $$\text{Error}(30.0) = 6.185 \times 10^{-10}\;\text{m}^3 \le \text{máx}_{k \in [0,90]} = 1.710 \times 10^{-9}\;\text{m}^3$$
+
+---
+
+## 6. Módulo de Visualización Hidráulica 3D Nativa (`src/gui/view3d/`)
+
+Implementado sobre `QPainter` (`PySide6` puro) sin dependencias externas adicionales:
+
+- **Inferencia altimétrica (`elevation.py`):** `compute_network_elevations()` normaliza pendientes (guardia automática `%` vs `m/m`), ejecuta Bellman-Ford inverso multi-sumidero (`z = 0` en todos los sumideros, inmune a ciclos), interpola nodos desconectados con IDW espacial (`k = 3`), calcula la rasante de referencia $z_{\text{suelo},i} = z_i + \max(1.5, 1.5 \cdot D_{\max,i})$ y subdivide la superficie en una malla de $10 \times 10$ celdas para *Z-sorting*.
+- **Cámara y primitivas 3D (`projection.py`):** `OrbitCamera` proyecta `(x, y, z)` con rotación orbital `(yaw, pitch)`, zoom y paneo, junto a primitivas sombreadas para tuberías cilíndricas, columnas piezométricas verticales, elipses de rebose y quads de malla.
+- **Escena 3D de cuenca (`basin_3d_widget.py`):** `Basin3DWidget` soporta modos `instant`, `peak` y `overload_minutes`, picking bidireccional 3D, controles flotantes (*Resetear cámara*, *Suelo: `0%` / `45%` / `100%`*, *Escala Z: `1x` / `3x` / `5x`*), elevación automática de columna piezométrica y charco cuando existe rebose directo en rejilla de fuentes (`surface_flooding_m3 > 0`), y conmutación `2D | 3D` en `CenterPanel` con *lazy update* en `_set_step()`.
+- **Visor 3D de tramo (`pipe_inspector_3d.py`):** `PipeInspector3DWidget` incrustado en tarjeta colapsable de `InspectorPanel` muestra corte longitudinal inclinado, lámina $\rho = \min(1, U/100)$, depósitos de obstrucción parcial y el caso borde de **obstrucción al 100 %** (`is_closed` / `eff_q_max <= 1e-12`) con tapón físico, represamiento aguas arriba y rebose del pozo sin división entre cero.

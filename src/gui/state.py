@@ -45,6 +45,7 @@ class AppState:
     inspector_trace_state: Optional[Tuple[str, str]] = None
 
     map_mode: str = "instant"
+    view_mode: str = "2d"
     active_route_pipes: List[PipeEdge] = field(default_factory=list)
     last_traversal_alg: str = "BFS"
     anim_frames: List[TraversalAnimFrame] = field(default_factory=list)

@@ -267,6 +267,7 @@ class BicentenarioSewerApp(QMainWindow):
         )
         self.center_panel.setMinimumWidth(310)
         self.network_canvas = self.center_panel.network_canvas
+        self.basin_3d = self.center_panel.basin_3d
 
         self.right_panel = QFrame(self.main_splitter)
         self.right_panel.setObjectName("RightPanel")
@@ -394,6 +395,7 @@ class BicentenarioSewerApp(QMainWindow):
         # Panel central + Canvas + Tour
         self.center_panel.labelsToggled.connect(self._toggle_labels)
         self.center_panel.mapModeChanged.connect(self._set_map_mode)
+        self.center_panel.viewModeChanged.connect(self._set_view_mode)
         self.center_panel.resetRequested.connect(self._player_reset)
         self.center_panel.stepRequested.connect(self._player_step)
         self.center_panel.playPauseRequested.connect(self.toggle_play_pause)
@@ -401,6 +403,8 @@ class BicentenarioSewerApp(QMainWindow):
         self.center_panel.sliderMoved.connect(self._on_slider_move)
         self.network_canvas.pipeSelected.connect(self._on_pipe_selected)
         self.network_canvas.nodeSelected.connect(self._on_node_selected)
+        self.basin_3d.pipeSelected.connect(self._on_3d_pipe_selected)
+        self.basin_3d.nodeSelected.connect(self._on_3d_node_selected)
         self.center_panel.tour_card.previousRequested.connect(
             lambda: self._go_tour_stop(self.state.tour_step - 1)
         )
@@ -419,6 +423,7 @@ class BicentenarioSewerApp(QMainWindow):
         self.inspector_panel.applyInterventionRequested.connect(self._action_apply_intervention)
         self.inspector_panel.restorePipeRequested.connect(self._action_restore_pipe)
         self.inspector_panel.restoreAllRequested.connect(self._action_restore_all_interventions)
+        self.inspector_panel.pipe3dToggled.connect(lambda _exp: self._update_pipe_inspector_3d())
 
         self.critical_panel.filterChanged.connect(lambda _f: self._refresh_critical_table())
         self.critical_panel.pipeSelected.connect(self._on_critical_pipe_selected)
@@ -488,6 +493,10 @@ class BicentenarioSewerApp(QMainWindow):
         self.network_canvas.set_basin_focus(None, None)
         self.network_canvas.select_pipe(None)
         self.network_canvas.select_node(None)
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_basin_focus(None, None)
+            self.basin_3d.select_pipe(None)
+            self.basin_3d.select_node(None)
         self._crit_tab_dirty = True
         self._charts_tab_dirty = True
         self.critical_panel.clear_selection()
@@ -694,6 +703,7 @@ class BicentenarioSewerApp(QMainWindow):
         self.max_flow_panel.clear_table()
         self.max_flow_panel.reset_hint()
         self.network_canvas.set_graph(dataset.graph)
+        self.basin_3d.set_graph(dataset.graph)
 
         scen_labels = []
         self._scenario_display_map.clear()
@@ -902,6 +912,13 @@ class BicentenarioSewerApp(QMainWindow):
             overload_minutes=ov_all,
             total_duration_min=dur_total,
         )
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_map_mode(
+                self.state.map_mode,
+                peak_util=peak_all,
+                overload_minutes=ov_all,
+                total_duration_min=dur_total,
+            )
         end_min = (
             self.state.result.snapshots[-1].time_min
             if self.state.result.snapshots
@@ -951,6 +968,8 @@ class BicentenarioSewerApp(QMainWindow):
             snap if self.state.map_mode == "instant" else self.state.result.snapshots[-1]
         )
         self.network_canvas.set_snapshot(canvas_snap)
+        if self.state.view_mode == "3d":
+            self._sync_basin_3d_step(canvas_snap, peak_all, ov_all, dur_total)
         self.center_panel.update_telemetry(
             map_mode=self.state.map_mode,
             result=self.state.result,
@@ -1080,6 +1099,116 @@ class BicentenarioSewerApp(QMainWindow):
         self.network_canvas.show_pipe_labels = show_ids
         self.network_canvas.show_util_labels = show_util
         self.network_canvas.redraw()
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_labels_visible(show_ids, show_util)
+
+    def _set_view_mode(self, mode: str) -> None:
+        norm = "3d" if mode == "3d" else "2d"
+        if norm == self.state.view_mode:
+            return
+        if norm == "3d" and self.state.tour_active:
+            self._close_guided_tour(reset_view=False)
+        self.state.view_mode = norm
+        self.center_panel.set_view_mode_active(norm)
+        if norm == "3d":
+            self._sync_basin_3d_full()
+        else:
+            self.basin_3d.close_overlays()
+
+    def _sync_basin_3d_step(
+        self,
+        canvas_snap: TimeStepSnapshot,
+        peak_all: Dict[str, float],
+        ov_all: Dict[str, float],
+        dur_total: float,
+    ) -> None:
+        self.basin_3d.set_stress_maps(
+            peak_util=peak_all,
+            overload_minutes=ov_all,
+            total_duration_min=dur_total,
+        )
+        self.basin_3d.set_snapshot(canvas_snap, self.state.result)
+
+    def _sync_basin_3d_full(self) -> None:
+        self.basin_3d.set_labels_visible(
+            self.network_canvas.show_pipe_labels,
+            self.network_canvas.show_util_labels,
+        )
+        self.basin_3d.set_interventions(
+            self.state.interventions,
+            self.state.isolated_nodes,
+            self.state.isolated_pipes,
+        )
+        if self.state.basin_isolated:
+            self.basin_3d.set_basin_focus(
+                self.network_canvas._basin_nodes,
+                self.network_canvas._basin_pipes,
+            )
+        else:
+            self.basin_3d.set_basin_focus(None, None)
+        self.basin_3d.set_highlights(
+            self.network_canvas.highlight_pipe_ids,
+            self.network_canvas.highlight_node_ids,
+        )
+        if self.state.selected_pipe_id:
+            self.basin_3d.select_pipe(self.state.selected_pipe_id)
+        elif self.state.selected_node_id:
+            self.basin_3d.select_node(self.state.selected_node_id)
+        else:
+            self.basin_3d.select_pipe(None)
+
+        if self.state.result is not None and self.state.result.snapshots:
+            peak_all, ov_all, dur_total = self.state.global_stress_maps()
+            snap_cur = self.state.result.snapshots[self.state.current_step]
+            canvas_snap = (
+                snap_cur
+                if self.state.map_mode == "instant"
+                else self.state.result.snapshots[-1]
+            )
+            self.basin_3d.set_map_mode(
+                self.state.map_mode,
+                peak_util=peak_all,
+                overload_minutes=ov_all,
+                total_duration_min=dur_total,
+            )
+            self.basin_3d.set_snapshot(canvas_snap, self.state.result)
+        else:
+            self.basin_3d.set_map_mode(self.state.map_mode)
+
+    def _on_3d_pipe_selected(self, pipe_id: str) -> None:
+        self.network_canvas.select_pipe(pipe_id)
+        self._on_pipe_selected(pipe_id)
+
+    def _on_3d_node_selected(self, node_id: str) -> None:
+        self.network_canvas.select_node(node_id)
+        self._on_node_selected(node_id)
+
+    def _update_pipe_inspector_3d(self) -> None:
+        if (
+            self.state.dataset is None
+            or not self.state.selected_pipe_id
+            or not self.inspector_panel.is_pipe_3d_expanded()
+        ):
+            return
+        edge = self.state.dataset.graph.get_pipe(self.state.selected_pipe_id)
+        if edge is None:
+            return
+        snap = self.state.current_snapshot()
+        ps = snap.pipe_states.get(edge.pipe_id) if snap is not None else None
+        upstream_ns = snap.node_states.get(edge.from_node) if snap is not None else None
+        inv = self.state.interventions.get(edge.pipe_id)
+        max_storage = (
+            self.state.result.config.max_manhole_storage_m3
+            if self.state.result is not None
+            else 4.0
+        )
+        self.inspector_panel.update_pipe_3d(
+            edge,
+            ps,
+            upstream_ns,
+            inv,
+            max_manhole_storage_m3=max_storage,
+        )
 
     def _set_map_mode(self, mode: str) -> None:
         if mode not in ("instant", "peak", "overload_minutes"):
@@ -1099,6 +1228,14 @@ class BicentenarioSewerApp(QMainWindow):
                 overload_minutes=ov_all,
                 total_duration_min=dur_total,
             )
+            if self.state.view_mode == "3d":
+                self.basin_3d.set_map_mode(
+                    mode,
+                    peak_util=peak_all,
+                    overload_minutes=ov_all,
+                    total_duration_min=dur_total,
+                )
+                self.basin_3d.set_snapshot(canvas_snap, self.state.result)
             self.center_panel.update_telemetry(
                 map_mode=mode,
                 result=self.state.result,
@@ -1117,6 +1254,8 @@ class BicentenarioSewerApp(QMainWindow):
             )
         else:
             self.network_canvas.set_map_mode(mode)
+            if self.state.view_mode == "3d":
+                self.basin_3d.set_map_mode(mode)
 
     # ------------------------------------------------------------------
     # Selección, Inspector, Intervenciones y Críticas
@@ -1125,6 +1264,8 @@ class BicentenarioSewerApp(QMainWindow):
     def _on_pipe_selected(self, pipe_id: str) -> None:
         self.state.selected_pipe_id = pipe_id
         self.state.selected_node_id = None
+        if self.state.view_mode == "3d":
+            self.basin_3d.select_pipe(pipe_id)
         if self.state.inspector_trace_state is not None:
             self.state.inspector_trace_state = None
         if self.state.dataset is not None:
@@ -1154,6 +1295,8 @@ class BicentenarioSewerApp(QMainWindow):
             self.state.inspector_trace_state = None
         self.state.selected_node_id = node_id
         self.state.selected_pipe_id = None
+        if self.state.view_mode == "3d":
+            self.basin_3d.select_node(node_id)
         self.controls_panel.combo_bfs_start.setCurrentText(node_id)
         if self.state.basin_isolated:
             self._apply_basin_isolation()
@@ -1196,6 +1339,8 @@ class BicentenarioSewerApp(QMainWindow):
     def _apply_basin_isolation(self) -> None:
         if not self.state.basin_isolated or self.state.dataset is None:
             self.network_canvas.set_basin_focus(None, None)
+            if self.state.view_mode == "3d":
+                self.basin_3d.set_basin_focus(None, None)
             return
         g = self.state.dataset.graph
         focus_nodes: Set[str] = set()
@@ -1221,6 +1366,8 @@ class BicentenarioSewerApp(QMainWindow):
             return
 
         self.network_canvas.set_basin_focus(focus_nodes, focus_pipes)
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_basin_focus(focus_nodes, focus_pipes)
         self._set_status(
             f"Cuenca aislada: {len(focus_nodes)} nodo(s) y {len(focus_pipes)} tramo(s) activos hacia PTAR 31."
         )
@@ -1237,6 +1384,12 @@ class BicentenarioSewerApp(QMainWindow):
             self.state.isolated_nodes,
             self.state.isolated_pipes,
         )
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_interventions(
+                self.state.interventions,
+                self.state.isolated_nodes,
+                self.state.isolated_pipes,
+            )
         self._mark_comparisons_dirty()
 
     def _action_apply_intervention(self, obst_pct: float, diam_raw: str) -> None:
@@ -1302,6 +1455,8 @@ class BicentenarioSewerApp(QMainWindow):
         if self.state.inspector_trace_state == (self.state.selected_node_id, direction):
             self.state.inspector_trace_state = None
             self.network_canvas.set_highlights(set(), set())
+            if self.state.view_mode == "3d":
+                self.basin_3d.set_highlights(set(), set())
             self._refresh_inspector()
             self._set_status("Vista de red restaurada.")
             return
@@ -1345,6 +1500,7 @@ class BicentenarioSewerApp(QMainWindow):
             isolated_nodes=self.state.isolated_nodes,
             isolated_pipes=self.state.isolated_pipes,
         )
+        self._update_pipe_inspector_3d()
 
     def _refresh_source_attribution_panel(self) -> None:
         if self.state.dataset is None or (
@@ -1709,6 +1865,8 @@ class BicentenarioSewerApp(QMainWindow):
         self.network_canvas.set_highlights(
             hl_pipes, hl_nodes, ordered_route_pipes=ordered_ff
         )
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_highlights(hl_pipes, hl_nodes)
         cut_str = ", ".join(ff_res.min_cut_pipes) or "Ninguno"
         self.network_canvas.set_banner(
             f"Ford-Fulkerson · F_max = {ff_res.max_flow_m3s:.4f} m³/s",
@@ -1818,6 +1976,11 @@ class BicentenarioSewerApp(QMainWindow):
             pipe_ids={p.pipe_id for p in pipes},
             node_ids={n.node_id for n in nodes},
         )
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_highlights(
+                pipe_ids={p.pipe_id for p in pipes},
+                node_ids={n.node_id for n in nodes},
+            )
         self.controls_panel.set_traversal_text(
             f"[Búsqueda '{q}']\n"
             f"Nodos ({len(nodes)}): {', '.join(n.node_id for n in nodes[:12]) or '-'}\n"
@@ -1858,6 +2021,8 @@ class BicentenarioSewerApp(QMainWindow):
         self.network_canvas.set_highlights(
             hl_pipes, hl_nodes, ordered_route_pipes=ordered_pipes
         )
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_highlights(hl_pipes, hl_nodes)
         if frames:
             mid_fr = frames[min(1, len(frames) - 1)]
             self.controls_panel.update_structure_strip(
@@ -2028,6 +2193,8 @@ class BicentenarioSewerApp(QMainWindow):
             set(nodes),
             ordered_route_pipes=[p.pipe_id for p in pipes],
         )
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_highlights({p.pipe_id for p in pipes}, set(nodes))
         label = "Aguas abajo" if direction == "down" else "Aguas arriba"
         self.controls_panel.set_traversal_text(
             f"[{label} desde {nid}]\n"
@@ -2046,6 +2213,9 @@ class BicentenarioSewerApp(QMainWindow):
         self.state.basin_isolated = False
         self.network_canvas.set_basin_focus(None, None)
         self.network_canvas.set_highlights(set(), set())
+        if self.state.view_mode == "3d":
+            self.basin_3d.set_basin_focus(None, None)
+            self.basin_3d.set_highlights(set(), set())
         self.controls_panel.update_structure_strip("Queue", [])
         self.controls_panel.set_traversal_text("")
         self._charts_tab_dirty = True
@@ -2068,6 +2238,8 @@ class BicentenarioSewerApp(QMainWindow):
         if self.state.tour_active:
             self._close_guided_tour()
         else:
+            if self.state.view_mode == "3d":
+                self._set_view_mode("2d")
             if self.state.basin_isolated:
                 self.state.basin_isolated = False
                 self._apply_basin_isolation()
@@ -2279,6 +2451,7 @@ class BicentenarioSewerApp(QMainWindow):
         self._task_runner.cancel_channel("report")
         self._task_runner.wait_all(3000)
         self.network_canvas.close_overlays()
+        self.basin_3d.close_overlays()
         self.temporal_charts.stop_timers()
         self.comparison_panel.stop_timers()
         self.max_flow_panel.stop_timers()

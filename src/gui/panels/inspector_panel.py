@@ -21,6 +21,7 @@ from src.data_structures import PipeEdge
 from src.io.data_loader import NetworkDataset
 from src.simulation import PipeIntervention, SimulationResult, TimeStepSnapshot, resolve_pipe_hydraulics
 from .. import theme
+from ..view3d import PipeInspector3DWidget
 from ..widgets import (
     COMMERCIAL_DIAMETERS_IN,
     SourceBarWidget,
@@ -53,6 +54,7 @@ class InspectorPanel(QWidget):
     applyInterventionRequested = Signal(float, str)
     restorePipeRequested = Signal()
     restoreAllRequested = Signal()
+    pipe3dToggled = Signal(bool)
 
     def __init__(
         self,
@@ -67,6 +69,7 @@ class InspectorPanel(QWidget):
         self._mono_font = mono_font
         self._display_font = display_font
         self._current_source_shares: List[Tuple[str, float]] = []
+        self._pipe_3d_expanded: bool = True
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -247,6 +250,47 @@ class InspectorPanel(QWidget):
         lay.addWidget(self.pipe_intervention_card)
         lay.addWidget(self._int_sep)
 
+        # 2b. Tarjeta colapsable de Visor 3D de tramo
+        self.pipe_3d_card = QFrame(self)
+        self.pipe_3d_card.setObjectName("InspectorSubCard")
+        p3d_lay = QVBoxLayout(self.pipe_3d_card)
+        p3d_lay.setContentsMargins(8, 5, 8, 6)
+        p3d_lay.setSpacing(4)
+
+        p3d_hdr = QHBoxLayout()
+        p3d_hdr.setContentsMargins(0, 0, 0, 0)
+        p3d_hdr.setSpacing(6)
+        self.btn_toggle_pipe_3d = StyledButton(
+            "Visor 3D de tramo ▾",
+            variant="light_secondary",
+            font_pt=8,
+            pad_x=6,
+            pad_y=2,
+            parent=self.pipe_3d_card,
+        )
+        self.btn_toggle_pipe_3d.clicked.connect(self._toggle_pipe_3d)
+        p3d_hdr.addWidget(self.btn_toggle_pipe_3d)
+        p3d_hdr.addStretch(1)
+
+        self.lbl_pipe_3d_hint = QLabel("Arrastrar: rotar · Doble clic: reset", self.pipe_3d_card)
+        self.lbl_pipe_3d_hint.setFont(QFont(mono_font, 7))
+        self.lbl_pipe_3d_hint.setStyleSheet(f"color: {theme.INK_MUTED}; background: transparent;")
+        p3d_hdr.addWidget(self.lbl_pipe_3d_hint)
+        p3d_lay.addLayout(p3d_hdr)
+
+        self.pipe_inspector_3d = PipeInspector3DWidget(
+            ui_font=ui_font,
+            mono_font=mono_font,
+            parent=self.pipe_3d_card,
+        )
+        p3d_lay.addWidget(self.pipe_inspector_3d)
+
+        self._pipe_3d_sep = make_separator("h", theme.DOCK_BORDER, 1, self)
+        self.pipe_3d_card.setVisible(False)
+        self._pipe_3d_sep.setVisible(False)
+        lay.addWidget(self.pipe_3d_card)
+        lay.addWidget(self._pipe_3d_sep)
+
         # 3. Tarjeta de composición por fuente aportante
         self.source_attribution_card = QFrame(self)
         self.source_attribution_card.setObjectName("InspectorSubCard")
@@ -355,6 +399,37 @@ class InspectorPanel(QWidget):
         else:
             self.set_obstruction_pct(round(intervention.obstruction_pct))
 
+    def _toggle_pipe_3d(self) -> None:
+        self.set_pipe_3d_expanded(not self._pipe_3d_expanded)
+        self.pipe3dToggled.emit(self._pipe_3d_expanded)
+
+    def is_pipe_3d_expanded(self) -> bool:
+        return self._pipe_3d_expanded
+
+    def set_pipe_3d_expanded(self, expanded: bool) -> None:
+        self._pipe_3d_expanded = bool(expanded)
+        self.pipe_inspector_3d.setVisible(self._pipe_3d_expanded)
+        self.lbl_pipe_3d_hint.setVisible(self._pipe_3d_expanded)
+        self.btn_toggle_pipe_3d.setText(
+            "Visor 3D de tramo ▾" if self._pipe_3d_expanded else "Visor 3D de tramo ▸"
+        )
+
+    def update_pipe_3d(
+        self,
+        edge: Optional[PipeEdge],
+        pipe_state,
+        upstream_node_state,
+        intervention: Optional[PipeIntervention],
+        max_manhole_storage_m3: float = 4.0,
+    ) -> None:
+        self.pipe_inspector_3d.update_state(
+            edge,
+            pipe_state,
+            upstream_node_state,
+            intervention,
+            max_manhole_storage_m3=max_manhole_storage_m3,
+        )
+
     def sync_action_bars(
         self,
         *,
@@ -371,6 +446,8 @@ class InspectorPanel(QWidget):
 
         self.pipe_intervention_card.setVisible(sel_kind == "pipe")
         self._int_sep.setVisible(sel_kind == "pipe")
+        self.pipe_3d_card.setVisible(sel_kind == "pipe")
+        self._pipe_3d_sep.setVisible(sel_kind == "pipe")
 
         self.source_attribution_card.setVisible(has_sel)
         self._src_sep.setVisible(has_sel)

@@ -908,6 +908,68 @@ class TestGuiResponsiveAndBehavior(unittest.TestCase):
         self.assertEqual(len(self.app.network_canvas.highlight_pipe_ids), 0)
         self.assertEqual(len(self.app.network_canvas._ordered_route_pipes), 0)
 
+    def test_view3d_toggle_lazy_update_picking_and_pipe_inspector(self) -> None:
+        # 1. Inicia en 2D; avanzar pasos en 2D no actualiza basin_3d (lazy update)
+        self.assertEqual(self.app.state.view_mode, "2d")
+        self.assertEqual(self.app.center_panel.canvas_stack.currentIndex(), 0)
+        self.app._set_step(15)
+        self.assertIsNone(self.app.basin_3d._snapshot)
+
+        # 2. Cambiar a 3D sincroniza inmediatamente snapshot, modo y controles
+        self.app._set_view_mode("3d")
+        _pump(80)
+        self.assertEqual(self.app.state.view_mode, "3d")
+        self.assertEqual(self.app.center_panel.canvas_stack.currentIndex(), 1)
+        self.assertIsNotNone(self.app.basin_3d._snapshot)
+        self.assertAlmostEqual(self.app.basin_3d._snapshot.time_min, 15.0, places=3)
+        self.assertFalse(self.app.basin_3d.grab().isNull())
+
+        # 3. Selección bidireccional desde 3D -> actualiza 2D, Inspector y visor 3D de tramo
+        self.app.basin_3d.pipeSelected.emit("P25")
+        _pump(80)
+        self.assertEqual(self.app.state.selected_pipe_id, "P25")
+        self.assertEqual(self.app.network_canvas.selected_pipe_id, "P25")
+        self.assertTrue(self.app.inspector_panel.pipe_3d_card.isVisible())
+        self.assertTrue(self.app.inspector_panel.pipe_inspector_3d.isVisible())
+        self.assertEqual(self.app.inspector_panel.pipe_inspector_3d.render_mode, "normal")
+
+        # Colapsar y expandir tarjeta de visor 3D de tramo
+        self.app.inspector_panel.set_pipe_3d_expanded(False)
+        self.assertFalse(self.app.inspector_panel.is_pipe_3d_expanded())
+        self.assertFalse(self.app.inspector_panel.pipe_inspector_3d.isVisible())
+        self.app.inspector_panel.set_pipe_3d_expanded(True)
+        self.app._update_pipe_inspector_3d()
+        self.assertTrue(self.app.inspector_panel.pipe_inspector_3d.isVisible())
+
+        # 4. Obstrucción al 100% en vivo sobre P3 en t > 0 y t = 0
+        self.app.basin_3d.pipeSelected.emit("P3")
+        _pump(60)
+        self.app.inspector_panel.set_obstruction_pct(100.0)
+        self.app._action_apply_intervention(
+            100.0, self.app.inspector_panel.combo_diam_override.currentText()
+        )
+        _pump(80)
+        self.app._set_step(25)
+        _pump(60)
+        self.assertEqual(
+            self.app.inspector_panel.pipe_inspector_3d.render_mode, "blocked_backwater"
+        )
+        self.app._set_step(0)
+        _pump(60)
+        self.assertEqual(
+            self.app.inspector_panel.pipe_inspector_3d.render_mode, "blocked_dry"
+        )
+        self.app._action_restore_all_interventions()
+        _pump(60)
+
+        # 5. Activar Tour Guiado mientras está en 3D conmuta automáticamente a 2D
+        self.app.toggle_guided_tour()
+        _pump(120)
+        self.assertEqual(self.app.state.view_mode, "2d")
+        self.assertTrue(self.app.state.tour_active)
+        self.app._close_guided_tour()
+        _pump(80)
+
 
 if __name__ == "__main__":
     unittest.main()
