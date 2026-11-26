@@ -277,21 +277,29 @@ def apply_variant(widget: QWidget, variant: str) -> None:
     widget.update()
 
 
-def _chevron_svg(direction: str, color: str) -> str:
-    """Chevron vectorial de trazo redondeado (estilo moderno) para combos y spinbox."""
-    pts = {
-        "down": "3,6 8,11 13,6",
-        "up": "3,10 8,5 13,10",
-    }[direction]
-    return (
-        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2" '
-        'stroke-linecap="round" stroke-linejoin="round"/></svg>'
-    )
+def _write_chevron_png(path: str, direction: str, color: str) -> None:
+    """Genera un icono PNG anti-aliased de chevron para QComboBox y QDoubleSpinBox."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QColor, QImage, QPainter, QPen
+
+    size = 32
+    img = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(img)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(color), 4.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    if direction == "down":
+        pts = [QPointF(7.0, 12.0), QPointF(16.0, 21.0), QPointF(25.0, 12.0)]
+    else:
+        pts = [QPointF(7.0, 20.0), QPointF(16.0, 11.0), QPointF(25.0, 20.0)]
+    painter.drawPolyline(pts)
+    painter.end()
+    img.save(path, "PNG")
 
 
 def ensure_qss_icons() -> Dict[str, str]:
-    """Escribe los chevrons SVG en caché temporal y devuelve sus rutas (formato url() de QSS)."""
+    """Escribe los chevrons PNG en caché temporal y devuelve sus rutas (formato url() de QSS)."""
     import tempfile
 
     out_dir = os.path.join(tempfile.gettempdir(), "bicentenario_qss_icons")
@@ -306,16 +314,9 @@ def ensure_qss_icons() -> Dict[str, str]:
     }
     paths: Dict[str, str] = {}
     for key, (direction, color) in specs.items():
-        path = os.path.join(out_dir, f"{key}.svg")
-        svg = _chevron_svg(direction, color)
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                current = fh.read()
-        except OSError:
-            current = ""
-        if current != svg:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(svg)
+        path = os.path.join(out_dir, f"{key}_v2.png")
+        if not os.path.exists(path):
+            _write_chevron_png(path, direction, color)
         paths[key] = path.replace("\\", "/")
     return paths
 
